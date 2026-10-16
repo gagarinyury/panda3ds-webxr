@@ -36,10 +36,10 @@ index b234cd2..9ffbb3c 100644
          target_link_libraries(dynarmic PRIVATE rt)
 diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
 new file mode 100644
-index 0000000..bdce841
+index 0000000..ece294e
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_interface.cpp
-@@ -0,0 +1,364 @@
+@@ -0,0 +1,374 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -86,7 +86,9 @@ index 0000000..bdce841
 +EM_JS(int, jit_js_compile, (int id, int slot, const uint8_t* p, int n), {
 +    try {
 +        const impl = Module.jit.impls[id];
++        const tA = performance.now();
 +        const mod = new WebAssembly.Module(HEAPU8.slice(p, p + n));
++        const tB = performance.now();
 +        const imports = { e: { m: wasmMemory, t: impl.table } };
 +        for (const imp of WebAssembly.Module.imports(mod)) {
 +            if (imp.kind === 'function') {
@@ -96,6 +98,8 @@ index 0000000..bdce841
 +            }
 +        }
 +        const inst = new WebAssembly.Instance(mod, imports);
++        const tC = performance.now();
++        const T = Module.jit.t || (Module.jit.t = [0, 0, 0, 0]); T[1] += tB - tA; T[2] += tC - tB;   // [0] translate+optimize+emit (C++), [1] WebAssembly.Module, [2] WebAssembly.Instance + table
 +        while (slot >= impl.table.length) impl.table.grow(impl.table.length);
 +        impl.table.set(slot, inst.exports.b);
 +        if (!impl.fnCache) impl.fnCache = [];
@@ -121,6 +125,10 @@ index 0000000..bdce841
 +    impl.fnCache = [];
 +    impl.flushes = (impl.flushes || 0) + 1; impl.droppedBlocks = (impl.droppedBlocks || 0) + dropped;   // diagnostics: how often the whole cache is thrown away, and how many blocks that wasted
 +});
++
++// Time accounting for the panel: kind 0 = translate + optimize + emit (C++ side), see jit_js_compile for the other two.
++EM_JS(void, jit_js_time, (int kind, double ms), { const T = Module.jit.t || (Module.jit.t = [0, 0, 0, 0]); T[kind] += ms; });
++EM_JS(double, jit_now_ms, (), { return performance.now(); });
 +
 +// Breadcrumb for hang diagnosis: the message reaches the native app even if the page then spins forever.
 +EM_JS(void, jit_js_crumb, (int kind, int pc, int x), {
@@ -276,6 +284,7 @@ index 0000000..bdce841
 +        static const bool trace = std::getenv("JIT_TRACE") != nullptr;
 +        if (trace) std::fprintf(stderr, "[jit] translate pc=%08x thumb=%d fpscr=%08x\n", loc.PC(), loc.TFlag() ? 1 : 0, loc.FPSCR().Value());
 +        if (Crumbs() != 0) jit_js_crumb(6, loc.PC(), 0);   // 6 = about to translate
++        const double t_gen0 = jit_now_ms();
 +        IR::Block ir = Translate(loc, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
 +        if (Crumbs() != 0) jit_js_crumb(7, loc.PC(), 0);   // 7 = translated, optimizing
 +        Optimization::A32GetSetElimination(ir, {});
@@ -300,6 +309,7 @@ index 0000000..bdce841
 +        if (no_fastmem) { emit_conf.wasm_read_table = nullptr; emit_conf.wasm_write_table = nullptr; }
 +        if (Crumbs() != 0) jit_js_crumb(8, loc.PC(), 0);   // 8 = optimized, emitting wasm
 +        auto res = Backend::Wasm::EmitA32Block(ir, emit_conf, opt);
++        jit_js_time(0, jit_now_ms() - t_gen0);
 +        if (!res.ok()) {
 +            char buf[64];
 +            std::snprintf(buf, sizeof buf, "block at 0x%08x: ", loc.PC());
