@@ -70,6 +70,30 @@ function draw() {
   });
 }
 
+// ---- WebGL redundancy filter: the PICA renderer re-sets the same state before every draw (Doom: ~170 draws per frame, ~10 GL calls each),
+// and every WebGL call costs ~10-30 us. Skip calls that would not change anything. Opt-in with filter=1. ----
+function installGLFilter() {
+  const P = WebGL2RenderingContext.prototype, wrap = (name, make) => { const o = P[name]; P[name] = make(o); };
+  let vp = null, unit = 0, bc = null;
+  const tex = new Map(), ubo = new Map(), fbTex = new Map(), bound = { 36160: null, 36009: null, 36008: null };
+  wrap('viewport', (o) => function (x, y, w, h) { if (vp && vp[0] === x && vp[1] === y && vp[2] === w && vp[3] === h) return; vp = [x, y, w, h]; return o.call(this, x, y, w, h); });
+  wrap('activeTexture', (o) => function (u) { if (u === unit) return; unit = u; return o.call(this, u); });
+  wrap('bindTexture', (o) => function (t, h) { const k = unit * 100000 + t; if (tex.get(k) === h) return; tex.set(k, h); return o.call(this, t, h); });
+  wrap('blendColor', (o) => function (r, g, b, a) { if (bc && bc[0] === r && bc[1] === g && bc[2] === b && bc[3] === a) return; bc = [r, g, b, a]; return o.call(this, r, g, b, a); });
+  wrap('bindBufferRange', (o) => function (t, i, b, off, size) { const k = t * 1000 + i, v = ubo.get(k); if (v && v[0] === b && v[1] === off && v[2] === size) return; ubo.set(k, [b, off, size]); return o.call(this, t, i, b, off, size); });
+  wrap('bindFramebuffer', (o) => function (t, f) { if (t === 36160) { bound[36160] = bound[36009] = bound[36008] = f; } else bound[t] = f; return o.call(this, t, f); });
+  wrap('framebufferTexture2D', (o) => function (t, a, tt, h, lvl) {
+    const f = t === 36008 ? bound[36008] : (t === 36009 ? bound[36009] : bound[36160]); let m = fbTex.get(f);
+    if (!m) fbTex.set(f, m = new Map());
+    const k = a + ':' + tt + ':' + lvl; if (m.get(k) === h) return; m.set(k, h); return o.call(this, t, a, tt, h, lvl);
+  });
+  // any change that could invalidate a cached binding resets the caches
+  const reset = () => { tex.clear(); ubo.clear(); fbTex.clear(); vp = null; };
+  for (const n of ['deleteTexture', 'deleteFramebuffer', 'deleteBuffer', 'deleteProgram', 'deleteVertexArray']) wrap(n, (o) => function (...a) { reset(); return o.apply(this, a); });
+  for (const n of ['texImage2D', 'texStorage2D', 'texStorage3D', 'texImage3D', 'renderbufferStorage']) wrap(n, (o) => function (...a) { fbTex.clear(); return o.apply(this, a); });   // storage (re)specification can detach it from an FBO
+}
+if (useGL && params.get('filter') === '1') installGLFilter();   // opt-in: measured no gain on Doom (the cost is per draw, not redundant state)
+
 // ---- input: keyboard, touch / mouse on the bottom screen, on-screen buttons ----
 const KEYS = { A: 1, B: 2, Select: 4, Start: 8, Right: 16, Left: 32, Up: 64, Down: 128, R: 256, L: 512, X: 1024, Y: 2048 };
 const KEYMAP = { KeyX: 'A', KeyZ: 'B', KeyS: 'X', KeyA: 'Y', KeyQ: 'L', KeyW: 'R', Enter: 'Start', ShiftRight: 'Select', Backspace: 'Select',
