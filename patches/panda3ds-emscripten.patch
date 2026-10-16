@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2f4d9df..ed9ee92 100644
+index 2f4d9df..11e99f1 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -177,7 +177,10 @@ if(ENABLE_DISCORD_RPC AND NOT ANDROID)
@@ -49,7 +49,7 @@ index 2f4d9df..ed9ee92 100644
 +    add_executable(AlberWeb "${CMAKE_SOURCE_DIR}/../web/web_main.cpp")
 +    target_link_libraries(AlberWeb PRIVATE AlberCore)
 +    target_link_options(AlberWeb PRIVATE -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456 -sSTACK_SIZE=2097152 -sFORCE_FILESYSTEM=1
-+        "-sEXPORTED_FUNCTIONS=_main,_web_init,_web_load,_web_frame,_web_screen" "-sEXPORTED_RUNTIME_METHODS=FS,ccall,cwrap,HEAPU8,stringToNewUTF8" --profiling-funcs)
++        "-sEXPORTED_FUNCTIONS=_main,_web_init,_web_load,_web_frame,_web_screen" "-sEXPORTED_RUNTIME_METHODS=FS,ccall,cwrap,HEAPU8,stringToNewUTF8,ENV" --profiling-funcs)
 +endif()
 +
  if(NOT BUILD_HYDRA_CORE AND NOT BUILD_LIBRETRO_CORE)
@@ -140,6 +140,22 @@ index 659a1e1..7127c0c 100644
  		Texture& newTex = textureCache.add(tex);
  		newTex.decodeTexture(textureData);
  
+diff --git a/src/core/services/fs.cpp b/src/core/services/fs.cpp
+index 5d6cb44..1afe66f 100644
+--- a/src/core/services/fs.cpp
++++ b/src/core/services/fs.cpp
+@@ -371,6 +371,11 @@ void FSService::openFileDirectly(u32 messagePointer) {
+ 	mem.write32(messagePointer, IPC::responseHeader(0x803, 1, 2));
+ 	if (!handle.has_value()) {
+ 		printf("OpenFileDirectly failed\n");
++		if (std::getenv("FS_DEBUG")) {
++			std::string p8(filePath.utf16_string.begin(), filePath.utf16_string.end());
++			printf("  [fs] appData=%s archive=%s(%u) archivePathType=%u filePathType=%u ascii='%s' utf16='%s' binaryBytes=%zu perms=%u\n", IOFile::getAppData().string().c_str(), ArchiveID::toString(archiveID).c_str(), archiveID, archivePath.type,
++				   filePath.type, filePath.string.c_str(), p8.c_str(), filePath.binary.size(), openFlags);
++		}
+ 		mem.write32(messagePointer + 4, Result::FS::FileNotFound);
+ 	} else {
+ 		mem.write32(messagePointer + 4, Result::Success);
 diff --git a/third_party/host_memory/host_memory.cpp b/third_party/host_memory/host_memory.cpp
 index 2aaa2f1..95a17d9 100644
 --- a/third_party/host_memory/host_memory.cpp

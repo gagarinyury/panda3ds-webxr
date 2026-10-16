@@ -15,3 +15,7 @@ run/examples/
 run/shots/
 guest-ctr/build-summary.txt
 run/web-reports/
+run/*/
+ios/Site/
+ios/*.xcodeproj/
+ios/build/

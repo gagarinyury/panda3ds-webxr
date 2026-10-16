@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>wasm module stress</title>
+<body style="background:#111;color:#8f8;font:13px ui-monospace,monospace"><pre id="o">starting…</pre>
+<script>
+// Isolates what limits many small WebAssembly modules: instantiate N distinct modules (with imported memory + shared table, like our JIT blocks)
+// and report progress every 256. Modes: inst (module+instance+table.set), mod (compile only, keep modules), table (only grow/fill a table).
+const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda;
+const post = (type, o) => { if (native) native.postMessage(JSON.stringify({ type, ...o })); };
+const params = new URLSearchParams(location.search);
+const N = +params.get('n') || 8192, mode = params.get('mode') || 'inst', imports = +params.get('imports') || 0;
+const out = document.getElementById('o');
+const leb = (n) => { const o = []; n >>>= 0; do { let b = n & 127; n >>>= 7; if (n) b |= 128; o.push(b); } while (n); return o; };
+const sleb = (n) => { n |= 0; const o = []; for (;;) { const b = n & 127; n >>= 7; if ((n === 0 && !(b & 64)) || (n === -1 && (b & 64))) { o.push(b); return o; } o.push(b | 128); } };
+const str = (s) => [...leb(s.length), ...[...s].map((c) => c.charCodeAt(0))];
+const sec = (id, b) => [id, ...leb(b.length), ...b];
+const vec = (xs) => [...leb(xs.length), ...xs.flat()];
+// module: imports memory + table (+ `imports` dummy helper functions), exports b() -> i32 constant; ~100+ bytes, distinct per index
+function makeModule(k) {
+  const imp = [[...str('e'), ...str('m'), 2, 0, 1], [...str('e'), ...str('t'), 1, 0x70, 0, 0]];
+  for (let i = 0; i < imports; i++) imp.push([...str('e'), ...str('h' + i), 0, 0]);
+  const body = [0, 0x41, ...sleb(k), 0x0b];
+  return Uint8Array.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, ...sec(1, vec([[0x60, 0, 1, 0x7f]])), ...sec(2, vec(imp)), ...sec(3, vec([[0]])),
+    ...sec(7, vec([[...str('b'), 0, imports]])), ...sec(10, vec([[...leb(body.length), ...body]]))]);
+}
+(async () => {
+  const mem = new WebAssembly.Memory({ initial: 1 });
+  const table = new WebAssembly.Table({ element: 'anyfunc', initial: 256 });
+  const imp = { e: { m: mem, t: table } };
+  for (let i = 0; i < imports; i++) imp.e['h' + i] = () => 0;
+  const keep = [];
+  const t0 = performance.now(); let tb = t0, fn = null;
+  post('stress_start', { n: N, mode, imports, ua: navigator.userAgent });
+  for (let i = 0; i < N; i++) {
+    if (mode === 'table') {
+      if (!fn) fn = new WebAssembly.Instance(new WebAssembly.Module(makeModule(0)), imp).exports.b;
+    } else {
+      const mod = new WebAssembly.Module(makeModule(i));
+      if (mode === 'mod') keep.push(mod);
+      else { fn = new WebAssembly.Instance(mod, imp).exports.b; keep.push(fn); }
+    }
+    if (mode !== 'mod') { while (i >= table.length) table.grow(table.length); table.set(i, fn); }
+    if (i % 256 === 255) {
+      const now = performance.now();
+      post('stress', { i: i + 1, batchMs: +(now - tb).toFixed(1), totalMs: +(now - t0).toFixed(0), tableLen: table.length });
+      out.textContent = `${i + 1}/${N}  batch ${(now - tb).toFixed(0)} ms  table ${table.length}`; tb = now;
+      await new Promise((r) => setTimeout(r, 0));   // let the host see the progress message
+    }
+  }
+  post('done', { name: 'stress', n: N, mode, totalMs: performance.now() - t0, frames: 0, fps: 0, avgMs: 0, worstMs: 0, late: 0, hitches: 0, blocks: N, jitKB: 0, wasmMB: 0, topLit: 0, bottomLit: 0, errors: [] });
+})().catch((e) => post('error', { msg: String(e) }));
+</script>

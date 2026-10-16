@@ -36,10 +36,10 @@ index b234cd2..9ffbb3c 100644
          target_link_libraries(dynarmic PRIVATE rt)
 diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
 new file mode 100644
-index 0000000..13727ca
+index 0000000..7a85537
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_interface.cpp
-@@ -0,0 +1,315 @@
+@@ -0,0 +1,325 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -98,6 +98,7 @@ index 0000000..13727ca
 +        const inst = new WebAssembly.Instance(mod, imports);
 +        while (slot >= impl.table.length) impl.table.grow(impl.table.length);
 +        impl.table.set(slot, inst.exports.b);
++        impl.count = (impl.count || 0) + 1; impl.bytes = (impl.bytes || 0) + n;
 +        return slot;
 +    } catch (e) {
 +        console.error('[jit] module failed:', e && e.message ? e.message : e);
@@ -261,10 +262,17 @@ index 0000000..13727ca
 +        Backend::Wasm::EmitOptions opt;
 +        opt.link_base = static_cast<u32>(reinterpret_cast<uintptr_t>(link.data()));
 +        opt.link_mask = kLinkEntries - 1;
-+        opt.chain = true;
-+        static const bool slow_fp = std::getenv("JIT_SLOW_FP") != nullptr;  // debugging switch: force the soft-float helpers
++        // debugging switches (environment variables, or Module.ENV in the browser)
++        static const bool no_chain = std::getenv("JIT_NOCHAIN") != nullptr;
++        static const bool chain_tail = std::getenv("JIT_CHAIN_TAIL") != nullptr;   // wasm tail calls (crash WebContent on iPhone, fast on desktop engines)
++        static const bool slow_fp = std::getenv("JIT_SLOW_FP") != nullptr;       // force the soft-float helpers
++        static const bool no_fastmem = std::getenv("JIT_NOFASTMEM") != nullptr;  // always call the memory helpers
++        opt.chain = !no_chain;
++        opt.chain_tail = chain_tail;
 +        opt.fast_fp = !slow_fp;
-+        auto res = Backend::Wasm::EmitA32Block(ir, conf, opt);
++        UserConfig emit_conf = conf;
++        if (no_fastmem) { emit_conf.wasm_read_table = nullptr; emit_conf.wasm_write_table = nullptr; }
++        auto res = Backend::Wasm::EmitA32Block(ir, emit_conf, opt);
 +        if (!res.ok()) {
 +            char buf[64];
 +            std::snprintf(buf, sizeof buf, "block at 0x%08x: ", loc.PC());
@@ -301,6 +309,7 @@ index 0000000..13727ca
 +    const u64 ticks = counting ? cb->GetTicksRemaining() : (u64(1) << 62);
 +    s.cycles_to_run = ticks;
 +    s.ticks_left = ticks;
++    s.chain_depth = 0;
 +
 +    while (static_cast<s64>(s.ticks_left) > 0 && s.halt == 0) {
 +        const int h = impl->GetBlock();
@@ -308,6 +317,7 @@ index 0000000..13727ca
 +            s.halt |= static_cast<u32>(HaltReason::UserDefined8);
 +            break;
 +        }
++        s.chain_depth = 0;
 +        jit_js_run(impl->js_id, h, static_cast<int>(reinterpret_cast<uintptr_t>(&s)));
 +        if (impl->invalidate_pending) {
 +            impl->invalidate_pending = false;
@@ -437,10 +447,10 @@ index 0000000..c924d99
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/a32_jitstate.h b/src/dynarmic/backend/wasm/a32_jitstate.h
 new file mode 100644
-index 0000000..cfbc9df
+index 0000000..95cbcd9
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_jitstate.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,53 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + * Layout and CPSR/FPSCR packing follow Dynarmic's arm64 backend (0BSD).
@@ -480,6 +490,7 @@ index 0000000..cfbc9df
 +    u32 ctx = 0;   ///< Jit::Impl* passed to host helper functions
 +    alignas(8) u64 ticks_left = 0;
 +    u64 cycles_to_run = 0;
++    u32 chain_depth = 0;  ///< nesting depth of chained block calls (non-tail chaining mode)
 +
 +    u32 Cpsr() const;
 +    void SetCpsr(u32 cpsr);
@@ -495,10 +506,10 @@ index 0000000..cfbc9df
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.cpp b/src/dynarmic/backend/wasm/emit_a32.cpp
 new file mode 100644
-index 0000000..8701893
+index 0000000..7150167
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.cpp
-@@ -0,0 +1,1513 @@
+@@ -0,0 +1,1528 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -543,6 +554,7 @@ index 0000000..8701893
 +constexpr u32 kOffHalt = offsetof(A32JitState, halt);
 +constexpr u32 kOffCtx = offsetof(A32JitState, ctx);
 +constexpr u32 kOffTicks = offsetof(A32JitState, ticks_left);
++constexpr u32 kOffDepth = offsetof(A32JitState, chain_depth);
 +
 +class Emitter {
 +public:
@@ -739,15 +751,29 @@ index 0000000..8701893
 +        c.I32And();
 +    }
 +    void EmitChainLookup(u32 entry_local, u32 pc_local, u32 up_local) {
-+        // if (entry.pc == pc && entry.upper == upper) tail-call table[entry.slot](state)
++        // if (entry.pc == pc && entry.upper == upper) run table[entry.slot](state) next
 +        c.LocalGet(entry_local); c.I32Load(0); c.LocalGet(pc_local); c.I32Eq();
 +        c.LocalGet(entry_local); c.I32Load(4); c.LocalGet(up_local); c.I32Eq();
 +        c.I32And();
-+        c.If();
-+        c.LocalGet(0);
-+        c.LocalGet(entry_local); c.I32Load(8);
-+        c.ReturnCallIndirect(0, 0);
-+        c.End();
++        if (opt.chain_tail) {
++            c.If();
++            c.LocalGet(0);
++            c.LocalGet(entry_local); c.I32Load(8);
++            c.ReturnCallIndirect(0, 0);
++            c.End();
++        } else {
++            // Nested call with a bounded depth: the callee chains further; when the limit is hit everything unwinds back to the host loop.
++            c.LocalGet(0); c.I32Load(kOffDepth); c.I32Const(static_cast<s32>(opt.chain_depth_limit)); c.I32LtU();
++            c.I32And();
++            c.If();
++            c.LocalGet(0); c.LocalGet(0); c.I32Load(kOffDepth); c.I32Const(1); c.I32Add(); c.I32Store(kOffDepth);
++            c.LocalGet(0);
++            c.LocalGet(entry_local); c.I32Load(8);
++            c.CallIndirect(0, 0);
++            c.LocalGet(0); c.LocalGet(0); c.I32Load(kOffDepth); c.I32Const(1); c.I32Sub(); c.I32Store(kOffDepth);
++            c.Return();
++            c.End();
++        }
 +    }
 +    void ChainStatic(u32 pc, u32 upper) {
 +        if (!opt.chain) return;
@@ -2014,10 +2040,10 @@ index 0000000..8701893
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.h b/src/dynarmic/backend/wasm/emit_a32.h
 new file mode 100644
-index 0000000..0d24f32
+index 0000000..d1f6550
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.h
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,66 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + */
@@ -2071,6 +2097,8 @@ index 0000000..0d24f32
 +    u32 link_base = 0;      ///< address of the link cache (array of LinkEntry)
 +    u32 link_mask = 0;      ///< number of entries - 1 (power of two minus one)
 +    bool chain = false;
++    bool chain_tail = false;  ///< true: wasm tail calls (return_call_indirect); false: nested call_indirect with a depth limit
++    u32 chain_depth_limit = 160;
 +    bool fast_fp = false;   ///< inline VFP for round-to-nearest / round-to-zero modes (exception flags are not accumulated on this path)
 +};
 +struct LinkEntry {
@@ -2441,10 +2469,10 @@ index 0000000..20f847b
 +}  // namespace Dynarmic::Backend::Wasm::FPSoft
 diff --git a/src/dynarmic/backend/wasm/wasm_builder.h b/src/dynarmic/backend/wasm/wasm_builder.h
 new file mode 100644
-index 0000000..5ae7d8e
+index 0000000..f0cb5b3
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/wasm_builder.h
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,128 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + * Minimal WebAssembly binary writer (MVP + sign-extension ops).
@@ -2512,6 +2540,7 @@ index 0000000..5ae7d8e
 +    void LocalSet(u32 i) { Op(0x21); LebU(b, i); }
 +    void LocalTee(u32 i) { Op(0x22); LebU(b, i); }
 +    void Call(u32 f) { Op(0x10); LebU(b, f); }
++    void CallIndirect(u32 type, u32 table) { Op(0x11); LebU(b, type); LebU(b, table); }
 +    void ReturnCallIndirect(u32 type, u32 table) { Op(0x13); LebU(b, type); LebU(b, table); }
 +
 +    void I32Load(u32 off) { Op(0x28); Op(2); LebU(b, off); }
