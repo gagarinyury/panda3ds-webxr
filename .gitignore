@@ -8,3 +8,4 @@ tests/jit/out/
 guest/out/
 run/*.3dsx
 tests/fp/out/
+tests/jit/out/

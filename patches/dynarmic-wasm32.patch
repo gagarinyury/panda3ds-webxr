@@ -36,10 +36,10 @@ index b234cd2..9ffbb3c 100644
          target_link_libraries(dynarmic PRIVATE rt)
 diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
 new file mode 100644
-index 0000000..3768038
+index 0000000..204bcf4
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_interface.cpp
-@@ -0,0 +1,279 @@
+@@ -0,0 +1,315 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -72,14 +72,22 @@ index 0000000..3768038
 +EM_JS_DEPS(dynarmic_wasm_deps, "$UTF8ToString,$getWasmTableEntry");
 +
 +EM_JS(void, jit_js_register_helper, (const char* name, int fn), {
-+    if (!Module.jit) Module.jit = { blocks: [], helpers: {} };
++    if (!Module.jit) Module.jit = { impls: [], helpers: {} };
 +    Module.jit.helpers[UTF8ToString(name)] = getWasmTableEntry(fn);
 +});
 +
-+EM_JS(int, jit_js_compile, (const uint8_t* p, int n), {
++EM_JS(int, jit_js_new_impl, (), {
++    if (!Module.jit) Module.jit = { impls: [], helpers: {} };
++    Module.jit.impls.push({ table: new WebAssembly.Table({ element: 'anyfunc', initial: 256 }) });
++    return Module.jit.impls.length - 1;
++});
++
++// Compiles a block module and installs it in the Impl's function table at `slot`.
++EM_JS(int, jit_js_compile, (int id, int slot, const uint8_t* p, int n), {
 +    try {
++        const impl = Module.jit.impls[id];
 +        const mod = new WebAssembly.Module(HEAPU8.slice(p, p + n));
-+        const imports = { e: { m: wasmMemory } };
++        const imports = { e: { m: wasmMemory, t: impl.table } };
 +        for (const imp of WebAssembly.Module.imports(mod)) {
 +            if (imp.kind === 'function') {
 +                const f = Module.jit.helpers[imp.name];
@@ -88,17 +96,19 @@ index 0000000..3768038
 +            }
 +        }
 +        const inst = new WebAssembly.Instance(mod, imports);
-+        Module.jit.blocks.push(inst.exports.b);
-+        return Module.jit.blocks.length - 1;
++        while (slot >= impl.table.length) impl.table.grow(impl.table.length);
++        impl.table.set(slot, inst.exports.b);
++        return slot;
 +    } catch (e) {
 +        console.error('[jit] module failed:', e && e.message ? e.message : e);
 +        return -1;
 +    }
 +});
 +
-+EM_JS(int, jit_js_run, (int handle, int state), { return Module.jit.blocks[handle](state); });
++EM_JS(int, jit_js_run, (int id, int slot, int state), { return Module.jit.impls[id].table.get(slot)(state); });
 +
-+EM_JS(void, jit_js_clear, (), { if (Module.jit) Module.jit.blocks = []; });
++// Drops all compiled blocks: a fresh table (old blocks keep a reference to the old one but are never entered again).
++EM_JS(void, jit_js_clear, (int id), { Module.jit.impls[id].table = new WebAssembly.Table({ element: 'anyfunc', initial: 256 }); });
 +
 +namespace Dynarmic::A32 {
 +
@@ -121,11 +131,16 @@ index 0000000..3768038
 +#undef REG
 +        }
 +        st.ctx = static_cast<u32>(reinterpret_cast<uintptr_t>(this));
++        js_id = jit_js_new_impl();
 +    }
 +
 +    UserConfig conf;
 +    Backend::Wasm::A32JitState st;
-+    std::unordered_map<u64, int> cache;  // location descriptor -> JS block handle
++    static constexpr u32 kLinkEntries = 1u << 14;
++    std::unordered_map<u64, u32> cache;  // location descriptor -> slot in the function table
++    std::vector<Backend::Wasm::LinkEntry> link = std::vector<Backend::Wasm::LinkEntry>(kLinkEntries, Backend::Wasm::LinkEntry{0xFFFFFFFFu, 0, 0, 0});
++    int js_id = -1;
++    u32 next_slot = 0;
 +    bool invalidate_pending = false;
 +    std::string last_error;
 +
@@ -220,9 +235,18 @@ index 0000000..3768038
 +    }
 +
 +    // ----- translation -----
++    void InstallLink(u64 key, u32 slot) {
++        const u32 pc = static_cast<u32>(key), upper = static_cast<u32>(key >> 32);
++        link[(pc >> 1) & (kLinkEntries - 1)] = {pc, upper, slot, 0};
++    }
++
++    // Returns the function-table slot of the block at the current location, translating it if necessary; -1 on failure.
 +    int GetBlock() {
 +        const u64 key = st.GetLocationDescriptor().Value();
-+        if (auto it = cache.find(key); it != cache.end()) return it->second;
++        if (auto it = cache.find(key); it != cache.end()) {
++            InstallLink(key, it->second);
++            return static_cast<int>(it->second);
++        }
 +
 +        const LocationDescriptor loc{IR::LocationDescriptor{key}};
 +        static const bool trace = std::getenv("JIT_TRACE") != nullptr;
@@ -234,7 +258,13 @@ index 0000000..3768038
 +        Optimization::DeadCodeElimination(ir);
 +        Optimization::IdentityRemovalPass(ir);
 +
-+        auto res = Backend::Wasm::EmitA32Block(ir, conf);
++        Backend::Wasm::EmitOptions opt;
++        opt.link_base = static_cast<u32>(reinterpret_cast<uintptr_t>(link.data()));
++        opt.link_mask = kLinkEntries - 1;
++        opt.chain = true;
++        static const bool slow_fp = std::getenv("JIT_SLOW_FP") != nullptr;  // debugging switch: force the soft-float helpers
++        opt.fast_fp = !slow_fp;
++        auto res = Backend::Wasm::EmitA32Block(ir, conf, opt);
 +        if (!res.ok()) {
 +            char buf[64];
 +            std::snprintf(buf, sizeof buf, "block at 0x%08x: ", loc.PC());
@@ -242,13 +272,21 @@ index 0000000..3768038
 +            std::fprintf(stderr, "[jit] %s\n", last_error.c_str());
 +            return -1;
 +        }
-+        const int h = jit_js_compile(res.bytes.data(), static_cast<int>(res.bytes.size()));
-+        if (h < 0) {
++        const u32 slot = next_slot++;
++        if (jit_js_compile(js_id, static_cast<int>(slot), res.bytes.data(), static_cast<int>(res.bytes.size())) < 0) {
 +            last_error = "WebAssembly module rejected";
 +            return -1;
 +        }
-+        cache[key] = h;
-+        return h;
++        cache[key] = slot;
++        InstallLink(key, slot);
++        return static_cast<int>(slot);
++    }
++
++    void DropAllBlocks() {
++        cache.clear();
++        std::fill(link.begin(), link.end(), Backend::Wasm::LinkEntry{0xFFFFFFFFu, 0, 0, 0});
++        next_slot = 0;
++        jit_js_clear(js_id);
 +    }
 +};
 +
@@ -270,11 +308,10 @@ index 0000000..3768038
 +            s.halt |= static_cast<u32>(HaltReason::UserDefined8);
 +            break;
 +        }
-+        jit_js_run(h, static_cast<int>(reinterpret_cast<uintptr_t>(&s)));
++        jit_js_run(impl->js_id, h, static_cast<int>(reinterpret_cast<uintptr_t>(&s)));
 +        if (impl->invalidate_pending) {
 +            impl->invalidate_pending = false;
-+            impl->cache.clear();
-+            jit_js_clear();
++            impl->DropAllBlocks();
 +            s.halt &= ~static_cast<u32>(HaltReason::CacheInvalidation);
 +        }
 +    }
@@ -289,8 +326,7 @@ index 0000000..3768038
 +    impl->invalidate_pending = true;
 +    if (!is_executing) {
 +        impl->invalidate_pending = false;
-+        impl->cache.clear();
-+        jit_js_clear();
++        impl->DropAllBlocks();
 +    } else {
 +        impl->st.halt |= static_cast<u32>(HaltReason::CacheInvalidation);
 +    }
@@ -459,10 +495,10 @@ index 0000000..cfbc9df
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.cpp b/src/dynarmic/backend/wasm/emit_a32.cpp
 new file mode 100644
-index 0000000..883050f
+index 0000000..04d919c
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.cpp
-@@ -0,0 +1,882 @@
+@@ -0,0 +1,1146 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -510,7 +546,7 @@ index 0000000..883050f
 +
 +class Emitter {
 +public:
-+    Emitter(IR::Block& b, const A32::UserConfig& cfg) : block(b), conf(cfg) {}
++    Emitter(IR::Block& b, const A32::UserConfig& cfg, const EmitOptions& o) : block(b), conf(cfg), opt(o) {}
 +
 +    EmitResult Run() {
 +        EmitResult res;
@@ -523,6 +559,8 @@ index 0000000..883050f
 +private:
 +    IR::Block& block;
 +    const A32::UserConfig& conf;
++    const EmitOptions opt;
++    bool uses_table = false;
 +    Code c;
 +    std::vector<u8> extra_locals;  // types of locals after the single parameter (the state pointer)
 +    std::unordered_map<const IR::Inst*, u32> local_of;
@@ -652,7 +690,7 @@ index 0000000..883050f
 +    void EmitTerm(const IR::Terminal& t, IR::LocationDescriptor initial) {
 +        if (auto* p = boost::get<IR::Term::LinkBlock>(&t)) { EmitLink(p->next, initial); }
 +        else if (auto* p2 = boost::get<IR::Term::LinkBlockFast>(&t)) { EmitLink(p2->next, initial); }
-+        else if (boost::get<IR::Term::ReturnToDispatch>(&t) || boost::get<IR::Term::PopRSBHint>(&t) || boost::get<IR::Term::FastDispatchHint>(&t)) { Ret(0); }
++        else if (boost::get<IR::Term::ReturnToDispatch>(&t) || boost::get<IR::Term::PopRSBHint>(&t) || boost::get<IR::Term::FastDispatchHint>(&t)) { ChainDynamic(); Ret(0); }
 +        else if (auto* i = boost::get<IR::Term::Interpret>(&t)) {
 +            PushCtx();
 +            c.I32Const(static_cast<s32>(A32::LocationDescriptor{i->next}.PC()));
@@ -689,7 +727,53 @@ index 0000000..883050f
 +        c.LocalGet(0);
 +        c.I32Const(static_cast<s32>(A32::LocationDescriptor{next}.PC()));
 +        c.I32Store(kOffRegs + 4 * 15);
++        ChainStatic(A32::LocationDescriptor{next}.PC(), UpperOf(next));
 +        Ret(0);
++    }
++
++    // ----- block chaining (tail calls through the shared function table) -----
++    // Leaves nothing on the stack; falls through when the chain cannot continue (cache miss, out of ticks, halt requested).
++    void EmitChainGuard() {  // pushes 1 if we may continue running guest code without returning to the host loop
++        c.LocalGet(0); c.I64Load(kOffTicks); c.I64Const(0); c.I64GtS();
++        StateLoad32(kOffHalt); c.I32Eqz();
++        c.I32And();
++    }
++    void EmitChainLookup(u32 entry_local, u32 pc_local, u32 up_local) {
++        // if (entry.pc == pc && entry.upper == upper) tail-call table[entry.slot](state)
++        c.LocalGet(entry_local); c.I32Load(0); c.LocalGet(pc_local); c.I32Eq();
++        c.LocalGet(entry_local); c.I32Load(4); c.LocalGet(up_local); c.I32Eq();
++        c.I32And();
++        c.If();
++        c.LocalGet(0);
++        c.LocalGet(entry_local); c.I32Load(8);
++        c.ReturnCallIndirect(0, 0);
++        c.End();
++    }
++    void ChainStatic(u32 pc, u32 upper) {
++        if (!opt.chain) return;
++        uses_table = true;
++        const u32 idx = (pc >> 1) & opt.link_mask;
++        const u32 entry = Tmp(I32), pcl = Tmp(I32), upl = Tmp(I32);
++        EmitChainGuard();
++        c.If();
++        c.I32Const(static_cast<s32>(opt.link_base + idx * sizeof(LinkEntry))); c.LocalSet(entry);
++        c.I32Const(static_cast<s32>(pc)); c.LocalSet(pcl);
++        c.I32Const(static_cast<s32>(upper)); c.LocalSet(upl);
++        EmitChainLookup(entry, pcl, upl);
++        c.End();
++    }
++    void ChainDynamic() {
++        if (!opt.chain) return;
++        uses_table = true;
++        const u32 entry = Tmp(I32), pcl = Tmp(I32), upl = Tmp(I32);
++        EmitChainGuard();
++        c.If();
++        StateLoad32(kOffRegs + 4 * 15); c.LocalSet(pcl);
++        StateLoad32(kOffUpper); c.LocalSet(upl);
++        c.LocalGet(pcl); c.I32Const(1); c.I32ShrU(); c.I32Const(static_cast<s32>(opt.link_mask)); c.I32And();
++        c.I32Const(4); c.I32Shl(); c.I32Const(static_cast<s32>(opt.link_base)); c.I32Add(); c.LocalSet(entry);
++        EmitChainLookup(entry, pcl, upl);
++        c.End();
 +    }
 +
 +    // ---------- main ----------
@@ -979,23 +1063,23 @@ index 0000000..883050f
 +        case Opcode::A32ClearExclusive: PushCtx(); CallHelper("clrex"); return;
 +
 +        // ----- memory -----
-+        case Opcode::A32ReadMemory8: case Opcode::A32ReadMemory16: case Opcode::A32ReadMemory32: case Opcode::A32ReadMemory64:
++        case Opcode::A32ReadMemory8: EmitFastRead(inst, 1, "r8"); return;
++        case Opcode::A32ReadMemory16: EmitFastRead(inst, 2, "r16"); return;
++        case Opcode::A32ReadMemory32: EmitFastRead(inst, 4, "r32"); return;
++        case Opcode::A32ReadMemory64: EmitFastRead(inst, 8, "r64"); return;
 +        case Opcode::A32ExclusiveReadMemory8: case Opcode::A32ExclusiveReadMemory16: case Opcode::A32ExclusiveReadMemory32: case Opcode::A32ExclusiveReadMemory64: {
-+            static const char* names[] = {"r8", "r16", "r32", "r64", "xr8", "xr16", "xr32", "xr64"};
-+            const int k = op == Opcode::A32ReadMemory8 ? 0 : op == Opcode::A32ReadMemory16 ? 1 : op == Opcode::A32ReadMemory32 ? 2 : op == Opcode::A32ReadMemory64 ? 3
-+                        : op == Opcode::A32ExclusiveReadMemory8 ? 4 : op == Opcode::A32ExclusiveReadMemory16 ? 5 : op == Opcode::A32ExclusiveReadMemory32 ? 6 : 7;
++            static const char* names[] = {"xr8", "xr16", "xr32", "xr64"};
++            const int k = op == Opcode::A32ExclusiveReadMemory8 ? 0 : op == Opcode::A32ExclusiveReadMemory16 ? 1 : op == Opcode::A32ExclusiveReadMemory32 ? 2 : 3;
 +            PushCtx(); Ld(inst->GetArg(1)); CallHelper(names[k]);
-+            if (k % 4 == 0) { c.I32Const(0xff); c.I32And(); }
-+            if (k % 4 == 1) { c.I32Const(0xffff); c.I32And(); }
++            if (k == 0) { c.I32Const(0xff); c.I32And(); }
++            if (k == 1) { c.I32Const(0xffff); c.I32And(); }
 +            Set(inst);
 +            return;
 +        }
-+        case Opcode::A32WriteMemory8: case Opcode::A32WriteMemory16: case Opcode::A32WriteMemory32: case Opcode::A32WriteMemory64: {
-+            static const char* names[] = {"w8", "w16", "w32", "w64"};
-+            const int k = op == Opcode::A32WriteMemory8 ? 0 : op == Opcode::A32WriteMemory16 ? 1 : op == Opcode::A32WriteMemory32 ? 2 : 3;
-+            PushCtx(); Ld(inst->GetArg(1)); Ld(inst->GetArg(2)); CallHelper(names[k]);
-+            return;
-+        }
++        case Opcode::A32WriteMemory8: EmitFastWrite(inst, 1, "w8"); return;
++        case Opcode::A32WriteMemory16: EmitFastWrite(inst, 2, "w16"); return;
++        case Opcode::A32WriteMemory32: EmitFastWrite(inst, 4, "w32"); return;
++        case Opcode::A32WriteMemory64: EmitFastWrite(inst, 8, "w64"); return;
 +        case Opcode::A32ExclusiveWriteMemory8: case Opcode::A32ExclusiveWriteMemory16: case Opcode::A32ExclusiveWriteMemory32: case Opcode::A32ExclusiveWriteMemory64: {
 +            static const char* names[] = {"xw8", "xw16", "xw32", "xw64"};
 +            const int k = op == Opcode::A32ExclusiveWriteMemory8 ? 0 : op == Opcode::A32ExclusiveWriteMemory16 ? 1 : op == Opcode::A32ExclusiveWriteMemory32 ? 2 : 3;
@@ -1153,8 +1237,17 @@ index 0000000..883050f
 +            return;
 +        }
 +        // ----- VFP scalar floating point (bit-exact soft-float helpers; FPCR is known per block) -----
-+        case Opcode::FPAdd32: case Opcode::FPSub32: case Opcode::FPMul32: case Opcode::FPDiv32:
++        case Opcode::FPAdd32: if (FastFp32(inst, 0)) return; goto fp_generic;
++        case Opcode::FPSub32: if (FastFp32(inst, 1)) return; goto fp_generic;
++        case Opcode::FPMul32: if (FastFp32(inst, 2)) return; goto fp_generic;
++        case Opcode::FPDiv32: if (FastFp32(inst, 3)) return; goto fp_generic;
++        case Opcode::FPSqrt32: if (FastFp32(inst, 4)) return; goto fp_generic;
++        fp_generic:
 +        case Opcode::FPAdd64: case Opcode::FPSub64: case Opcode::FPMul64: case Opcode::FPDiv64: {
++            if (op == Opcode::FPSqrt32) {
++                PushCtx(); c.I32Const(static_cast<s32>(Fpcr())); Ld(inst->GetArg(0)); CallHelper("fsqrt32"); Set(inst);
++                return;
++            }
 +            const bool is64 = op == Opcode::FPAdd64 || op == Opcode::FPSub64 || op == Opcode::FPMul64 || op == Opcode::FPDiv64;
 +            static const char* n32[] = {"fadd32", "fsub32", "fmul32", "fdiv32"};
 +            static const char* n64[] = {"fadd64", "fsub64", "fmul64", "fdiv64"};
@@ -1164,15 +1257,16 @@ index 0000000..883050f
 +            CallHelper(is64 ? n64[k] : n32[k]); Set(inst);
 +            return;
 +        }
-+        case Opcode::FPSqrt32: case Opcode::FPSqrt64:
++        case Opcode::FPSqrt64:
 +            PushCtx(); c.I32Const(static_cast<s32>(Fpcr())); Ld(inst->GetArg(0));
-+            CallHelper(op == Opcode::FPSqrt32 ? "fsqrt32" : "fsqrt64"); Set(inst);
++            CallHelper("fsqrt64"); Set(inst);
 +            return;
 +        case Opcode::FPAbs32: Ld(inst->GetArg(0)); c.I32Const(0x7fffffff); c.I32And(); Set(inst); return;
 +        case Opcode::FPNeg32: Ld(inst->GetArg(0)); c.I32Const(static_cast<s32>(0x80000000u)); c.I32Xor(); Set(inst); return;
 +        case Opcode::FPAbs64: Ld(inst->GetArg(0)); c.I64Const(0x7fffffffffffffffLL); c.I64And(); Set(inst); return;
 +        case Opcode::FPNeg64: Ld(inst->GetArg(0)); c.I64Const(static_cast<s64>(0x8000000000000000ULL)); c.I64Xor(); Set(inst); return;
 +        case Opcode::FPCompare32: case Opcode::FPCompare64:
++            if (op == Opcode::FPCompare32 && FastCompare32(inst)) return;
 +            PushCtx(); c.I32Const(static_cast<s32>(Fpcr())); Ld(inst->GetArg(0)); Ld(inst->GetArg(1)); Ld(inst->GetArg(2));
 +            CallHelper(op == Opcode::FPCompare32 ? "fcmp32" : "fcmp64"); Set(inst);
 +            return;
@@ -1211,6 +1305,211 @@ index 0000000..883050f
 +        }
 +    }
 +
++    // Inline page-table access (same tables Panda3DS uses): aligned, non-page-crossing accesses to mapped pages go straight to
++    // host memory; everything else (unaligned, MMIO / unmapped) calls the host helper.
++    void EmitFastRead(IR::Inst* inst, int size, const char* slow) {
++        const bool wide = size == 8;
++        if (!conf.wasm_read_table) {
++            PushCtx(); Ld(inst->GetArg(1)); CallHelper(slow);
++            if (size == 1) { c.I32Const(0xff); c.I32And(); }
++            if (size == 2) { c.I32Const(0xffff); c.I32And(); }
++            Set(inst);
++            return;
++        }
++        const u32 v = Tmp(I32), pte = Tmp(I32);
++        Ld(inst->GetArg(1)); c.LocalSet(v);
++        c.Block(wide ? I64 : I32);   // $done
++        c.Block();                   // $slow
++        if (size > 1) { c.LocalGet(v); c.I32Const(size == 2 ? 1 : 3); c.I32And(); c.BrIf(0); }
++        if (wide) { c.LocalGet(v); c.I32Const(0xfff); c.I32And(); c.I32Const(0xff8); c.I32GtU(); c.BrIf(0); }
++        c.I32Const(static_cast<s32>(reinterpret_cast<uintptr_t>(conf.wasm_read_table)));
++        c.LocalGet(v); c.I32Const(12); c.I32ShrU(); c.I32Const(2); c.I32Shl(); c.I32Add(); c.I32Load(0);
++        c.LocalTee(pte); c.I32Eqz(); c.BrIf(0);
++        c.LocalGet(pte); c.LocalGet(v); c.I32Const(0xfff); c.I32And(); c.I32Add();
++        if (size == 1) c.I32Load8U(0); else if (size == 2) c.I32Load16U(0); else if (size == 4) c.I32Load(0); else c.I64Load(0);
++        c.Br(1);
++        c.End();                     // $slow
++        PushCtx(); c.LocalGet(v); CallHelper(slow);
++        if (size == 1) { c.I32Const(0xff); c.I32And(); }
++        if (size == 2) { c.I32Const(0xffff); c.I32And(); }
++        c.End();                     // $done
++        Set(inst);
++    }
++    void EmitFastWrite(IR::Inst* inst, int size, const char* slow) {
++        const bool wide = size == 8;
++        if (!conf.wasm_write_table) {
++            PushCtx(); Ld(inst->GetArg(1)); Ld(inst->GetArg(2)); CallHelper(slow);
++            return;
++        }
++        const u32 v = Tmp(I32), pte = Tmp(I32), val = Tmp(wide ? I64 : I32);
++        Ld(inst->GetArg(1)); c.LocalSet(v);
++        Ld(inst->GetArg(2)); c.LocalSet(val);
++        c.Block();                   // $done
++        c.Block();                   // $slow
++        if (size > 1) { c.LocalGet(v); c.I32Const(size == 2 ? 1 : 3); c.I32And(); c.BrIf(0); }
++        if (wide) { c.LocalGet(v); c.I32Const(0xfff); c.I32And(); c.I32Const(0xff8); c.I32GtU(); c.BrIf(0); }
++        c.I32Const(static_cast<s32>(reinterpret_cast<uintptr_t>(conf.wasm_write_table)));
++        c.LocalGet(v); c.I32Const(12); c.I32ShrU(); c.I32Const(2); c.I32Shl(); c.I32Add(); c.I32Load(0);
++        c.LocalTee(pte); c.I32Eqz(); c.BrIf(0);
++        c.LocalGet(pte); c.LocalGet(v); c.I32Const(0xfff); c.I32And(); c.I32Add();
++        c.LocalGet(val);
++        if (size == 1) c.I32Store8(0); else if (size == 2) c.I32Store16(0); else if (size == 4) c.I32Store(0); else c.I64Store(0);
++        c.Br(1);
++        c.End();                     // $slow
++        PushCtx(); c.LocalGet(v); c.LocalGet(val); CallHelper(slow);
++        c.End();                     // $done
++    }
++
++    // ---------------------------------------------------------------------------------------------------------
++    // Inline VFP (single precision) for round-to-nearest and round-to-zero modes, with flush-to-zero / default-NaN handled here.
++    // Anything involving a NaN (or the one rounding corner we cannot decide) is delegated to the bit-exact soft-float helper, which
++    // also accumulates the exception flags. The inline path does not update FPSR exception bits.
++    // ---------------------------------------------------------------------------------------------------------
++    static constexpr s32 kAbsMask = 0x7fffffff, kSignMask = static_cast<s32>(0x80000000u), kInf = 0x7f800000, kMinNormal = 0x00800000;
++
++    void IsNaN32(u32 bits_local) { c.LocalGet(bits_local); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kInf); c.I32GtU(); }
++    void Flush32(u32 src, u32 dst) {  // denormal -> signed zero
++        c.LocalGet(src); c.I32Const(kSignMask); c.I32And();
++        c.LocalGet(src);
++        c.LocalGet(src); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kMinNormal); c.I32LtU();
++        c.Select(); c.LocalSet(dst);
++    }
++    // bits -= 1 (one ulp toward zero) when `cond` (an i32 on the stack) is non-zero
++    void StepTowardZeroIf(u32 bits) {
++        c.If();
++        c.LocalGet(bits); c.I32Const(1); c.I32Sub(); c.LocalSet(bits);
++        c.End();
++    }
++    // if bits is +-inf while all given operands (bit locals) are finite: bits = +-max finite
++    void FixOverflow(u32 bits, std::initializer_list<u32> operands) {
++        c.LocalGet(bits); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kInf); c.I32Eq();
++        for (u32 o : operands) { c.LocalGet(o); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kInf); c.I32LtU(); c.I32And(); }
++        c.If();
++        c.LocalGet(bits); c.I32Const(kSignMask); c.I32And(); c.I32Const(0x7f7fffff); c.I32Or(); c.LocalSet(bits);
++        c.End();
++    }
++
++    // kind: 0 add, 1 sub, 2 mul, 3 div, 4 sqrt
++    bool FastFp32(IR::Inst* inst, int kind) {
++        if (!opt.fast_fp) return false;
++        const u32 fpcr = Fpcr();
++        const int rm = (fpcr >> 22) & 3;
++        const bool fz = (fpcr >> 24) & 1;
++        if (rm != 0 && rm != 3) return false;
++        const bool unary = kind == 4, rz = rm == 3;
++
++        const u32 ra = Tmp(I32), rb = Tmp(I32);
++        Ld(inst->GetArg(0)); c.LocalSet(ra);
++        if (unary) { c.I32Const(0); c.LocalSet(rb); } else { Ld(inst->GetArg(1)); c.LocalSet(rb); }
++        u32 ia = ra, ib = rb;
++        if (fz) { ia = Tmp(I32); ib = Tmp(I32); Flush32(ra, ia); if (!unary) Flush32(rb, ib); else { c.I32Const(0); c.LocalSet(ib); } }
++
++        const u32 fa = Tmp(F32), fb = Tmp(F32), rbits = Tmp(I32);
++        c.LocalGet(ia); c.F32ReinterpretI32(); c.LocalSet(fa);
++        c.LocalGet(ib); if (kind == 1) { c.I32Const(kSignMask); c.I32Xor(); } c.F32ReinterpretI32(); c.LocalSet(fb);
++
++        if (!rz) {
++            c.LocalGet(fa);
++            if (kind == 4) c.F32Sqrt(); else { c.LocalGet(fb); if (kind <= 1) c.F32Add(); else if (kind == 2) c.F32Mul(); else c.F32Div(); }
++            c.I32ReinterpretF32(); c.LocalSet(rbits);
++        } else if (kind <= 1) {  // add / sub, round toward zero via the exact TwoSum error
++            const u32 s = Tmp(F32), bb = Tmp(F32), e = Tmp(F32), ebits = Tmp(I32);
++            c.LocalGet(fa); c.LocalGet(fb); c.F32Add(); c.LocalSet(s);
++            c.LocalGet(s); c.LocalGet(fa); c.F32Sub(); c.LocalSet(bb);
++            c.LocalGet(fa); c.LocalGet(s); c.LocalGet(bb); c.F32Sub(); c.F32Sub();
++            c.LocalGet(fb); c.LocalGet(bb); c.F32Sub(); c.F32Add(); c.LocalSet(e);
++            c.LocalGet(s); c.I32ReinterpretF32(); c.LocalSet(rbits);
++            c.LocalGet(e); c.I32ReinterpretF32(); c.LocalSet(ebits);
++            // overshoot: finite s, e != 0 and e has the opposite sign of s
++            c.LocalGet(rbits); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kInf); c.I32LtU();
++            c.LocalGet(ebits); c.I32Const(kAbsMask); c.I32And(); c.I32Const(0); c.I32Ne(); c.I32And();
++            c.LocalGet(ebits); c.LocalGet(rbits); c.I32Xor(); c.I32Const(31); c.I32ShrU(); c.I32And();
++            StepTowardZeroIf(rbits);
++            FixOverflow(rbits, {ia, ib});
++        } else if (kind == 2) {  // mul: the f64 product is exact
++            const u32 p = Tmp(F64), s = Tmp(F32);
++            c.LocalGet(fa); c.F64PromoteF32(); c.LocalGet(fb); c.F64PromoteF32(); c.F64Mul(); c.LocalSet(p);
++            c.LocalGet(p); c.F32DemoteF64(); c.LocalSet(s);
++            c.LocalGet(s); c.I32ReinterpretF32(); c.LocalSet(rbits);
++            c.LocalGet(rbits); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kInf); c.I32LtU();
++            c.LocalGet(s); c.F64PromoteF32(); c.F64Abs(); c.LocalGet(p); c.F64Abs(); c.F64Gt(); c.I32And();
++            StepTowardZeroIf(rbits);
++            FixOverflow(rbits, {ia, ib});
++        } else if (kind == 3) {  // div: remainder a - s*b is exact in f64
++            const u32 s = Tmp(F32), rem = Tmp(F64);
++            c.LocalGet(fa); c.LocalGet(fb); c.F32Div(); c.LocalSet(s);
++            c.LocalGet(s); c.I32ReinterpretF32(); c.LocalSet(rbits);
++            c.LocalGet(fa); c.F64PromoteF32(); c.LocalGet(s); c.F64PromoteF32(); c.LocalGet(fb); c.F64PromoteF32(); c.F64Mul(); c.F64Sub(); c.LocalSet(rem);
++            c.LocalGet(rbits); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kInf); c.I32LtU();            // s finite
++            c.LocalGet(rbits); c.I32Const(kAbsMask); c.I32And(); c.I32Const(0); c.I32Ne(); c.I32And();     // s != 0
++            c.LocalGet(rem); c.F64Promote0Ne(); c.I32And();                                              // rem != 0
++            c.LocalGet(rem); c.F64LtZero(); c.LocalGet(ib); c.I32Const(31); c.I32ShrU(); c.I32Xor();     // sign(q - s)
++            c.LocalGet(rbits); c.I32Const(31); c.I32ShrU(); c.I32Ne(); c.I32And();
++            StepTowardZeroIf(rbits);
++            // overflow only when the divisor is a finite non-zero number (x/0 is a true infinity)
++            c.LocalGet(rbits); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kInf); c.I32Eq();
++            c.LocalGet(ia); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kInf); c.I32LtU(); c.I32And();
++            c.LocalGet(ib); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kInf); c.I32LtU(); c.I32And();
++            c.LocalGet(ib); c.I32Const(kAbsMask); c.I32And(); c.I32Const(0); c.I32Ne(); c.I32And();
++            c.If();
++            c.LocalGet(rbits); c.I32Const(kSignMask); c.I32And(); c.I32Const(0x7f7fffff); c.I32Or(); c.LocalSet(rbits);
++            c.End();
++        } else {  // sqrt
++            const u32 s = Tmp(F32), rem = Tmp(F64);
++            c.LocalGet(fa); c.F32Sqrt(); c.LocalSet(s);
++            c.LocalGet(s); c.I32ReinterpretF32(); c.LocalSet(rbits);
++            c.LocalGet(fa); c.F64PromoteF32(); c.LocalGet(s); c.F64PromoteF32(); c.LocalGet(s); c.F64PromoteF32(); c.F64Mul(); c.F64Sub(); c.LocalSet(rem);
++            c.LocalGet(rbits); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kInf); c.I32LtU();
++            c.LocalGet(rem); c.F64LtZero(); c.I32And();
++            StepTowardZeroIf(rbits);
++        }
++        if (fz) {  // flush a denormal result
++            c.LocalGet(rbits); c.I32Const(kSignMask); c.I32And();
++            c.LocalGet(rbits);
++            c.LocalGet(rbits); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kMinNormal); c.I32LtU();
++            c.Select(); c.LocalSet(rbits);
++        }
++        // Delegate to the soft-float helper if a NaN is involved, or (round-to-nearest + flush) the result is exactly the smallest
++        // normal number: the architecture flushes on the *unrounded* magnitude, which we cannot see here.
++        IsNaN32(ra); IsNaN32(rb); c.I32Or(); IsNaN32(rbits); c.I32Or();
++        if (fz && !rz) { c.LocalGet(rbits); c.I32Const(kAbsMask); c.I32And(); c.I32Const(kMinNormal); c.I32Eq(); c.I32Or(); }
++        c.If(I32);
++        PushCtx(); c.I32Const(static_cast<s32>(fpcr)); c.LocalGet(ra);
++        if (!unary) c.LocalGet(rb);
++        { static const char* names[] = {"fadd32", "fsub32", "fmul32", "fdiv32", "fsqrt32"}; CallHelper(names[kind]); }
++        c.Else();
++        c.LocalGet(rbits);
++        c.End();
++        Set(inst);
++        return true;
++    }
++
++    // VCMP: with no NaN involved the result is a plain ordered comparison of the (flushed) operands.
++    bool FastCompare32(IR::Inst* inst) {
++        if (!opt.fast_fp) return false;
++        const u32 fpcr = Fpcr();
++        const bool fz = (fpcr >> 24) & 1;
++        const u32 ra = Tmp(I32), rb = Tmp(I32);
++        Ld(inst->GetArg(0)); c.LocalSet(ra);
++        Ld(inst->GetArg(1)); c.LocalSet(rb);
++        u32 ia = ra, ib = rb;
++        if (fz) { ia = Tmp(I32); ib = Tmp(I32); Flush32(ra, ia); Flush32(rb, ib); }
++        const u32 fa = Tmp(F32), fb = Tmp(F32);
++        c.LocalGet(ia); c.F32ReinterpretI32(); c.LocalSet(fa);
++        c.LocalGet(ib); c.F32ReinterpretI32(); c.LocalSet(fb);
++        IsNaN32(ra); IsNaN32(rb); c.I32Or();
++        c.If(I32);
++        PushCtx(); c.I32Const(static_cast<s32>(fpcr)); c.LocalGet(ra); c.LocalGet(rb); Ld(inst->GetArg(2)); CallHelper("fcmp32");
++        c.Else();
++        c.I32Const(0x60000000);                                            // equal
++        c.I32Const(static_cast<s32>(0x80000000u)); c.I32Const(0x20000000); c.LocalGet(fa); c.LocalGet(fb); c.F32Lt(); c.Select();  // less / greater
++        c.LocalGet(fa); c.LocalGet(fb); c.F32Eq();
++        c.Select();
++        c.End();
++        Set(inst);
++        return true;
++    }
++
 +    void EmitCoproc(IR::Inst* inst);
 +
 +    // ---------- module assembly ----------
@@ -1245,8 +1544,9 @@ index 0000000..883050f
 +        }
 +
 +        Bytes imports;
-+        LebU(imports, 1 + import_order.size());
++        LebU(imports, (uses_table ? 2 : 1) + import_order.size());
 +        Append(imports, Name("e")); Append(imports, Name("m")); imports.push_back(0x02); imports.push_back(0x00); LebU(imports, 1);
++        if (uses_table) { Append(imports, Name("e")); Append(imports, Name("t")); imports.push_back(0x01); imports.push_back(0x70); imports.push_back(0x00); LebU(imports, 0); }
 +        for (size_t i = 0; i < import_order.size(); i++) {
 +            Append(imports, Name("e")); Append(imports, Name(import_order[i].c_str()));
 +            imports.push_back(0x00); LebU(imports, import_types[i]);
@@ -1340,17 +1640,17 @@ index 0000000..883050f
 +
 +}  // namespace
 +
-+EmitResult EmitA32Block(IR::Block& block, const A32::UserConfig& conf) {
-+    return Emitter(block, conf).Run();
++EmitResult EmitA32Block(IR::Block& block, const A32::UserConfig& conf, const EmitOptions& opt) {
++    return Emitter(block, conf, opt).Run();
 +}
 +
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.h b/src/dynarmic/backend/wasm/emit_a32.h
 new file mode 100644
-index 0000000..946b33b
+index 0000000..0d24f32
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,64 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + */
@@ -1398,9 +1698,21 @@ index 0000000..946b33b
 +    bool ok() const { return error.empty(); }
 +};
 +
++// Block chaining: blocks end by tail-calling the next block through a shared function table, found via a direct-mapped
++// cache of {pc, upper location bits, table slot} entries that lives in linear memory.
++struct EmitOptions {
++    u32 link_base = 0;      ///< address of the link cache (array of LinkEntry)
++    u32 link_mask = 0;      ///< number of entries - 1 (power of two minus one)
++    bool chain = false;
++    bool fast_fp = false;   ///< inline VFP for round-to-nearest / round-to-zero modes (exception flags are not accumulated on this path)
++};
++struct LinkEntry {
++    u32 pc, upper, slot, pad;
++};
++
 +// Translates one IR block to a WebAssembly module exporting `b(state: i32) -> i32`
 +// (0 = continue with PC from state, 1 = stop/return to the caller).
-+EmitResult EmitA32Block(IR::Block& block, const A32::UserConfig& conf);
++EmitResult EmitA32Block(IR::Block& block, const A32::UserConfig& conf, const EmitOptions& opt = {});
 +
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/exclusive_monitor.cpp b/src/dynarmic/backend/wasm/exclusive_monitor.cpp
@@ -1762,10 +2074,10 @@ index 0000000..20f847b
 +}  // namespace Dynarmic::Backend::Wasm::FPSoft
 diff --git a/src/dynarmic/backend/wasm/wasm_builder.h b/src/dynarmic/backend/wasm/wasm_builder.h
 new file mode 100644
-index 0000000..6840bc5
+index 0000000..5ae7d8e
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/wasm_builder.h
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,127 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + * Minimal WebAssembly binary writer (MVP + sign-extension ops).
@@ -1820,7 +2132,7 @@ index 0000000..6840bc5
 +    return b;
 +}
 +
-+enum ValType : u8 { I32 = 0x7f, I64 = 0x7e };
++enum ValType : u8 { I32 = 0x7f, I64 = 0x7e, F32 = 0x7d, F64 = 0x7c };
 +
 +// Function body writer. Numeric opcode names follow the spec text format.
 +struct Code {
@@ -1833,13 +2145,20 @@ index 0000000..6840bc5
 +    void LocalSet(u32 i) { Op(0x21); LebU(b, i); }
 +    void LocalTee(u32 i) { Op(0x22); LebU(b, i); }
 +    void Call(u32 f) { Op(0x10); LebU(b, f); }
++    void ReturnCallIndirect(u32 type, u32 table) { Op(0x13); LebU(b, type); LebU(b, table); }
 +
 +    void I32Load(u32 off) { Op(0x28); Op(2); LebU(b, off); }
 +    void I64Load(u32 off) { Op(0x29); Op(3); LebU(b, off); }
 +    void I32Load8U(u32 off) { Op(0x2d); Op(0); LebU(b, off); }
++    void I32Load16U(u32 off) { Op(0x2f); Op(1); LebU(b, off); }
++    void I32Store8(u32 off) { Op(0x3a); Op(0); LebU(b, off); }
++    void I32Store16(u32 off) { Op(0x3b); Op(1); LebU(b, off); }
 +    void I32Store(u32 off) { Op(0x36); Op(2); LebU(b, off); }
 +    void I64Store(u32 off) { Op(0x37); Op(3); LebU(b, off); }
 +
++    void Block(u8 blocktype = 0x40) { Op(0x02); Op(blocktype); }
++    void Br(u32 depth) { Op(0x0c); LebU(b, depth); }
++    void BrIf(u32 depth) { Op(0x0d); LebU(b, depth); }
 +    void If(u8 blocktype = 0x40) { Op(0x04); Op(blocktype); }
 +    void Else() { Op(0x05); }
 +    void End() { Op(0x0b); }
@@ -1859,10 +2178,24 @@ index 0000000..6840bc5
 +    void I32Shl() { Op(0x74); }  void I32ShrS() { Op(0x75); } void I32ShrU() { Op(0x76); }
 +    void I32Rotr() { Op(0x78); }
 +    // i64
++    void I64GtS() { Op(0x55); }
 +    void I64Eqz() { Op(0x50); }  void I64Eq() { Op(0x51); }  void I64Ne() { Op(0x52); }
 +    void I64Add() { Op(0x7c); }  void I64Sub() { Op(0x7d); } void I64Mul() { Op(0x7e); }
 +    void I64And() { Op(0x83); }  void I64Or() { Op(0x84); }  void I64Xor() { Op(0x85); }
 +    void I64Shl() { Op(0x86); }  void I64ShrS() { Op(0x87); } void I64ShrU() { Op(0x88); }
++    // f32 / f64
++    void F32Eq() { Op(0x5b); } void F32Ne() { Op(0x5c); } void F32Lt() { Op(0x5d); } void F32Gt() { Op(0x5e); }
++    void F64Eq() { Op(0x61); } void F64Ne() { Op(0x62); } void F64Lt() { Op(0x63); } void F64Gt() { Op(0x64); }
++    void F32Abs() { Op(0x8b); } void F32Sqrt() { Op(0x91); } void F32Add() { Op(0x92); } void F32Sub() { Op(0x93); } void F32Mul() { Op(0x94); } void F32Div() { Op(0x95); }
++    void F64Abs() { Op(0x99); } void F64Sqrt() { Op(0x9f); } void F64Add() { Op(0xa0); } void F64Sub() { Op(0xa1); } void F64Mul() { Op(0xa2); } void F64Div() { Op(0xa3); }
++    void F64Promote0Ne() { Op(0x44); for (int i = 0; i < 8; i++) Op(0); Op(0x62); }  // f64 != 0.0
++    void F64LtZero() { Op(0x44); for (int i = 0; i < 8; i++) Op(0); Op(0x63); }      // f64 < 0.0
++    void F32DemoteF64() { Op(0xb6); } void F64PromoteF32() { Op(0xbb); }
++    void F32ConvertI32S() { Op(0xb2); } void F32ConvertI32U() { Op(0xb3); } void F64ConvertI32S() { Op(0xb7); } void F64ConvertI32U() { Op(0xb8); }
++    void I32ReinterpretF32() { Op(0xbc); } void F32ReinterpretI32() { Op(0xbe); }
++    void I64ReinterpretF64() { Op(0xbd); } void F64ReinterpretI64() { Op(0xbf); }
++    void I32TruncSatF32S() { Op(0xfc); Op(0x00); } void I32TruncSatF32U() { Op(0xfc); Op(0x01); }
++    void I32TruncSatF64S() { Op(0xfc); Op(0x02); } void I32TruncSatF64U() { Op(0xfc); Op(0x03); }
 +    // conversions
 +    void I32WrapI64() { Op(0xa7); }
 +    void I64ExtendI32S() { Op(0xac); }
@@ -1935,6 +2268,20 @@ index 636ee3a..2861b7d 100644
  #endif
  
      return result;
+diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
+index 360df06..b0b1e59 100644
+--- a/src/dynarmic/interface/A32/config.h
++++ b/src/dynarmic/interface/A32/config.h
+@@ -156,6 +156,9 @@ struct UserConfig {
+     static constexpr std::size_t PAGE_BITS = 12;
+     static constexpr std::size_t NUM_PAGE_TABLE_ENTRIES = 1 << (32 - PAGE_BITS);
+     std::array<std::uint8_t*, NUM_PAGE_TABLE_ENTRIES>* page_table = nullptr;
++    /// WebAssembly backend (wasm32 only): separate read/write page tables (one 32-bit host pointer per 4 KiB page, 0 = use the callbacks).
++    const std::uint32_t* wasm_read_table = nullptr;
++    const std::uint32_t* wasm_write_table = nullptr;
+     /// Determines if the pointer in the page_table shall be offseted locally or globally.
+     /// 'false' will access page_table[addr >> bits][addr & mask]
+     /// 'true'  will access page_table[addr >> bits][addr]
 diff --git a/src/dynarmic/ir/ir_emitter.cpp b/src/dynarmic/ir/ir_emitter.cpp
 index fc4f69b..c1de9a5 100644
 --- a/src/dynarmic/ir/ir_emitter.cpp

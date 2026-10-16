@@ -47,6 +47,37 @@ index 2f4d9df..aa20e27 100644
  if(NOT BUILD_HYDRA_CORE AND NOT BUILD_LIBRETRO_CORE)
      add_executable(Alber)
  
+diff --git a/include/memory.hpp b/include/memory.hpp
+index d21e4be..e5a7fca 100644
+--- a/include/memory.hpp
++++ b/include/memory.hpp
+@@ -313,6 +313,9 @@ class Memory {
+ 
+ 	std::optional<u64> getProgramID();
+ 
++	// Page tables (one host pointer per 4 KiB page, 0 = slow path); exposed so the WebAssembly JIT can inline guest memory accesses
++	const uintptr_t* getReadTableBase() const { return readTable.data(); }
++	const uintptr_t* getWriteTableBase() const { return writeTable.data(); }
+ 	u8* getDSPMem() { return dspRam; }
+ 	u8* getDSPDataMem() { return &dspRam[DSP_DATA_MEMORY_OFFSET]; }
+ 	u8* getDSPCodeMem() { return &dspRam[DSP_CODE_MEMORY_OFFSET]; }
+diff --git a/src/core/CPU/cpu_dynarmic.cpp b/src/core/CPU/cpu_dynarmic.cpp
+index 124647d..a317f28 100644
+--- a/src/core/CPU/cpu_dynarmic.cpp
++++ b/src/core/CPU/cpu_dynarmic.cpp
+@@ -22,6 +22,12 @@ CPU::CPU(Memory& mem, Kernel& kernel, Emulator& emu) : mem(mem), emu(emu), sched
+ 		config.fastmem_pointer = std::nullopt;
+ 	}
+ 
++#ifdef __EMSCRIPTEN__
++	// WebAssembly JIT: let generated code index the guest page tables directly
++	config.wasm_read_table = reinterpret_cast<const u32*>(mem.getReadTableBase());
++	config.wasm_write_table = reinterpret_cast<const u32*>(mem.getWriteTableBase());
++#endif
++
+ 	jit = std::make_unique<Dynarmic::A32::Jit>(config);
+ }
+ 
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
 index 659a1e1..7127c0c 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
