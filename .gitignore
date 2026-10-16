@@ -11,3 +11,6 @@ tests/fp/out/
 tests/jit/out/
 guest-ctr/3ds-examples/
 run/shot-*
+run/examples/
+run/shots/
+guest-ctr/build-summary.txt
