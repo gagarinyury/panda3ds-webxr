@@ -1,0 +1,41 @@
+diff --git a/src/dynarmic/common/fp/op/FPRecipExponent.cpp b/src/dynarmic/common/fp/op/FPRecipExponent.cpp
+index 171b94e..9ed8637 100644
+--- a/src/dynarmic/common/fp/op/FPRecipExponent.cpp
++++ b/src/dynarmic/common/fp/op/FPRecipExponent.cpp
+@@ -17,7 +17,7 @@
+ namespace Dynarmic::FP {
+ namespace {
+ template<typename FPT>
+-FPT DetermineExponentValue(size_t value) {
++FPT DetermineExponentValue(u64 value) {
+     if constexpr (sizeof(FPT) == sizeof(u32)) {
+         return static_cast<FPT>(mcl::bit::get_bits<23, 30>(value));
+     } else if constexpr (sizeof(FPT) == sizeof(u64)) {
+diff --git a/src/dynarmic/ir/ir_emitter.cpp b/src/dynarmic/ir/ir_emitter.cpp
+index fc4f69b..c1de9a5 100644
+--- a/src/dynarmic/ir/ir_emitter.cpp
++++ b/src/dynarmic/ir/ir_emitter.cpp
+@@ -2868,19 +2868,19 @@ void IREmitter::Breakpoint() {
+ }
+ 
+ void IREmitter::CallHostFunction(void (*fn)(void)) {
+-    Inst(Opcode::CallHostFunction, Imm64(mcl::bit_cast<u64>(fn)), Value{}, Value{}, Value{});
++    Inst(Opcode::CallHostFunction, Imm64(static_cast<u64>(reinterpret_cast<uintptr_t>(fn))), Value{}, Value{}, Value{});
+ }
+ 
+ void IREmitter::CallHostFunction(void (*fn)(u64), const U64& arg1) {
+-    Inst(Opcode::CallHostFunction, Imm64(mcl::bit_cast<u64>(fn)), arg1, Value{}, Value{});
++    Inst(Opcode::CallHostFunction, Imm64(static_cast<u64>(reinterpret_cast<uintptr_t>(fn))), arg1, Value{}, Value{});
+ }
+ 
+ void IREmitter::CallHostFunction(void (*fn)(u64, u64), const U64& arg1, const U64& arg2) {
+-    Inst(Opcode::CallHostFunction, Imm64(mcl::bit_cast<u64>(fn)), arg1, arg2, Value{});
++    Inst(Opcode::CallHostFunction, Imm64(static_cast<u64>(reinterpret_cast<uintptr_t>(fn))), arg1, arg2, Value{});
+ }
+ 
+ void IREmitter::CallHostFunction(void (*fn)(u64, u64, u64), const U64& arg1, const U64& arg2, const U64& arg3) {
+-    Inst(Opcode::CallHostFunction, Imm64(mcl::bit_cast<u64>(fn)), arg1, arg2, arg3);
++    Inst(Opcode::CallHostFunction, Imm64(static_cast<u64>(reinterpret_cast<uintptr_t>(fn))), arg1, arg2, arg3);
+ }
+ 
+ void IREmitter::SetTerm(const Terminal& terminal) {
