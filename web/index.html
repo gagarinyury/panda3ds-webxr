@@ -281,6 +281,7 @@ async function start() {
 
 // ---- live diagnostics (right column) ----
 const frameMs = [], gpuMs = [];            // ring buffers: emulator time per frame, GPU time per frame (when the browser has EXT_disjoint_timer_query_webgl2)
+let rafCount = 0, rafHz = 0, rafT = performance.now(), tickMsAvg = 0, lastTickAt = 0, maxGapMs = 0, gapWin = 0;
 let glx = null, tq = null, pendingQ = [], diagF = 0, diagT = performance.now(), fpsNow = 0, drawsPerFrame = null, lastCompiled = 0, compileRate = 0, worstFrame = 0, flushesAtWorst = 0;
 function initGpuTimer() {   // only when the page is opened on its own (my probe pages embed it in an iframe and use the same query slot)
   if (!useGL || window !== window.top || params.get('gpu') === '0') return;
@@ -296,12 +297,12 @@ function pollGpu() {
 const fmt = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v)) ? '–' : v.toFixed(d);
 function renderDiag() {
   const now = performance.now(), dt = (now - diagT) / 1000;
-  if (dt > 0) { fpsNow = (frames - diagF) / dt; diagF = frames; diagT = now; }
+  if (dt > 0) { fpsNow = (frames - diagF) / dt; diagF = frames; diagT = now; rafHz = rafCount / dt; rafCount = 0; maxGapMs = gapWin; gapWin = 0; }
   const jit0 = Module.jit && Module.jit.impls[0], flushes = jit0 ? (jit0.flushes || 0) : 0;
   if (dt > 0 && jit0) { compileRate = ((jit0.count || 0) - lastCompiled) / dt; lastCompiled = jit0.count || 0; }
   const m = mem(), last = frameMs.slice(-60), avg = last.length ? last.reduce((a, b) => a + b, 0) / last.length : 0;
   const gpuRender = gpuMs.slice(-60).filter((x) => x > 0.05), gAvg = gpuRender.length ? gpuRender.reduce((a, b) => a + b, 0) / gpuRender.length : null;
-  const rows = [['frame', frames], ['speed (real)', fmt(fpsNow) + ' fps' + (fpsNow >= 58 ? '' : '  (target 59.8)')], ['emulator, avg 60 fr', fmt(avg) + ' ms'], ['emulator, worst', fmt(worst, 0) + ' ms'],
+  const rows = [['frame', frames], ['speed (real)', fmt(fpsNow) + ' fps' + (fpsNow >= 58 ? '' : '  (target 59.8)')], ['browser calls us (rAF)', fmt(rafHz, 0) + ' per s  (longest gap ' + fmt(maxGapMs, 0) + ' ms)'], ['one tick takes (JS)', fmt(tickMsAvg) + ' ms'], ['emulator, avg 60 fr', fmt(avg) + ' ms'], ['emulator, worst', fmt(worst, 0) + ' ms'],
     ['GPU / rendered frame', tq ? (gAvg === null ? '…' : fmt(gAvg) + ' ms') : 'n/a in this browser'], ['late (dropped)', late], ['worst frame at', worstFrame ? '#' + worstFrame + '  (flushes by then: ' + flushesAtWorst + ')' : '–'], ['JIT cache flushes', flushes + (jit0 && jit0.droppedBlocks ? '  (' + jit0.droppedBlocks + ' blocks thrown away)' : '')], ['compiling now', fmt(compileRate, 0) + ' blocks/s'], ['JIT modules (total compiled)', m.blocks], ['JIT wasm code', m.jitKB + ' KB'], ['wasm memory', m.wasmMB + ' MB'],
     ['layout', (side ? 'side by side' : 'stacked') + (useGL ? ', WebGL2' : ', no GPU')]];
   document.getElementById('counters').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
@@ -329,6 +330,7 @@ function runFrame() {
 
 function tick(now) {
   if (!running) return;
+  const tickStart = performance.now(); rafCount++; if (lastTickAt) { const gap = now - lastTickAt; if (gap > gapWin) gapWin = gap; } lastTickAt = now;
   let alive = 1, ran = 0;
   if (turbo) {
     for (; ran < 4 && alive && !(maxFrames && frames >= maxFrames); ran++) alive = runFrame();
@@ -353,6 +355,7 @@ function tick(now) {
     document.getElementById('stats').textContent = st;
     post('tick', { frames, avgMs: sum / Math.max(frames, 1), worstMs: worst, late, hitches, ...mem(), fps: frames / ((performance.now() - t0) / 1000) });
   }
+  tickMsAvg = tickMsAvg * 0.95 + (performance.now() - tickStart) * 0.05;
   if (!alive || (maxFrames && frames >= maxFrames)) { finish(); return; }
   requestAnimationFrame(tick);
 }
