@@ -1,3 +1,13 @@
+diff --git a/.gitmodules b/.gitmodules
+index 2cd57e6..802dd96 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -79,4 +79,4 @@
+ 	url = https://github.com/Panda3DS-emu/xbyak
+ [submodule "third_party/dynarmic"]
+ 	path = third_party/dynarmic
+-	url = https://github.com/azahar-emu/dynarmic.git
++	url = https://github.com/gagarinyury/dynarmic.git
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 2f4d9df..97217c4 100644
 --- a/CMakeLists.txt
