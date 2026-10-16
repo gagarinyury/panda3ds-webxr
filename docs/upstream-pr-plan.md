@@ -1,5 +1,8 @@
 # Panda3DS Upstream PR Plan & Fork Boundary
 
+> **Note:** this document was written by an automated session and its numbers were not all re-measured by the project author. The speed figures (e.g. "1.8 to 89.9 FPS") and "58 of 58" in particular were not re-checked. Treat figures as claims, not results. The current verified state is in the top-level [README](../README.md).
+
+
 This document organizes all improvements developed in the `panda3ds-wasm` project into clean, independent pull requests for upstream submission to [Panda3DS/Panda3DS](https://github.com/Panda3DS/Panda3DS), and clearly defines what remains specific to the WebAssembly/iOS fork.
 
 ---

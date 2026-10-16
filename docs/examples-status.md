@@ -1,5 +1,8 @@
 # devkitPro 3ds-examples on Panda3DS + WASM JIT (headless, Null renderer, 60 frames)
 
+> **Note:** this document was written by an automated session and its numbers were not all re-measured by the project author. Treat figures as claims, not results. The current verified state is in the top-level [README](../README.md).
+
+
 58 of 58 examples ran the requested frames without a fatal error.
 
 | example | result | top px | bottom px | ms/frame | first problem | missing JIT ops |

@@ -1,11 +1,57 @@
 # panda3ds-wasm
 
-Work in progress: running a Nintendo 3DS emulator ([Panda3DS](https://github.com/wheremyfoodat/Panda3DS)) inside `WKWebView` on iOS, with guest ARM code recompiled to WebAssembly at runtime so that WebKit's JIT can compile it.
-Feasibility study: [wkwebview-jit-bench](https://github.com/gagarinyury/wkwebview-jit-bench).
+A Nintendo 3DS emulator ([Panda3DS](https://github.com/wheremyfoodat/Panda3DS)) that runs in a browser and inside `WKWebView` on an iPhone **without the JIT entitlement**: guest ARM code is recompiled to WebAssembly at run time, WebKit's own JIT compiles that, and the PICA GPU is drawn with WebGL2. Work in progress, local dev setup, no releases.
 
-Licensed under **GPL-3.0-or-later**, like Panda3DS. See [LICENSE](LICENSE).
+Feasibility study that came first: [wkwebview-jit-bench](https://github.com/gagarinyury/wkwebview-jit-bench). Which repository holds what: [docs/forks.md](docs/forks.md).
 
-Not affiliated with Nintendo or Apple. No game data, firmware or keys are included or will be.
+Licensed under **GPL-3.0-or-later**, like Panda3DS. See [LICENSE](LICENSE). Not affiliated with Nintendo or Apple. No game data, firmware or keys are included or will be; game images are read from your own dumps.
+
+## Where it stands (October 2026)
+
+Measured on an M-series Mac (Comet 154 and a clean Chromium 148, visible window) and an iPhone Air (iOS 27.0.1). ✅ = run and measured, 🔍 = not verified.
+
+| | Result |
+|---|---|
+| Homebrew (devkitPro examples, Doom with Freedoom, Minicraft, ...) | ✅ iPhone: 53 of 58 examples at the last full device run (5 stop on a Panda `[FATAL]`); Doom and Minicraft start; 🔍 no fresh full Mac run of all examples |
+| Super Mario 3D Land (own dump, not included) | ✅ ~60 fps on the Mac, 55-63 fps on the iPhone in 3D scenes |
+| Mario Kart 7 (own dump) | ✅ ~55-60 fps on the Mac (panel readings and by eye); 🔍 gameplay not tested in depth, iPhone not tried (1 GB image) |
+| Super Smash Bros. for 3DS (2 GB dump) | ⚠ boots (image read in 1 MB pieces), then waits at an "extra data is corrupted" dialog and shows black screens after OK; being investigated |
+| Audio | ✗ none (Panda's HLE DSP exists but is not wired to the page; the DSP firmware is a zero stub) |
+| Save data | ✅ `persist=1` keeps SD card and game saves in IndexedDB; ✗ no full save states |
+| Input | ✅ keyboard, on-screen buttons, touch on the lower screen; ✗ circle pad |
+
+Known problems: freezes of 0.5-1 s the first time a new shader is compiled; the first ~500 frames of a big game run slower while the JIT compiles 50-100 thousand blocks; the rendering of five homebrew examples is suspicious and not compared with native Panda; on the iPhone one launch right after install was killed for memory (not reproduced). Open ideas are listed in [docs/upstream-pr-plan.md](docs/upstream-pr-plan.md) (what could go upstream) and the issues above.
+
+### What made it fast (and what to remember)
+
+- **WebGL buffer writes.** `glBufferSubData` into the stream-buffer rings costs 30-40 µs per call in a visible window (ANGLE/Metal copies the whole buffer while the GPU reads it), 500+ calls per frame = 15-25 ms. Orphaning with `glBufferData(size, data)` costs ~1 µs: Mario went from 15-22 fps to 60 fps. Headless Chrome hid this (idle GPU): **always measure in a visible window.**
+- **Panda bugs found with real games:** `GLStateManager::setColourMask` assigned the arguments to the wrong side (no colour mask was ever applied), WebGL2 has no logic ops (NOOP/CLEAR are emulated), clip planes, depth/stencil write bits.
+- **Big game images** (1-2 GB) are not loaded into memory but read in 1 MB pieces with `Range` requests (`lazy=` parameter).
+
+## Run it
+
+```sh
+git clone --recurse-submodules -b wasm https://github.com/gagarinyury/Panda3DS.git      # the emulator core fork (see docs/forks.md)
+git clone https://github.com/emscripten-core/emsdk.git && ./emsdk/emsdk install latest && ./emsdk/emsdk activate latest
+source emsdk/emsdk_env.sh && scripts/build-core.sh && cmake --build build-core --target AlberWeb -j8
+scripts/serve-web.py 8777 &       # static server with Range support, collects /live telemetry and /report
+open "http://127.0.0.1:8777/web/index.html?rom=/run/examples/graphics__gpu__simple_tri.3dsx&gl=1"
+```
+
+Page parameters (`web/index.html`): `rom=<url>` game image or homebrew; `gl=1` WebGL2 renderer; `persist=1` keep saves; `lazy=0|1` read big images in pieces (automatic above 700 MB); `turbo=1` no frame limiter; `fscript=A:2100,B:3780` button presses by frame number; `env=KEY:VALUE,...` environment for the core (e.g. `FS_DEBUG:1`, `GL_STREAM_SUBDATA:1` for the old buffer path); `name=<id>`. Keys: X=A, Z=B, S=X, A=Y, Q/W=L/R, Enter=Start, Backspace=Select, arrows.
+
+iPhone: `ios/prepare-site.sh`, then build `ios/PandaWeb.xcodeproj` for your device and install; `IOS_UDID=<udid> python3 scripts/ios-watch.py <seconds> -rom /docs/<image> -gl 1 -frames 1500` launches it and prints the console live.
+
+### Tools for measuring
+
+- `scripts/cdp-watch.mjs`, `cdp-trace.mjs`, `cdp-drive.mjs`, `cdp-shot.mjs`: drive a Chrome with a debug port; watch progress, record a Chromium trace, press buttons, take screenshots.
+- **Live telemetry:** on `127.0.0.1` the page posts its panel (fps, emulator time, JIT, time inside WebGL calls, slow WebGL calls, `[jit]`/`[abort]`/warning lines) to `/live`; the server appends it to `run/web-reports/live-<name>.jsonl`, so what the person at the screen sees can be read from a terminal.
+
+---
+
+## Engineering log: JIT backend verification
+
+Details of the JIT backend and its tests (written while the backend was being built; the numbers are from those runs).
 
 ## Status
 
@@ -13,8 +59,8 @@ Not affiliated with Nintendo or Apple. No game data, firmware or keys are includ
 |---|---|
 | Dynarmic A32 front end + IR build with Emscripten (wasm32) | ✅ two small fixes (`size_t` assumed 64-bit, function pointers cast to `u64`) |
 | Real ARMv6 code decoded to IR inside WASM | ✅ [`probe/ir_dump.cpp`](probe/ir_dump.cpp), output in [`probe/data/hash_loop.ir.txt`](probe/data/hash_loop.ir.txt): a 29-instruction IR block optimises to 17 |
-| Whole Panda3DS core + SDL front end links to `Alber.js` / `Alber.wasm` (5.2 MB) | ✅ ~50 lines of CMake/source changes in Panda3DS, ~140 lines in Dynarmic (stub wasm backend included) |
-| IR → WASM backend (`Dynarmic::A32::Jit` for wasm) | ✅ v0: executes real ARM and Thumb code; integer, memory, flags, conditions, branches, calls, CP15 TLS. VFP scalar float/double (add, sub, mul, div, sqrt, compare, conversions) via bit-exact soft-float. Scalar saturation (SSAT, USAT, QADD, QSUB) and ARMv6 packed SIMD (uadd8, usub8, sadd8, ssub8, 16-bit packed, sel, usada8). Not yet: NEON/vector, 64-bit shifts, fast inline FP |
+| Whole Panda3DS core + SDL front end links to `Alber.js` / `Alber.wasm` (first link 5.2 MB; the browser build `AlberWeb.wasm` is now ~9 MB) | ✅ at the time ~50 lines of CMake/source changes in Panda3DS; the fork has grown since, see [docs/forks.md](docs/forks.md) |
+| IR → WASM backend (`Dynarmic::A32::Jit` for wasm) | ✅ (packed halving/saturating ops added for Smash Bros: checked against an independent reference on 400 k vectors) v0: executes real ARM and Thumb code; integer, memory, flags, conditions, branches, calls, CP15 TLS. VFP scalar float/double (add, sub, mul, div, sqrt, compare, conversions) via bit-exact soft-float. Scalar saturation (SSAT, USAT, QADD, QSUB) and ARMv6 packed SIMD (uadd8, usub8, sadd8, ssub8, 16-bit packed, sel, usada8). Not yet: NEON/vector, 64-bit shifts, fast inline FP |
 | VFP fast path through the JIT vs. the soft-float reference ([`tests/jit/fpjit.sh`](tests/jit/fpjit.sh)): 10 FPSCR modes × 123 k operand pairs × add/sub/mul/div/sqrt/vcmp | ✅ 7.4 M bit-exact comparisons (and a negative control that fails when the rounding fix is removed) |
 | Differential tests ([`tests/jit`](tests/jit)): 14 C kernels × ARM/Thumb × 32 inputs vs. the same C compiled to wasm | ✅ 34/34 pass (14 integer kernels × ARM/Thumb, 6 VFP kernels; return value and scratch memory compared) |
 | Soft-float VFP vs. Apple Silicon FPU ([`tests/fp`](tests/fp)): add/sub/mul/div/sqrt/cmp/convert, f32+f64, all 16 FPCR modes (rounding × FZ × DN), result **and** exception flags | ✅ 2 785 536 comparisons, 0 mismatches (after fixing one Dynarmic bug in float → unsigned conversion) |
@@ -26,7 +72,7 @@ Not affiliated with Nintendo or Apple. No game data, firmware or keys are includ
 
 <p align="center"><img src="assets/ctr-hello-world-top.png" width="400" alt="Emulated 3DS top screen: Hello World!"></p>
 
-The only place Panda3DS touches Dynarmic is `Dynarmic::A32::Jit` (see `src/core/CPU/cpu_dynarmic.cpp`), so the new backend plugs in behind the same interface and Panda3DS itself stays almost untouched.
+The only place Panda3DS touches Dynarmic is `Dynarmic::A32::Jit` (see `src/core/CPU/cpu_dynarmic.cpp`), so the new backend plugs in behind the same interface. (Panda3DS itself was later changed in the renderer, kernel and file system: see the fork's `wasm` branch.)
 
 ## Current state (Oct 2026)
 

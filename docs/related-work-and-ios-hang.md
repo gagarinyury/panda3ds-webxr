@@ -1,5 +1,8 @@
 # Соседние проекты и расследование зависаний на iPhone (2026-10-16)
 
+> **Note:** this document was written by an automated session and its numbers were not all re-measured by the project author. Treat figures as claims, not results. The current verified state is in the top-level [README](../README.md).
+
+
 Записано, чтобы не искать заново. Всё ниже ✅ — прочитано в первоисточнике (README / TECHNICAL_WRITEUP на GitHub), если не помечено 🔍.
 
 ## Соседние проекты
