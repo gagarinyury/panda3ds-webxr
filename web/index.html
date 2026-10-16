@@ -4,12 +4,12 @@
 <title>Panda3DS on a WASM JIT</title>
 <style>
   body { margin: 0; background: #14161a; color: #cfd3da; font: 13px/1.4 ui-monospace, Menlo, monospace; }
-  main { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 16px; padding: 12px; max-width: 1700px; margin: 0 auto; align-items: start; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 16px; padding: 8px; max-width: none; margin: 0; align-items: start; }
   @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
   canvas { background: #000; image-rendering: pixelated; display: block; margin: 8px auto; }
   #top { width: 800px; max-width: 100%; aspect-ratio: 400/240; }
   #bottom { width: 640px; max-width: 80%; aspect-ratio: 320/240; }
-  #gl { width: 100%; height: auto; margin: 0 auto 8px; }
+  #gl { max-width: 100%; height: auto; margin: 0 0 8px; }   /* CSS size is set from the scale= parameter (default 1.5x the native size) */
   #stats { color: #8be28b; min-height: 1.4em; word-break: break-word; }
   #diag { background: #101317; border: 1px solid #232932; border-radius: 8px; padding: 10px; position: sticky; top: 8px; }
   #counters { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 6px 0; }
@@ -59,6 +59,7 @@ const name = params.get('name') || 'run';
 const useGL = params.get('gl') === '1';                     // OpenGL ES renderer on a WebGL2 canvas instead of the Null renderer + 2D canvases
 const side = (params.get('layout') || (innerWidth >= 900 ? 'side' : 'stack')) === 'side';   // both screens next to each other (720x240) or one above the other (400x480)
 const GLW = side ? 720 : 400, GLH = side ? 240 : 480;
+const scale = parseFloat(params.get('scale') || '1.5');                // on-page size of the screens relative to the 3DS native size
 const dbg = params.get('dbg') === '1';                      // post every frame (find where a crash happens)
 const envs = params.get('env') || '';                       // e.g. env=JIT_NOCHAIN:1,JIT_NOFASTMEM:1
 const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda;
@@ -249,7 +250,7 @@ async function loadRomUrl(url) {
 }
 
 async function start() {
-  if (useGL) { const g = document.getElementById('gl'); g.width = GLW; g.height = GLH; g.style.display = 'block'; document.getElementById('pad').style.display = 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
+  if (useGL) { const g = document.getElementById('gl'); g.width = GLW; g.height = GLH; g.style.width = Math.round(GLW * (innerWidth >= 900 ? Math.min(scale, (innerWidth - 440) / GLW) : Math.min(scale, (innerWidth - 16) / GLW))) + 'px';   // never wider than what fits next to the diagnostics column g.style.display = 'block'; document.getElementById('pad').style.display = 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
   if (!Module._web_init(useGL ? 1 : 0, GLW, GLH)) { log('[FATAL] web_init failed', true); finish(); return; }
   initGpuTimer();   // after web_init: the emulator must be the one that creates the WebGL context (its attributes: no alpha, depth, stencil)
 
