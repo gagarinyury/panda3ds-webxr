@@ -20,7 +20,9 @@ Not affiliated with Nintendo or Apple. No game data, firmware or keys are includ
 | Soft-float VFP vs. Apple Silicon FPU ([`tests/fp`](tests/fp)): add/sub/mul/div/sqrt/cmp/convert, f32+f64, all 16 FPCR modes (rounding × FZ × DN), result **and** exception flags | ✅ 2 785 536 comparisons, 0 mismatches (after fixing one Dynarmic bug in float → unsigned conversion) |
 | A homebrew `.3dsx` runs through the real Panda3DS core with the WASM JIT (headless, Node) | ✅ [`guest/hello.c`](guest/hello.c): prints via `svcOutputDebugString`, 2 M-iteration hash loop and a VFP computation; both results equal the native reference bit for bit (`scripts/test-hello.sh`) |
 | A real **libctru** homebrew (devkitPro `3ds-examples/graphics/printing/hello-world`, built with the official devkitARM image) runs to its main loop and draws its text | ✅ [`assets/ctr-hello-world-top.png`](assets/ctr-hello-world-top.png) is the emulated top screen (`scripts/test-ctr-hello.sh`) |
-| Same in a browser / `WKWebView` with graphics | — |
+| **In a real browser**: `web/index.html` drives the core from `requestAnimationFrame` and paints both screens on canvases. Verified in **Safari 27.0.1 (WebKit)** and Comet (Chromium 154) | ✅ libctru hello-world: 120 frames, avg 1.16 ms/frame in Safari, same 520 lit pixels as Node. 8 more examples (opus/vorbis decoding, box2d, sockets, threads, input…) run in Safari with pixel counts identical to Node |
+| `WKWebView` on an iPhone | — (the same WebKit engine as Safari, not yet measured on the device) |
+| 3D rendering (PICA → WebGL2) | — (the browser build uses the Null renderer: only presented framebuffers are shown) |
 
 <p align="center"><img src="assets/ctr-hello-world-top.png" width="400" alt="Emulated 3DS top screen: Hello World!"></p>
 
@@ -41,6 +43,18 @@ Block chaining = blocks tail-call each other through a shared function table (`r
 Inline memory = the same page tables Panda3DS uses, indexed from generated code. Inline VFP = add/sub/mul/div/sqrt/compare in
 round-to-nearest and round-to-zero modes (the 3DS default is round-to-zero + flush-to-zero + default-NaN) with NaN cases delegated
 to the bit-exact helper. The inline path does not accumulate FPSR exception flags.
+
+### In the browser
+
+```sh
+scripts/serve-web.py 8765 &                      # static server + report collector
+open "http://127.0.0.1:8765/web/index.html?rom=/run/ctr-hello.3dsx"
+python3 scripts/web-examples.py Safari threads__thread-basic audio__opus-decoding   # batch run through real Safari
+```
+
+First frames hitch (worst frame 60–200 ms) while the first blocks are compiled; steady state is 1–6 ms/frame (budget 16.7).
+
+![Safari](assets/safari-ctr-hello-world-top.png)
 
 ### Idle thread fix (Panda3DS)
 

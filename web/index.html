@@ -1,0 +1,89 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Panda3DS on a WASM JIT</title>
+<style>
+  body { margin: 0; background: #14161a; color: #cfd3da; font: 13px/1.4 ui-monospace, Menlo, monospace; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  canvas { background: #000; image-rendering: pixelated; display: block; margin: 8px auto; }
+  #top { width: 800px; max-width: 100%; aspect-ratio: 400/240; }
+  #bottom { width: 640px; max-width: 80%; aspect-ratio: 320/240; }
+  #stats { text-align: center; color: #8be28b; min-height: 1.4em; }
+  pre { background: #0d0f12; padding: 8px; max-height: 160px; overflow: auto; white-space: pre-wrap; }
+</style>
+<main>
+  <canvas id="top" width="400" height="240"></canvas>
+  <canvas id="bottom" width="320" height="240"></canvas>
+  <div id="stats">loading…</div>
+  <pre id="log"></pre>
+</main>
+<script>
+const params = new URLSearchParams(location.search);
+const rom = params.get('rom') || '/run/ctr-hello.3dsx';   // absolute path on the dev server
+const maxFrames = parseInt(params.get('frames') || '0');   // 0 = run forever
+const report = params.get('report') === '1';               // POST a result to the local server when done
+const logEl = document.getElementById('log');
+const errors = [];
+const log = (s, err) => { logEl.textContent += s + '\n'; if (err) errors.push(s); };
+var Module = {
+  print: (s) => log(s),
+  printErr: (s) => log(s, /error|fatal|abort|unsupported|failed/i.test(s)),
+  preRun: [() => {
+    // render with no GPU backend and no audio: only the presented framebuffers are shown
+    Module.FS.writeFile('/config.toml', '[GPU]\nRenderer = "Null"\nEnableShaderJIT = false\n[Audio]\nEnableAudio = false\nDSPEmulation = "Null"\n');
+  }],
+  onRuntimeInitialized: () => start().catch((e) => { log('start failed: ' + e, true); finish(); }),
+};
+let t0 = 0, frames = 0, running = true, worst = 0, sum = 0;
+const ctx = ['top', 'bottom'].map((id) => document.getElementById(id).getContext('2d'));
+const imgs = [new ImageData(400, 240), new ImageData(320, 240)];
+
+function draw() {
+  [1, 0].forEach((top) => {
+    const p = Module._web_screen(top);
+    if (!p) return;
+    const n = top ? 400 * 240 * 4 : 320 * 240 * 4;
+    imgs[top ? 0 : 1].data.set(Module.HEAPU8.subarray(p, p + n));
+    ctx[top ? 0 : 1].putImageData(imgs[top ? 0 : 1], 0, 0);
+  });
+}
+
+async function start() {
+  Module._web_init();
+  const resp = await fetch(rom);
+  if (!resp.ok) throw new Error('cannot fetch ' + rom + ': HTTP ' + resp.status);
+  const bytes = new Uint8Array(await resp.arrayBuffer());
+  Module.FS.writeFile('/rom.3dsx', bytes);
+  const ok = Module.ccall('web_load', 'number', ['string'], ['/rom.3dsx']);
+  log('web_load ' + rom + ' -> ' + ok);
+  if (!ok) { finish(); return; }
+  t0 = performance.now();
+  requestAnimationFrame(tick);
+}
+
+function tick() {
+  if (!running) return;
+  const a = performance.now();
+  const alive = Module._web_frame();
+  const ms = performance.now() - a;
+  frames++; sum += ms; worst = Math.max(worst, ms);
+  draw();
+  if (frames % 10 === 0) document.getElementById('stats').textContent = `frame ${frames}  last ${ms.toFixed(1)} ms  avg ${(sum / frames).toFixed(2)} ms  worst ${worst.toFixed(1)} ms  (budget 16.7)`;
+  if (!alive || (maxFrames && frames >= maxFrames)) { finish(); return; }
+  requestAnimationFrame(tick);
+}
+
+async function finish() {
+  running = false;
+  const lit = (c, w) => { const d = c.getImageData(0, 0, w, 240).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] | d[i + 1] | d[i + 2]) n++; return n; };
+  const result = { rom, frames, avgMs: frames ? sum / frames : 0, worstMs: worst, topLit: lit(ctx[0], 400), bottomLit: lit(ctx[1], 320), errors, userAgent: navigator.userAgent, done: true };
+  document.getElementById('stats').textContent = `done: ${frames} frames, avg ${result.avgMs.toFixed(2)} ms, worst ${worst.toFixed(1)} ms, lit px top ${result.topLit} / bottom ${result.bottomLit}`;
+  window.__result = result;
+  if (report) {
+    const png = await new Promise((r) => document.getElementById('top').toBlob(r, 'image/png'));
+    await fetch('/report?name=' + encodeURIComponent(params.get('name') || 'run'), { method: 'POST', body: JSON.stringify(result) });
+    await fetch('/report-png?name=' + encodeURIComponent(params.get('name') || 'run'), { method: 'POST', body: png });
+  }
+}
+</script>
+<script src="../build-core/AlberWeb.js"></script>
