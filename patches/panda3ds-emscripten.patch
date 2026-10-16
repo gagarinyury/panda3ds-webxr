@@ -96,6 +96,45 @@ index d21e4be..e5a7fca 100644
  	u8* getDSPMem() { return dspRam; }
  	u8* getDSPDataMem() { return &dspRam[DSP_DATA_MEMORY_OFFSET]; }
  	u8* getDSPCodeMem() { return &dspRam[DSP_CODE_MEMORY_OFFSET]; }
+diff --git a/include/renderer.hpp b/include/renderer.hpp
+index 27d6a43..43ca8fb 100644
+--- a/include/renderer.hpp
++++ b/include/renderer.hpp
+@@ -32,7 +32,7 @@ class Renderer {
+ 	const std::array<u32, regNum>& regs;
+ 	const std::array<u32, extRegNum>& externalRegs;
+ 
+-	std::array<u32, 2> fbSize;  // The size of the framebuffer (ie both the colour and depth buffer)'
++	std::array<u32, 2> fbSize = {0, 0};  // The size of the framebuffer (ie both the colour and depth buffer)'
+ 
+ 	u32 colourBufferLoc;                // Location in 3DS VRAM for the colour buffer
+ 	PICA::ColorFmt colourBufferFormat;  // Format of the colours stored in the colour buffer
+diff --git a/include/renderer_gl/surfaces.hpp b/include/renderer_gl/surfaces.hpp
+index ad1a1f5..0482518 100644
+--- a/include/renderer_gl/surfaces.hpp
++++ b/include/renderer_gl/surfaces.hpp
+@@ -47,8 +47,8 @@ struct ColourBuffer {
+ 		fbo.createWithDrawTexture(texture);
+ 		fbo.bind(OpenGL::DrawAndReadFramebuffer);
+ 
+-		if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+-			Helpers::warn("ColourBuffer: Incomplete framebuffer");
++		if (const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER); status != GL_FRAMEBUFFER_COMPLETE) {
++			Helpers::warn("ColourBuffer: Incomplete framebuffer (status 0x%X, %dx%d, format %d)", status, int(size.x()), int(size.y()), int(format));
+ 		}
+ 
+ 		// TODO: This should not clear the framebuffer contents. It should load them from VRAM.
+@@ -153,8 +153,8 @@ struct DepthBuffer {
+ 		glBindTexture(GL_TEXTURE_2D, prevTexture);
+ 		fbo.createWithDrawTexture(texture, fmt == GL_DEPTH_STENCIL ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT);
+ 
+-		if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+-			Helpers::panic("Incomplete framebuffer");
++		if (const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER); status != GL_FRAMEBUFFER_COMPLETE) {
++			Helpers::panic("Incomplete framebuffer (status 0x%X, %dx%d, depth format %d)", status, int(size.x()), int(size.y()), int(format));
+ 		}
+ 	}
+ 
 diff --git a/src/core/CPU/cpu_dynarmic.cpp b/src/core/CPU/cpu_dynarmic.cpp
 index 124647d..a317f28 100644
 --- a/src/core/CPU/cpu_dynarmic.cpp
@@ -129,7 +168,7 @@ index 5ada30e..12b1028 100644
  		}
  	} else {  // If we're sleeping for >= 0 ns
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
-index 659a1e1..5470194 100644
+index 659a1e1..62de050 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
 +++ b/src/core/renderer_gl/renderer_gl.cpp
 @@ -60,13 +60,17 @@ void RendererGL::initGraphicsContextInternal() {
@@ -156,7 +195,17 @@ index 659a1e1..5470194 100644
  
  	compileDisplayShader();
  	// Create stream buffers for vertex, index and uniform buffers
-@@ -722,7 +726,7 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
+@@ -422,6 +426,9 @@ void RendererGL::updateFogLUT() {
+ }
+ 
+ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> vertices) {
++	// A game may draw before it has configured the framebuffer (size 0, or uninitialised memory in a non-zeroed heap): skip such draws
++	if (fbSize[0] == 0 || fbSize[1] == 0 || fbSize[0] > 4096 || fbSize[1] > 4096) return;
++
+ 	// The fourth type is meant to be "Geometry primitive". TODO: Find out what that is
+ 	static constexpr std::array<OpenGL::Primitives, 4> primTypes = {
+ 		OpenGL::Triangle,
+@@ -722,7 +729,7 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
  			return blankTexture;
  		}
  
