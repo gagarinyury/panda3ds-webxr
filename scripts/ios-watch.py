@@ -22,11 +22,13 @@ q = queue.Queue()
 threading.Thread(target=lambda: [q.put(l) for l in p.stdout] or q.put(None), daemon=True).start()
 def out(*a): print(*a, flush=True)
 
-t0 = time.time(); last_line = t0; last_frame = -1; last_crumb = None; stalled = False; got_any = False
+done_at = None; t0 = time.time(); last_line = t0; last_frame = -1; last_crumb = None; stalled = False; got_any = False
 seen_logs = {}
 pcs = collections.deque(maxlen=12); loop_reported = set(); crumbs = 0
 while True:
     now = time.time()
+    if done_at and now - done_at > 1.0 and not any('playlist' in a for a in sys.argv):
+        p.kill(); break
     if now - t0 > tmo:
         out('TIMEOUT after %.0fs (killing console); last frame %d, last crumb %s' % (now - t0, last_frame, last_crumb)); p.kill(); break
     try: l = q.get(timeout=0.5)
@@ -60,11 +62,15 @@ while True:
         last_frame = m.get('n', last_frame)
         if last_frame == 1: out('FIRST_FRAME %.1fs after launch ms=%s' % (now - t0, m.get('ms')))
         elif last_frame % 60 == 0: out('PROGRESS frame %d ms=%s' % (last_frame, m.get('ms')))
+    elif t == 'playlist_start': out('PLAYLIST START %s items' % m.get('count'))
+    elif t == 'playlist_item': out('%s %s/%s %s :: %s %s (%ss)' % ('OK  ' if m.get('result') == 'DONE' else 'FAIL', m.get('i'), m.get('of'), m.get('name'), m.get('result'), m.get('detail', '')[:150], m.get('sec')))
+    elif t == 'playlist_done': out('PLAYLIST DONE: %s ok, %s failed of %s' % (m.get('ok'), m.get('failed'), m.get('count')))
     elif t == 'launch': out('START ' + json.dumps(m)[:200])
     elif t == 'webcontent_terminated': out('WEBCONTENT_KILLED ' + json.dumps(m)[:200])
     elif t in ('error',): out('ERROR ' + json.dumps(m)[:300])
     elif t == 'done':
         got_any = False   # finished: no more stall alarms
+        done_at = now      # single-run mode: do not wait for devicectl to close the console
         out('DONE fps=%s avg=%sms worst=%sms modules=%s jitKB=%s wasmMB=%s' % (m.get('fps'), m.get('avgMs'), m.get('worstMs'), m.get('blocks'), m.get('jitKB'), m.get('wasmMB')))
     elif t in ('stress',):
         if m.get('i', 0) % 2048 == 0: out('STRESS %s' % json.dumps(m))
