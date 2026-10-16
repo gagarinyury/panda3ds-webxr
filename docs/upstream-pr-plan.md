@@ -134,3 +134,12 @@ The following components are specific to our browser and iOS deployment:
 4. **Headless & Automation Tooling (`headless/`, `scripts/`)**:
    - Node-based headless runner for CI/CD regression testing.
    - Automated 3DS example batch runner (`run-examples.py`): **58 of 58 devkitPro examples passing**.
+
+---
+
+## Candidate PR (not sent): stream buffers on WebGL2 / ANGLE
+
+**Finding (measured 16 Oct 2026, Chromium 148 and Comet 154 on Apple Silicon, ANGLE/Metal, visible window):** the `BufferSubDataStreamBuffer` fallback in `third_party/duckstation/gl/stream_buffer.cpp` (ring buffer + `glBufferSubData`) costs 30-40 us per call when the GPU still reads the buffer, because ANGLE's Metal backend copies the whole buffer on write. In Super Mario 3D Land that is 450-600 uploads per frame = 15-25 ms of the frame; invisible in headless Chrome (idle GPU).
+**Change:** on Emscripten use the existing `BufferDataStreamBuffer` (orphan + upload with one `glBufferData` per use) and let it grow when a request is bigger than its CPU copy. Same scene: 15-22 fps -> 60 fps, GL time 15-25 ms -> 0.3-0.7 ms per frame.
+**Open before sending:** it is only proven for WebGL2/ANGLE-Metal. Unknown for native GLES (Android) and ANGLE on other backends, so the PR should gate it (`__EMSCRIPTEN__`, or a runtime switch) and say so. Evidence and method: `scripts/cdp-watch.mjs`, the `[gl]` lines the page sends to `/live`.
+Related, smaller: the `setColourMask` assignments are reversed in upstream (`r = redMask`), a one-line fix for every platform.
