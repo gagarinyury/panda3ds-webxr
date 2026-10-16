@@ -56,6 +56,23 @@ index 2f4d9df..97217c4 100644
  if(NOT BUILD_HYDRA_CORE AND NOT BUILD_LIBRETRO_CORE)
      add_executable(Alber)
  
+diff --git a/include/PICA/gpu.hpp b/include/PICA/gpu.hpp
+index e62f41b..dd594ee 100644
+--- a/include/PICA/gpu.hpp
++++ b/include/PICA/gpu.hpp
+@@ -99,9 +99,10 @@ class GPU {
+ 	// Used to prevent uploading the lighting_lut on every draw call
+ 	// Set to true when the CPU writes to the lighting_lut
+ 	// Set to false by the renderer when the lighting_lut is uploaded ot the GPU
+-	bool lightingLUTDirty = false;
++	bool lightingLUTDirty = true;
++	u32 lightingLUTDirtyMask = (1u << PICA::Lights::LUT_Count) - 1;
+ 
+-	bool fogLUTDirty = false;
++	bool fogLUTDirty = true;
+ 	std::array<uint32_t, 128> fogLUT;
+ 
+ 	GPU(Memory& mem, EmulatorConfig& config);
 diff --git a/include/PICA/regs.hpp b/include/PICA/regs.hpp
 index 3185d35..16a2cf1 100644
 --- a/include/PICA/regs.hpp
@@ -164,7 +181,7 @@ index d6cbcbc..92e19f1 100644
  			OpenGL::setColourMask(r, g, b, a);
  		}
 diff --git a/include/renderer_gl/renderer_gl.hpp b/include/renderer_gl/renderer_gl.hpp
-index 2023966..45c988e 100644
+index 2023966..56285f9 100644
 --- a/include/renderer_gl/renderer_gl.hpp
 +++ b/include/renderer_gl/renderer_gl.hpp
 @@ -11,6 +11,7 @@
@@ -183,7 +200,7 @@ index 2023966..45c988e 100644
  	bool performIndexedRender = false;
  	bool usingShortIndices = false;
  
-@@ -104,6 +106,11 @@ class RendererGL final : public Renderer {
+@@ -104,9 +106,17 @@ class RendererGL final : public Renderer {
  	// Current offset for our hw shader uniform UBO
  	u32 hwShaderUniformUBOOffset = 0;
  
@@ -195,6 +212,12 @@ index 2023966..45c988e 100644
  	// Cache of fixed attribute values so that we don't do any duplicate updates
  	std::array<std::array<float, 4>, 16> fixedAttrValues;
  
++	// Buffer for lighting LUT upload (24 rows * 256 texels * 2 components (RG))
++	std::array<float, PICA::Lights::LUT_Count * 256 * 2> lightingLutBuffer{};
++
+ 	// Cached recompiled fragment shader
+ 	struct CachedProgram {
+ 		OpenGL::Program program;
 diff --git a/include/renderer_gl/surfaces.hpp b/include/renderer_gl/surfaces.hpp
 index ad1a1f5..0482518 100644
 --- a/include/renderer_gl/surfaces.hpp
@@ -287,7 +310,7 @@ index 124647d..a94570e 100644
  #endif  // CPU_DYNARMIC
 \ No newline at end of file
 diff --git a/src/core/PICA/gpu.cpp b/src/core/PICA/gpu.cpp
-index e38f441..d5f1234 100644
+index e38f441..0734717 100644
 --- a/src/core/PICA/gpu.cpp
 +++ b/src/core/PICA/gpu.cpp
 @@ -75,6 +75,7 @@ GPU::GPU(Memory& mem, EmulatorConfig& config) : mem(mem), config(config) {
@@ -298,6 +321,46 @@ index e38f441..d5f1234 100644
  	shaderUnit.reset();
  	shaderJIT.reset();
  	shaderJIT.setAccurateMul(config.accurateShaderMul);
+@@ -82,6 +83,7 @@ void GPU::reset() {
+ 	std::memset(vram, 0, vramSize);
+ 	lightingLUT.fill(0);
+ 	lightingLUTDirty = true;
++	lightingLUTDirtyMask = (1u << PICA::Lights::LUT_Count) - 1;
+ 
+ 	fogLUT.fill(0);
+ 	fogLUTDirty = true;
+diff --git a/src/core/PICA/regs.cpp b/src/core/PICA/regs.cpp
+index f63ee18..85eecc0 100644
+--- a/src/core/PICA/regs.cpp
++++ b/src/core/PICA/regs.cpp
+@@ -144,8 +144,10 @@ void GPU::writeInternalReg(u32 index, u32 value, u32 mask) {
+ 		case FogLUTData6:
+ 		case FogLUTData7: {
+ 			const uint32_t index = regs[FogLUTIndex] & 0x7F;
+-			fogLUT[index] = value;
+-			fogLUTDirty = true;
++			if (fogLUT[index] != newValue) {
++				fogLUT[index] = newValue;
++				fogLUTDirty = true;
++			}
+ 			regs[FogLUTIndex] = (index + 1) & 0x7F;
+ 			break;
+ 		}
+@@ -163,8 +165,12 @@ void GPU::writeInternalReg(u32 index, u32 value, u32 mask) {
+ 			uint32_t lutIndex = getBits<0, 8>(index);       // And get the index inside the LUT we're writing to
+ 
+ 			if (lutID < PICA::Lights::LUT_Count) {
+-				lightingLUT[lutID * 256 + lutIndex] = newValue;
+-				lightingLUTDirty = true;
++				const uint32_t offset = lutID * 256 + lutIndex;
++				if (lightingLUT[offset] != newValue) {
++					lightingLUT[offset] = newValue;
++					lightingLUTDirty = true;
++					lightingLUTDirtyMask |= (1u << lutID);
++				}
+ 			}
+ 
+ 			// Increment the bottom 8 bits of the lighting LUT index register
 diff --git a/src/core/PICA/shader_gen_glsl.cpp b/src/core/PICA/shader_gen_glsl.cpp
 index a9ad3a9..63141b4 100644
 --- a/src/core/PICA/shader_gen_glsl.cpp
@@ -475,7 +538,7 @@ index 5ada30e..12b1028 100644
  		}
  	} else {  // If we're sleeping for >= 0 ns
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
-index 659a1e1..7b836d0 100644
+index 659a1e1..e1e23c0 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
 +++ b/src/core/renderer_gl/renderer_gl.cpp
 @@ -1,5 +1,12 @@
@@ -568,7 +631,63 @@ index 659a1e1..7b836d0 100644
  	const u32 stencilBufferMask = stencilWrite ? getBits<8, 8>(stencilConfig) : 0;
  
  	// TODO: Throw stencilFunc/stencilOp to the GL state manager
-@@ -422,6 +449,30 @@ void RendererGL::updateFogLUT() {
+@@ -381,16 +408,48 @@ void RendererGL::bindTexturesToSlots() {
+ 
+ void RendererGL::updateLightingLUT() {
+ 	gpu.lightingLUTDirty = false;
+-	std::array<float, GPU::LightingLutSize * 2> lightingLut;
+-
+-	for (int i = 0; i < lightingLut.size(); i += 2) {
+-		uint64_t value = gpu.lightingLUT[i >> 1] & 0xFFF;
+-		lightingLut[i] = (float)(value << 4) / 65535.0f;
+-	}
++	const u32 dirtyMask = gpu.lightingLUTDirtyMask;
++	gpu.lightingLUTDirtyMask = 0;
++	if (!dirtyMask) return;
+ 
+ 	glActiveTexture(GL_TEXTURE0 + 3);
+ 	LUTTexture.bind();
+-	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, Lights::LUT_Count, GL_RG, GL_FLOAT, lightingLut.data());
++
++	// If all 24 rows are dirty, upload everything in one call
++	if (dirtyMask == ((1u << Lights::LUT_Count) - 1)) {
++		for (size_t i = 0; i < Lights::LUT_Count * 256; ++i) {
++			uint32_t value = gpu.lightingLUT[i] & 0xFFF;
++			lightingLutBuffer[i * 2] = (float)(value << 4) / 65535.0f;
++			lightingLutBuffer[i * 2 + 1] = 0.0f;
++		}
++		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, Lights::LUT_Count, GL_RG, GL_FLOAT, lightingLutBuffer.data());
++	} else {
++		// Upload only dirty rows (in contiguous spans)
++		int r = 0;
++		while (r < Lights::LUT_Count) {
++			if (!(dirtyMask & (1u << r))) {
++				r++;
++				continue;
++			}
++			int start = r;
++			while (r < Lights::LUT_Count && (dirtyMask & (1u << r))) {
++				r++;
++			}
++			int count = r - start;
++			for (int row = 0; row < count; row++) {
++				const int lutID = start + row;
++				const size_t lutBase = lutID * 256;
++				const size_t outBase = (start + row) * 256 * 2;
++				for (size_t i = 0; i < 256; i++) {
++					uint32_t value = gpu.lightingLUT[lutBase + i] & 0xFFF;
++					lightingLutBuffer[outBase + i * 2] = (float)(value << 4) / 65535.0f;
++					lightingLutBuffer[outBase + i * 2 + 1] = 0.0f;
++				}
++			}
++			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, start, 256, count, GL_RG, GL_FLOAT, &lightingLutBuffer[start * 256 * 2]);
++		}
++	}
++
+ 	glActiveTexture(GL_TEXTURE0);
+ }
+ 
+@@ -422,6 +481,30 @@ void RendererGL::updateFogLUT() {
  }
  
  void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> vertices) {
@@ -599,7 +718,7 @@ index 659a1e1..7b836d0 100644
  	// The fourth type is meant to be "Geometry primitive". TODO: Find out what that is
  	static constexpr std::array<OpenGL::Primitives, 4> primTypes = {
  		OpenGL::Triangle,
-@@ -449,12 +500,14 @@ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> v
+@@ -449,12 +532,14 @@ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> v
  	poop->fbo.bind(OpenGL::DrawAndReadFramebuffer);
  
  	const u32 depthControl = regs[PICA::InternalRegs::DepthAndColorMask];
@@ -616,16 +735,21 @@ index 659a1e1..7b836d0 100644
  
  	static constexpr std::array<GLenum, 8> depthModes = {
  		GL_NEVER, GL_ALWAYS, GL_EQUAL, GL_NOTEQUAL, GL_LESS, GL_LEQUAL, GL_GREATER, GL_GEQUAL,
-@@ -722,7 +775,7 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
+@@ -722,7 +807,12 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
  			return blankTexture;
  		}
  
 -		const auto textureData = std::span{startPointer, tex.sizeInBytes()};  // Get pointer to the texture data in 3DS memory
 +		const auto textureData = std::span{startPointer, static_cast<size_t>(tex.sizeInBytes())};  // Get pointer to the texture data in 3DS memory
++		static const bool texDebug = std::getenv("GL_TEX_DEBUG") != nullptr;
++		if (texDebug) {
++			static u64 misses = 0;
++			std::printf("[texmiss %llu] loc=%08x fmt=%d %ux%u hash=%llx\n", (unsigned long long)misses++, tex.location, (int)tex.format, tex.size.u(), tex.size.v(), (unsigned long long)tex.hash);
++		}
  		Texture& newTex = textureCache.add(tex);
  		newTex.decodeTexture(textureData);
  
-@@ -955,6 +1008,9 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -955,6 +1045,9 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  		uniforms.clipCoords[1] = f24::fromRaw(regs[PICA::InternalRegs::ClipData1] & 0xffffff).toFloat32();
  		uniforms.clipCoords[2] = f24::fromRaw(regs[PICA::InternalRegs::ClipData2] & 0xffffff).toFloat32();
  		uniforms.clipCoords[3] = f24::fromRaw(regs[PICA::InternalRegs::ClipData3] & 0xffffff).toFloat32();
@@ -635,7 +759,7 @@ index 659a1e1..7b836d0 100644
  	}
  
  	// Set up the constant color for the 6 TEV stages
-@@ -1018,16 +1074,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -1018,16 +1111,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  		}
  	}
  
@@ -935,6 +1059,12 @@ index b7a4060..33d5e7b 100644
 -#endif
  }
 \ No newline at end of file
+diff --git a/third_party/dynarmic b/third_party/dynarmic
+--- a/third_party/dynarmic
++++ b/third_party/dynarmic
+@@ -1 +1 @@
+-Subproject commit e77b1ba0b7da7cbe93021b01a663acfe7c4dd516
++Subproject commit e77b1ba0b7da7cbe93021b01a663acfe7c4dd516-dirty
 diff --git a/third_party/host_memory/host_memory.cpp b/third_party/host_memory/host_memory.cpp
 index 2aaa2f1..95a17d9 100644
 --- a/third_party/host_memory/host_memory.cpp
@@ -954,3 +1084,45 @@ index 2aaa2f1..95a17d9 100644
  		try {
  			// Fastmem is disabled, just throw bad alloc and use the VirtualBuffer fallback.
  			if (!enableFastmem) {
+diff --git a/third_party/opengl/opengl.hpp b/third_party/opengl/opengl.hpp
+index 607815f..3c81a55 100644
+--- a/third_party/opengl/opengl.hpp
++++ b/third_party/opengl/opengl.hpp
+@@ -602,22 +602,36 @@ namespace OpenGL {
+ 	static void disableScissor() { glDisable(GL_SCISSOR_TEST); }
+ 	static void enableBlend() { glEnable(GL_BLEND); }
+ 	static void disableBlend() { glDisable(GL_BLEND); }
++#ifndef __EMSCRIPTEN__
+ 	static void enableLogicOp() { glEnable(GL_COLOR_LOGIC_OP); }
+ 	static void disableLogicOp() { glDisable(GL_COLOR_LOGIC_OP); }
++#else
++	static void enableLogicOp() {}
++	static void disableLogicOp() {}
++#endif
+ 	static void enableDepth() { glEnable(GL_DEPTH_TEST); }
+ 	static void disableDepth() { glDisable(GL_DEPTH_TEST); }
+ 	static void enableStencil() { glEnable(GL_STENCIL_TEST); }
+ 	static void disableStencil() { glDisable(GL_STENCIL_TEST); }
+ 
++#ifndef __EMSCRIPTEN__
+ 	static void enableClipPlane(GLuint index) { glEnable(GL_CLIP_DISTANCE0 + index); }
+ 	static void disableClipPlane(GLuint index) { glDisable(GL_CLIP_DISTANCE0 + index); }
++#else
++	static void enableClipPlane(GLuint) {}
++	static void disableClipPlane(GLuint) {}
++#endif
+ 
+ 	static void setDepthFunc(DepthFunc func) { glDepthFunc(static_cast<GLenum>(func)); }
+ 	static void setColourMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) { glColorMask(r, g, b, a); }
+ 	static void setDepthMask(GLboolean mask) { glDepthMask(mask); }
+ 
+ 	// TODO: Add a proper enum for this
+-	static void setLogicOp(GLenum op) { glLogicOp(op); }
++	static void setLogicOp(GLenum op) {
++#ifndef __EMSCRIPTEN__
++		glLogicOp(op);
++#endif
++	}
+ 
+     enum Primitives {
+         Triangle = GL_TRIANGLES,
