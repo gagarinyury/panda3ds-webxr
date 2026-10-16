@@ -1,0 +1,84 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>frame probe</title>
+<body style="background:#111;color:#8f8;font:13px ui-monospace,monospace;margin:8px">
+<pre id="o">starting…</pre>
+<iframe id="f" style="width:820px;height:1000px;border:0;background:#000"></iframe>
+<script>
+// Measures where the time of one emulated frame goes, from OUTSIDE the emulator page (nothing in index.html is changed):
+//   ?rom=/run/commercial/sm3dl.3ds  &start=600 (frame to start at, i.e. be in gameplay)  &n=24 (frames to measure)  &name=probe-sm3dl  &extra=<more query for index.html, e.g. &sd=...>
+// Per frame: time inside web_frame (CPU: JIT code + Panda), GPU time (EXT_disjoint_timer_query_webgl2), draws, newly compiled JIT blocks, time spent inside WebGL calls (incl. shader compile/link).
+const q = new URLSearchParams(location.search);
+const rom = q.get('rom'), startFrame = +q.get('start') || 600, nMeasure = +q.get('n') || 24, name = q.get('name') || 'probe', extra = q.get('extra') || '';
+const o = document.getElementById('o'), f = document.getElementById('f');
+const say = (s) => { o.textContent += s + '\n'; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const med = (a) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : 0; };
+const sum = (a) => a.reduce((x, y) => x + y, 0);
+f.src = `/web/index.html?rom=${rom}&gl=1&name=${name}-inner${extra}`;
+
+(async () => {
+  let w;
+  const t0 = performance.now();
+  while (!((w = f.contentWindow) && w.Module && w.Module._web_frame && w.Module.jit)) { if (performance.now() - t0 > 120000) throw new Error('page did not start'); await sleep(250); }
+  say('page started; waiting for frame ' + startFrame);
+  const T0 = performance.now(); let fr = 0;
+  while ((fr = w.eval('typeof frames === "number" ? frames : 0')) < startFrame) { if (performance.now() - T0 > 600000) throw new Error('timeout waiting for frame ' + startFrame + ' (at ' + fr + ')'); await sleep(500); }
+  say('at frame ' + fr + ' after ' + Math.round((performance.now() - T0) / 1000) + ' s; measuring ' + nMeasure + ' frames');
+
+  const canvas = w.document.getElementById('gl'), gl = canvas.getContext('webgl2');
+  const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  const P = w.WebGL2RenderingContext.prototype;
+  const calls = {}, orig = {};
+  let draws = 0, glMs = 0;
+  const isDraw = (k) => k.startsWith('draw');
+  for (const k of Object.getOwnPropertyNames(P)) {
+    let d; try { d = P[k]; } catch (e) { continue; }
+    if (typeof d !== 'function' || k === 'constructor') continue;
+    orig[k] = d; calls[k] = { n: 0, ms: 0 };
+    P[k] = function (...a) { const t = performance.now(); const r = d.apply(this, a); const dt = performance.now() - t; const c = calls[k]; c.n++; c.ms += dt; glMs += dt; if (isDraw(k)) draws++; return r; };
+  }
+  const origFrame = w.Module._web_frame, perFrame = [], queries = [];
+  let lastBlocks = w.Module.jit.impls[0].count, rafGaps = [], lastRaf = performance.now(), rafOn = true;
+  (function raf() { if (!rafOn) return; const n = performance.now(); rafGaps.push(n - lastRaf); lastRaf = n; requestAnimationFrame(raf); })();
+  let k = 0, wallStart = performance.now();
+  w.Module._web_frame = function () {
+    if (k >= nMeasure) return origFrame();
+    k++;
+    const d0 = draws, g0 = glMs;
+    let qo = null; if (ext) { qo = gl.createQuery(); gl.beginQuery(ext.TIME_ELAPSED_EXT, qo); }
+    const t = performance.now(); const r = origFrame(); const ms = performance.now() - t;
+    if (qo) gl.endQuery(ext.TIME_ELAPSED_EXT);
+    const b = w.Module.jit.impls[0].count;
+    perFrame.push({ webFrameMs: +ms.toFixed(1), draws: draws - d0, glJsMs: +(glMs - g0).toFixed(1), newBlocks: b - lastBlocks }); lastBlocks = b;
+    if (qo) queries.push(qo);
+    return r;
+  };
+  while (k < nMeasure) await sleep(100);
+  const wallMs = performance.now() - wallStart;
+  w.Module._web_frame = origFrame; rafOn = false;
+  for (const n in orig) P[n] = orig[n];
+  await sleep(1500);
+  const gpu = queries.map((qo) => (gl.getQueryParameter(qo, gl.QUERY_RESULT_AVAILABLE) ? gl.getQueryParameter(qo, gl.QUERY_RESULT) / 1e6 : null));
+  perFrame.forEach((p, i) => { p.gpuMs = gpu[i] === null || gpu[i] === undefined ? null : +gpu[i].toFixed(1); });
+  const top = Object.entries(calls).filter(([, v]) => v.n).sort((a, b) => b[1].ms - a[1].ms).slice(0, 10).map(([n, v]) => ({ call: n, count: v.n, ms: +v.ms.toFixed(1) }));
+  const gpuOk = perFrame.map((p) => p.gpuMs).filter((x) => x !== null && x > 0);
+  const result = {
+    rom, name, userAgent: navigator.userAgent, gpuRenderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : null, timerQuery: !!ext,
+    startedAtFrame: fr, measuredFrames: nMeasure, wallMsPerFrame: +(wallMs / nMeasure).toFixed(1),
+    webFrameMs: { mean: +(sum(perFrame.map((p) => p.webFrameMs)) / nMeasure).toFixed(1), median: med(perFrame.map((p) => p.webFrameMs)), max: Math.max(...perFrame.map((p) => p.webFrameMs)) },
+    gpuMs: gpuOk.length ? { frames: gpuOk.length, mean: +(sum(gpuOk) / gpuOk.length).toFixed(1), median: +med(gpuOk).toFixed(1), max: +Math.max(...gpuOk).toFixed(1) } : null,
+    drawsPerFrame: { mean: +(sum(perFrame.map((p) => p.draws)) / nMeasure).toFixed(0), max: Math.max(...perFrame.map((p) => p.draws)) },
+    glJsMsPerFrame: +(sum(perFrame.map((p) => p.glJsMs)) / nMeasure).toFixed(1),
+    newBlocksTotal: sum(perFrame.map((p) => p.newBlocks)), framesWithNewBlocks: perFrame.filter((p) => p.newBlocks > 0).length,
+    jitModulesNow: w.Module.jit.impls[0].count, jitKBNow: Math.round(w.Module.jit.impls[0].bytes / 1024),
+    rafGapMs: { median: +med(rafGaps).toFixed(1), max: +Math.max(...rafGaps).toFixed(1) },
+    topGLCalls: top, perFrame,
+  };
+  say(JSON.stringify({ ...result, perFrame: undefined, topGLCalls: undefined }, null, 1));
+  say('top GL calls: ' + JSON.stringify(top));
+  await fetch('/report?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify(result) });
+  say('REPORT SENT');
+})().catch(async (e) => { say('ERROR ' + e); await fetch('/report?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ error: String(e) }) }); });
+</script>
