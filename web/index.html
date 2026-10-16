@@ -94,7 +94,7 @@ if (liveOn) {   // dev only: a fixed CPU benchmark (compare browsers) and the ti
 function native0() { return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda); }
 const post = (type, payload) => {
   if (native) native.postMessage(JSON.stringify({ type, name, ...payload }));
-  else if (liveOn && (type === 'tick' || (type === 'log' && /\[jit\]|\[gl\]|FATAL|panic/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
+  else if (liveOn && (type === 'tick' || (type === 'log' && /\[jit\]|\[gl\]|\[abort\]|FATAL|panic|warning|unimplemented|failed|abort/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
 };
 const log = (s, err) => {
   const lines = logEl.textContent.split('\n');
@@ -104,6 +104,7 @@ const log = (s, err) => {
   if (err) { errors.push(s); post('error', { msg: s }); }
 };
 var Module = {
+  onAbort: (what) => { let st = ''; try { st = new Error().stack.split('\n').slice(2, 14).map((l) => l.trim().replace(/^at /, '')).join(' < '); } catch (e) {} log('[ABORT] ' + what + ' | ' + st, true); post('log', { msg: '[abort] ' + what + ' | ' + st.slice(0, 900) }); },
   canvas: document.getElementById('gl'),
   print: (s) => { if (typeof s === 'string' && s.startsWith('[state]')) { (window.__state || (window.__state = [])).push(s); if (window.__state.length > 4000) window.__state.splice(0, 2000); return; } log(s, /\[FATAL\]/.test(s)); post('log', { msg: String(s).slice(0, 300) }); },
   printErr: (s) => { log(s, /error|fatal|abort|unsupported|failed/i.test(s)); post('log', { msg: '[err] ' + String(s).slice(0, 300) }); },
@@ -260,8 +261,39 @@ async function bootRom(guestPath, filename) {
   schedule();
 }
 
+// Big game images (Smash Bros is 2 GB) cannot live in the page's memory: expose the file through MEMFS with a lazy content object that fetches 1 MB pieces
+// with synchronous Range requests on demand and keeps the most recently used ones (cache=<pieces>, default 160).
+async function loadRomLazy(url, total) {
+  const CH = 1 << 20, MAXC = +(params.get('cache') || 160), cache = new Map();
+  const piece = (i) => {
+    let c = cache.get(i); if (c) { cache.delete(i); cache.set(i, c); return c; }
+    const a = i * CH, b = Math.min(total, a + CH) - 1, x = new XMLHttpRequest();
+    x.open('GET', url, false); x.setRequestHeader('Range', `bytes=${a}-${b}`); x.overrideMimeType('text/plain; charset=x-user-defined'); x.send();
+    if (x.status !== 206) throw new Error('range request failed: HTTP ' + x.status);
+    const t = x.responseText; c = new Uint8Array(b - a + 1); for (let k = 0; k < c.length; k++) c[k] = t.charCodeAt(k) & 255;
+    cache.set(i, c); if (cache.size > MAXC) cache.delete(cache.keys().next().value);
+    return c;
+  };
+  const target = {
+    length: total,
+    subarray(s, e) { const out = new Uint8Array(e - s); let o = 0; while (s + o < e) { const pos = s + o, c = piece(Math.floor(pos / CH)), off = pos % CH, n = Math.min(c.length - off, e - pos); out.set(c.subarray(off, off + n), o); o += n; } return out; },
+  };
+  const contents = new Proxy(target, { get(t, p) { if (typeof p === 'string' && /^[0-9]+$/.test(p)) { const pos = +p; return piece(Math.floor(pos / CH))[pos % CH]; } return t[p]; } });
+  const extMatch = url.split('?')[0].match(/\.([a-zA-Z0-9]+)$/), guestPath = '/rom' + (extMatch ? '.' + extMatch[1].toLowerCase() : '.3dsx');
+  try { Module.FS.unlink(guestPath); } catch (e) {}
+  const stream = Module.FS.open(guestPath, 'w+'); Module.FS.write(stream, new Uint8Array(1), 0, 1, 0);
+  stream.node.contents = contents; stream.node.usedBytes = total; Module.FS.close(stream);
+  log(`mounted ${url} (${(total / 1048576).toFixed(0)} MB) as ${guestPath}: read in 1 MB pieces on demand, up to ${MAXC} kept`);
+  return bootRom(guestPath, url);
+}
+
 async function loadRomUrl(url) {
   document.getElementById('stats').textContent = `fetching ${url}...`;
+  const lazyParam = params.get('lazy');
+  if (lazyParam === '1' || (!native && lazyParam !== '0')) {
+    const head = await fetch(url, { method: 'HEAD' }).catch(() => null), headTotal = head && head.ok ? parseInt(head.headers.get('content-length') || '0') : 0;
+    if (headTotal && (lazyParam === '1' || headTotal > 700 * 1048576)) return loadRomLazy(url, headTotal);
+  }
   const resp = await fetch(url);
   if (!resp.ok) throw new Error('cannot fetch ' + url + ': HTTP ' + resp.status);
   const total = parseInt(resp.headers.get('content-length') || '0');

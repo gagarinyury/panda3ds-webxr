@@ -122,6 +122,34 @@ index b1191f6..5eb1dc7 100644
  	Kernel& getKernel() { return kernel; }
  	Scheduler& getScheduler() { return scheduler; }
  	Audio::DSPCore* getDSP() { return dsp.get(); }
+diff --git a/include/fs/archive_base.hpp b/include/fs/archive_base.hpp
+index 074f1cc..725ad48 100644
+--- a/include/fs/archive_base.hpp
++++ b/include/fs/archive_base.hpp
+@@ -234,6 +234,11 @@ class ArchiveBase {
+ 	virtual u64 getFreeBytes() = 0;
+ 	virtual HorizonResult createFile(const FSPath& path, u64 size) = 0;
+ 	virtual HorizonResult deleteFile(const FSPath& path) = 0;
++	// Archives that keep their data in host folders override this; the default only warns and reports success (the old stubbed behaviour)
++	virtual HorizonResult deleteDirectory(const FSPath& path, bool recursive) {
++		Helpers::warn("Unimplemented DeleteDirectory for %s archive", name().c_str());
++		return Result::Success;
++	}
+ 
+ 	virtual Rust::Result<FormatInfo, HorizonResult> getFormatInfo(const FSPath& path) {
+ 		Helpers::panic("Unimplemented GetFormatInfo for %s archive", name().c_str());
+diff --git a/include/fs/archive_ext_save_data.hpp b/include/fs/archive_ext_save_data.hpp
+index d2e3d97..3ac6b54 100644
+--- a/include/fs/archive_ext_save_data.hpp
++++ b/include/fs/archive_ext_save_data.hpp
+@@ -14,6 +14,7 @@ class ExtSaveDataArchive : public ArchiveBase {
+ 	HorizonResult createDirectory(const FSPath& path) override;
+ 	HorizonResult createFile(const FSPath& path, u64 size) override;
+ 	HorizonResult deleteFile(const FSPath& path) override;
++	HorizonResult deleteDirectory(const FSPath& path, bool recursive) override;
+ 	HorizonResult renameFile(const FSPath& oldPath, const FSPath& newPath) override;
+ 
+ 	Rust::Result<ArchiveBase*, HorizonResult> openArchive(const FSPath& path) override;
 diff --git a/include/kernel/kernel.hpp b/include/kernel/kernel.hpp
 index c6d5044..eb6b172 100644
 --- a/include/kernel/kernel.hpp
@@ -441,8 +469,48 @@ index a9ad3a9..63141b4 100644
  #endif
  })";
  		return ret;
+diff --git a/src/core/fs/archive_ext_save_data.cpp b/src/core/fs/archive_ext_save_data.cpp
+index 2aaa157..a1fe95e 100644
+--- a/src/core/fs/archive_ext_save_data.cpp
++++ b/src/core/fs/archive_ext_save_data.cpp
+@@ -126,6 +126,22 @@ HorizonResult ExtSaveDataArchive::renameFile(const FSPath& oldPath, const FSPath
+ 	return Result::Success;
+ }
+ 
++HorizonResult ExtSaveDataArchive::deleteDirectory(const FSPath& path, bool recursive) {
++	if (!path.isTextPath() || !isSafeTextPath(path)) {
++		Helpers::warn("ExtSaveData::DeleteDirectory: unsupported path");
++		return Result::FS::FileNotFoundAlt;
++	}
++
++	fs::path p = IOFile::getAppData() / backingFolder;
++	appendPath(p, path);
++
++	std::error_code ec;
++	if (!fs::is_directory(p, ec)) return Result::FS::FileNotFoundAlt;
++
++	if (recursive) fs::remove_all(p, ec); else fs::remove(p, ec);
++	return ec ? Result::FS::UnexpectedFileOrDir : Result::Success;
++}
++
+ HorizonResult ExtSaveDataArchive::createDirectory(const FSPath& path) {
+ 	if (path.isTextPath()) {
+ 		if (!isSafeTextPath(path)) {
+@@ -143,8 +159,10 @@ HorizonResult ExtSaveDataArchive::createDirectory(const FSPath& path) {
+ 			Helpers::panic("File path passed to ExtSaveData::CreateDirectory");
+ 		}
+ 
+-		bool success = fs::create_directory(p);
+-		return success ? Result::Success : Result::FS::UnexpectedFileOrDir;
++		// The throwing overloads abort the whole emulator when exceptions are disabled (web build): use error codes, and make missing parents too
++		std::error_code ec;
++		fs::create_directories(p, ec);
++		return ec ? Result::FS::UnexpectedFileOrDir : Result::Success;
+ 	} else {
+ 		Helpers::panic("Unimplemented ExtSaveData::CreateDirectory");
+ 	}
 diff --git a/src/core/fs/archive_ncch.cpp b/src/core/fs/archive_ncch.cpp
-index 5844bbd..e557813 100644
+index 5844bbd..712ca47 100644
 --- a/src/core/fs/archive_ncch.cpp
 +++ b/src/core/fs/archive_ncch.cpp
 @@ -3,8 +3,11 @@
@@ -457,7 +525,21 @@ index 5844bbd..e557813 100644
  namespace PathType {
  	enum : u32 {
  		RomFS = 0,
-@@ -93,16 +96,26 @@ std::optional<u32> NCCHArchive::readFile(FileSession* file, u64 offset, u32 size
+@@ -54,8 +57,11 @@ Rust::Result<ArchiveBase*, HorizonResult> NCCHArchive::openArchive(const FSPath&
+ 	}
+ 
+ 	const u32 mediaType = path.binary[8];
+-	if (mediaType != 0)
+-		Helpers::panic("NCCH archive. Tried to access a mediatype other than the NAND. Type: %d", mediaType);
++	// Games probe the SD card / game card for installed DLC and update titles. We have none: answer "not found" instead of aborting.
++	if (mediaType != 0) {
++		Helpers::warn("NCCH archive: mediatype %d is not supported (no such title installed), returning FileNotFoundAlt", mediaType);
++		return Err(Result::FS::FileNotFoundAlt);
++	}
+ 
+ 	return Ok((ArchiveBase*)this);
+ }
+@@ -93,16 +99,26 @@ std::optional<u32> NCCHArchive::readFile(FileSession* file, u64 offset, u32 size
  				Helpers::warn("Read from Shared Data archive 00010602");
  				return 0;
  			}
@@ -487,7 +569,7 @@ index 5844bbd..e557813 100644
  		}
  
  		u32 availableBytes = u32(fileData.size() - offset); // How many bytes we can read from the file
-@@ -113,7 +126,8 @@ std::optional<u32> NCCHArchive::readFile(FileSession* file, u64 offset, u32 size
+@@ -113,7 +129,8 @@ std::optional<u32> NCCHArchive::readFile(FileSession* file, u64 offset, u32 size
  
  		return bytesRead;
  	} else {
@@ -497,6 +579,51 @@ index 5844bbd..e557813 100644
  	}
  
  	// Code below is for mediaType == 2 (gamecard). Currently unused
+diff --git a/src/core/fs/archive_save_data.cpp b/src/core/fs/archive_save_data.cpp
+index 35bc93e..68830c0 100644
+--- a/src/core/fs/archive_save_data.cpp
++++ b/src/core/fs/archive_save_data.cpp
+@@ -55,7 +55,9 @@ HorizonResult SaveDataArchive::createDirectory(const FSPath& path) {
+ 			Helpers::panic("File path passed to SaveData::CreateDirectory");
+ 		}
+ 
+-		bool success = fs::create_directory(p);
++		std::error_code ec;   // error-code overload: the throwing one aborts the web build
++		fs::create_directories(p, ec);
++		bool success = !ec;
+ 		return success ? Result::Success : Result::FS::UnexpectedFileOrDir;
+ 	} else {
+ 		Helpers::panic("Unimplemented SaveData::CreateDirectory");
+diff --git a/src/core/fs/archive_system_save_data.cpp b/src/core/fs/archive_system_save_data.cpp
+index 038b2fc..09138af 100644
+--- a/src/core/fs/archive_system_save_data.cpp
++++ b/src/core/fs/archive_system_save_data.cpp
+@@ -101,7 +101,9 @@ HorizonResult SystemSaveDataArchive::createDirectory(const FSPath& path) {
+ 			Helpers::panic("File path passed to SystemSaveData::CreateDirectory");
+ 		}
+ 
+-		bool success = fs::create_directory(p);
++		std::error_code ec;   // error-code overload: the throwing one aborts the web build
++		fs::create_directories(p, ec);
++		bool success = !ec;
+ 		return success ? Result::Success : Result::FS::UnexpectedFileOrDir;
+ 	} else {
+ 		Helpers::panic("Unimplemented SystemSaveData::CreateDirectory");
+diff --git a/src/core/fs/archive_user_save_data.cpp b/src/core/fs/archive_user_save_data.cpp
+index dc55895..b2a16f5 100644
+--- a/src/core/fs/archive_user_save_data.cpp
++++ b/src/core/fs/archive_user_save_data.cpp
+@@ -52,7 +52,9 @@ HorizonResult UserSaveDataArchive::createDirectory(const FSPath& path) {
+ 			Helpers::panic("File path passed to UserSaveData::CreateDirectory");
+ 		}
+ 
+-		bool success = fs::create_directory(p);
++		std::error_code ec;   // error-code overload: the throwing one aborts the web build
++		fs::create_directories(p, ec);
++		bool success = !ec;
+ 		return success ? Result::Success : Result::FS::UnexpectedFileOrDir;
+ 	} else {
+ 		Helpers::panic("Unimplemented UserSaveData::CreateDirectory");
 diff --git a/src/core/kernel/file_operations.cpp b/src/core/kernel/file_operations.cpp
 index becf88e..693d9b7 100644
 --- a/src/core/kernel/file_operations.cpp
@@ -865,10 +992,34 @@ index 507532b..0b70502 100644
  	log("AM::ListDLCOrLicenseTicketInfos\n");  // Yes this is the actual name
  	u32 ticketCount = mem.read32(messagePointer + 4);
 diff --git a/src/core/services/fs.cpp b/src/core/services/fs.cpp
-index 5d6cb44..1afe66f 100644
+index 5d6cb44..09ecb0f 100644
 --- a/src/core/services/fs.cpp
 +++ b/src/core/services/fs.cpp
-@@ -371,6 +371,11 @@ void FSService::openFileDirectly(u32 messagePointer) {
+@@ -336,6 +336,10 @@ void FSService::openDirectory(u32 messagePointer) {
+ 		mem.write32(messagePointer + 12, dir.unwrap());
+ 	} else {
+ 		printf("FS::OpenDirectory failed\n");
++		if (std::getenv("FS_DEBUG")) {
++			std::string p8(dirPath.utf16_string.begin(), dirPath.utf16_string.end());
++			printf("  [fs] OpenDirectory archive=%s pathType=%u ascii='%s' utf16='%s'\n", archive->name().c_str(), dirPath.type, dirPath.string.c_str(), p8.c_str());
++		}
+ 		mem.write32(messagePointer + 4, static_cast<u32>(dir.unwrapErr()));
+ 	}
+ }
+@@ -363,7 +367,11 @@ void FSService::openFileDirectly(u32 messagePointer) {
+ 
+ 	Rust::Result<ArchiveBase*, Result::HorizonResult> res = archive->openArchive(archivePath);
+ 	if (res.isErr()) [[unlikely]] {
+-		Helpers::panic("OpenFileDirectly: Failed to open archive with given path");
++		// e.g. a game probing for DLC / update titles that are not installed: report the error to the game instead of aborting
++		Helpers::warn("OpenFileDirectly: Failed to open archive %d with given path, returning the archive error", archiveID);
++		mem.write32(messagePointer, IPC::responseHeader(0x803, 1, 2));
++		mem.write32(messagePointer + 4, res.unwrapErr());
++		return;
+ 	}
+ 	archive = res.unwrap();
+ 
+@@ -371,6 +379,11 @@ void FSService::openFileDirectly(u32 messagePointer) {
  	mem.write32(messagePointer, IPC::responseHeader(0x803, 1, 2));
  	if (!handle.has_value()) {
  		printf("OpenFileDirectly failed\n");
@@ -880,6 +1031,25 @@ index 5d6cb44..1afe66f 100644
  		mem.write32(messagePointer + 4, Result::FS::FileNotFound);
  	} else {
  		mem.write32(messagePointer + 4, Result::Success);
+@@ -432,9 +445,16 @@ void FSService::deleteDirectory(u32 messagePointer) {
+ 	const u32 filePathPointer = mem.read32(messagePointer + 28);
+ 	log("FS::DeleteDirectory\n");
+ 
+-	Helpers::warn("Stubbed FS::DeleteDirectory call!");
++	auto archiveObject = kernel.getObject(archiveHandle, KernelObjectType::Archive);
+ 	mem.write32(messagePointer, IPC::responseHeader(0x806, 1, 0));
+-	mem.write32(messagePointer + 4, Result::Success);
++	if (archiveObject == nullptr) [[unlikely]] {
++		mem.write32(messagePointer + 4, Result::FailurePlaceholder);
++		return;
++	}
++
++	ArchiveBase* archive = archiveObject->getData<ArchiveSession>()->archive;
++	auto dirPath = readPath(filePathType, filePathPointer, filePathSize);
++	mem.write32(messagePointer + 4, static_cast<u32>(archive->deleteDirectory(dirPath, false)));
+ }
+ 
+ void FSService::getFormatInfo(u32 messagePointer) {
 diff --git a/src/core/services/ir/ir_user.cpp b/src/core/services/ir/ir_user.cpp
 index 48aed95..7bfdaf1 100644
 --- a/src/core/services/ir/ir_user.cpp

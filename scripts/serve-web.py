@@ -10,7 +10,24 @@ class H(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, '.wasm': 'application/wasm', '.js': 'text/javascript', '.3dsx': 'application/octet-stream', '.3ds': 'application/octet-stream', '.cxi': 'application/octet-stream', '.cci': 'application/octet-stream'}
     def __init__(self, *a, **k): super().__init__(*a, directory=ROOT, **k)
     def end_headers(self):
-        self.send_header('Cache-Control', 'no-store'); super().end_headers()
+        self.send_header('Cache-Control', 'no-store'); self.send_header('Accept-Ranges', 'bytes'); super().end_headers()
+    def do_GET(self):
+        rng = self.headers.get('Range')
+        path = self.translate_path(self.path.split('?')[0])
+        if rng and rng.startswith('bytes=') and os.path.isfile(path):   # Range support: the page reads big game images in 1 MB pieces
+            size = os.path.getsize(path); a, _, b = rng[6:].partition('-')
+            start = int(a) if a else max(0, size - int(b)); end = min(int(b), size - 1) if (a and b) else size - 1
+            if start >= size: self.send_response(416); self.send_header('Content-Range', 'bytes */%d' % size); self.end_headers(); return
+            self.send_response(206); self.send_header('Content-Type', self.guess_type(path)); self.send_header('Content-Range', 'bytes %d-%d/%d' % (start, end, size))
+            self.send_header('Content-Length', str(end - start + 1)); self.end_headers()
+            with open(path, 'rb') as f:
+                f.seek(start); left = end - start + 1
+                while left > 0:
+                    d = f.read(min(1 << 20, left))
+                    if not d: break
+                    self.wfile.write(d); left -= len(d)
+            return
+        super().do_GET()
     def do_POST(self):
         n = int(self.headers.get('Content-Length', 0)); body = self.rfile.read(n)
         name = self.path.split('name=')[-1].split('&')[0]

@@ -36,10 +36,10 @@ index b234cd2..9ffbb3c 100644
          target_link_libraries(dynarmic PRIVATE rt)
 diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
 new file mode 100644
-index 0000000..8fa3e27
+index 0000000..fd63314
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_interface.cpp
-@@ -0,0 +1,410 @@
+@@ -0,0 +1,439 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -151,7 +151,7 @@ index 0000000..8fa3e27
 +            REG("xw8", H_xw8); REG("xw16", H_xw16); REG("xw32", H_xw32); REG("xw64", H_xw64);
 +            REG("clrex", H_clrex); REG("svc", H_svc); REG("exc", H_exc); REG("interp", H_interp); REG("isb", H_isb);
 +            REG("getcpsr", H_getcpsr); REG("setcpsr", H_setcpsr); REG("getfpscr", H_getfpscr); REG("setfpscr", H_setfpscr);
-+            REG("cpget1", H_cpget1); REG("cpcall", H_cpcall);
++            REG("pk", H_pk); REG("cpget1", H_cpget1); REG("cpcall", H_cpcall);
 +            REG("fadd32", H_fadd32); REG("fsub32", H_fsub32); REG("fmul32", H_fmul32); REG("fdiv32", H_fdiv32); REG("fsqrt32", H_fsqrt32);
 +            REG("fadd64", H_fadd64); REG("fsub64", H_fsub64); REG("fmul64", H_fmul64); REG("fdiv64", H_fdiv64); REG("fsqrt64", H_fsqrt64);
 +            REG("fcmp32", H_fcmp32); REG("fcmp64", H_fcmp64); REG("fs2d", H_fs2d); REG("fd2s", H_fd2s); REG("ftoi", H_ftoi); REG("itof", H_itof);
@@ -247,6 +247,35 @@ index 0000000..8fa3e27
 +#undef FP2
 +    static u32 H_fsqrt32(u32 c, u32 fpcr, u32 a) { return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) { return Backend::Wasm::FPSoft::Sqrt<u32>(a, cr, sr); }); }
 +    static u64 H_fsqrt64(u32 c, u32 fpcr, u64 a) { return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) { return Backend::Wasm::FPSoft::Sqrt<u64>(a, cr, sr); }); }
++    // Packed halving and saturating arithmetic (ARM UHADD8, SHSUB16, UHASX, UQSUB8, QADD16 ...): kind numbers are fixed in emit_a32.cpp (PK).
++    static u32 H_pk(u32 kind, u32 a, u32 b) {
++        auto sat = [](s64 v, s64 lo, s64 hi) { return v < lo ? lo : (v > hi ? hi : v); };
++        u32 r = 0;
++        if (kind >= 12) {   // saturating, 8 or 16 bit lanes
++            const bool w16 = kind >= 16, sub = (kind & 2) != 0, sgn = (kind & 1) != 0;
++            const int bits = w16 ? 16 : 8, lanes = w16 ? 2 : 4;
++            const s64 lo = sgn ? -(s64(1) << (bits - 1)) : 0, hi = sgn ? (s64(1) << (bits - 1)) - 1 : (s64(1) << bits) - 1;
++            for (int i = 0; i < lanes; i++) {
++                const u32 m = (1u << bits) - 1; u32 x = (a >> (i * bits)) & m, y = (b >> (i * bits)) & m;
++                s64 xs = sgn ? static_cast<s64>(static_cast<s32>(x << (32 - bits)) >> (32 - bits)) : x, ys = sgn ? static_cast<s64>(static_cast<s32>(y << (32 - bits)) >> (32 - bits)) : y;
++                r |= (static_cast<u32>(sat(sub ? xs - ys : xs + ys, lo, hi)) & m) << (i * bits);
++            }
++            return r;
++        }
++        const bool sgn = (kind & 1) != 0;
++        auto lane = [&](u32 v, int shift, int bits) -> s64 { const u32 m = (1u << bits) - 1; u32 x = (v >> shift) & m; return sgn ? static_cast<s64>(static_cast<s32>(x << (32 - bits)) >> (32 - bits)) : static_cast<s64>(x); };
++        if (kind < 8) {     // halving add/sub, same lane
++            const bool w16 = kind >= 4, sub = (kind & 2) != 0;
++            const int bits = w16 ? 16 : 8, lanes = w16 ? 2 : 4; const u32 m = (1u << bits) - 1;
++            for (int i = 0; i < lanes; i++) { const s64 x = lane(a, i * bits, bits), y = lane(b, i * bits, bits); r |= (static_cast<u32>((sub ? x - y : x + y) >> 1) & m) << (i * bits); }
++            return r;
++        }
++        // halving exchanged 16-bit forms: kind 8,9 = add on the top half / subtract on the bottom half (UHASX), kind 10,11 = subtract on top / add on bottom (UHSAX)
++        const bool add_top = kind < 10;
++        const s64 hi = add_top ? lane(a, 16, 16) + lane(b, 0, 16) : lane(a, 16, 16) - lane(b, 0, 16);
++        const s64 lo = add_top ? lane(a, 0, 16) - lane(b, 16, 16) : lane(a, 0, 16) + lane(b, 16, 16);
++        return ((static_cast<u32>(hi >> 1) & 0xFFFF) << 16) | (static_cast<u32>(lo >> 1) & 0xFFFF);
++    }
 +    static u32 H_fcmp32(u32 c, u32 fpcr, u32 a, u32 b, u32 exc) { return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) { return Backend::Wasm::FPSoft::Compare<u32>(a, b, exc != 0, cr, sr); }); }
 +    static u32 H_fcmp64(u32 c, u32 fpcr, u64 a, u64 b, u32 exc) { return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) { return Backend::Wasm::FPSoft::Compare<u64>(a, b, exc != 0, cr, sr); }); }
 +    static u64 H_fs2d(u32 c, u32 fpcr, u32 a, u32 rm) { return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) { return Backend::Wasm::FPSoft::SingleToDouble(a, cr, static_cast<FP::RoundingMode>(rm), sr); }); }
@@ -591,10 +620,10 @@ index 0000000..95cbcd9
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.cpp b/src/dynarmic/backend/wasm/emit_a32.cpp
 new file mode 100644
-index 0000000..7197326
+index 0000000..4f33ca4
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.cpp
-@@ -0,0 +1,1549 @@
+@@ -0,0 +1,1556 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -1611,6 +1640,13 @@ index 0000000..7197326
 +            return;
 +        }
 +        case Opcode::PackedAbsDiffSumU8: EmitPackedAbsDiffSum8(inst); return;
++#define PK(op, id) case Opcode::op: c.I32Const(id); Ld(inst->GetArg(0)); Ld(inst->GetArg(1)); CallHelper("pk"); Set(inst); return;
++        PK(PackedHalvingAddU8, 0) PK(PackedHalvingAddS8, 1) PK(PackedHalvingSubU8, 2) PK(PackedHalvingSubS8, 3)
++        PK(PackedHalvingAddU16, 4) PK(PackedHalvingAddS16, 5) PK(PackedHalvingSubU16, 6) PK(PackedHalvingSubS16, 7)
++        PK(PackedHalvingAddSubU16, 8) PK(PackedHalvingAddSubS16, 9) PK(PackedHalvingSubAddU16, 10) PK(PackedHalvingSubAddS16, 11)
++        PK(PackedSaturatedAddU8, 12) PK(PackedSaturatedAddS8, 13) PK(PackedSaturatedSubU8, 14) PK(PackedSaturatedSubS8, 15)
++        PK(PackedSaturatedAddU16, 16) PK(PackedSaturatedAddS16, 17) PK(PackedSaturatedSubU16, 18) PK(PackedSaturatedSubS16, 19)
++#undef PK
 +
 +        // ----- saturation -----
 +        case Opcode::SignedSaturatedAddWithFlag32: {
@@ -2146,10 +2182,10 @@ index 0000000..7197326
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.h b/src/dynarmic/backend/wasm/emit_a32.h
 new file mode 100644
-index 0000000..988a0df
+index 0000000..6efb1aa
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.h
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,68 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + */
@@ -2186,6 +2222,7 @@ index 0000000..988a0df
 +    {"fadd32", "iiii>i"}, {"fsub32", "iiii>i"}, {"fmul32", "iiii>i"}, {"fdiv32", "iiii>i"}, {"fsqrt32", "iii>i"},
 +    {"fadd64", "iill>l"}, {"fsub64", "iill>l"}, {"fmul64", "iill>l"}, {"fdiv64", "iill>l"}, {"fsqrt64", "iil>l"},
 +    {"fcmp32", "iiiii>i"}, {"fcmp64", "iilli>i"},
++    {"pk", "iii>i"},   // packed halving / saturating ops: (kind, a, b) -> result, see H_pk
 +    {"fs2d", "iiii>l"}, {"fd2s", "iili>i"},
 +    {"ftoi", "iili>i"},   // (ctx, fpcr, value as i64, mode) -> int bits
 +    {"itof", "iiii>l"},   // (ctx, fpcr, int bits, mode) -> float bits (zero-extended)
