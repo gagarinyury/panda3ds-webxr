@@ -172,6 +172,20 @@ index ad1a1f5..0482518 100644
  		}
  	}
  
+diff --git a/include/services/am.hpp b/include/services/am.hpp
+index f72a5ef..386a467 100644
+--- a/include/services/am.hpp
++++ b/include/services/am.hpp
+@@ -16,6 +16,9 @@ class AMService {
+ 	void getDLCTitleInfo(u32 messagePointer);
+ 	void getPatchTitleInfo(u32 messagePointer);
+ 	void listTitleInfo(u32 messagePointer);
++	void getTitleCount(u32 messagePointer);
++	void getTitleList(u32 messagePointer);
++	void getTitleIdList(u32 messagePointer);
+ 
+   public:
+ 	AMService(Memory& mem) : mem(mem) {}
 diff --git a/include/services/service_manager.hpp b/include/services/service_manager.hpp
 index f51ddf2..7b2834d 100644
 --- a/include/services/service_manager.hpp
@@ -424,6 +438,69 @@ index 659a1e1..cd12852 100644
  
  	if (usingAcceleratedShader) {
  		glBindBufferRange(
+diff --git a/src/core/services/am.cpp b/src/core/services/am.cpp
+index 507532b..0b70502 100644
+--- a/src/core/services/am.cpp
++++ b/src/core/services/am.cpp
+@@ -4,6 +4,9 @@
+ 
+ namespace AMCommands {
+ 	enum : u32 {
++		GetTitleCount = 0x00180080,
++		GetTitleList = 0x00190102,
++		GetTitleIdList = 0x001A00C2,
+ 		GetDLCTitleInfo = 0x10050084,
+ 		ListTitleInfo = 0x10070102,
+ 		GetPatchTitleInfo = 0x100D0084,
+@@ -14,14 +17,43 @@ void AMService::reset() {}
+ 
+ void AMService::handleSyncRequest(u32 messagePointer) {
+ 	const u32 command = mem.read32(messagePointer);
+-	switch (command) {
+-		case AMCommands::GetPatchTitleInfo: getPatchTitleInfo(messagePointer); break;
+-		case AMCommands::GetDLCTitleInfo: getDLCTitleInfo(messagePointer); break;
+-		case AMCommands::ListTitleInfo: listTitleInfo(messagePointer); break;
+-		default: Helpers::panic("AM service requested. Command: %08X\n", command);
++	const u32 commandID = command >> 16;
++	switch (commandID) {
++		case 0x0018: getTitleCount(messagePointer); break;
++		case 0x0019: getTitleList(messagePointer); break;
++		case 0x001A: getTitleIdList(messagePointer); break;
++		case 0x1005: getDLCTitleInfo(messagePointer); break;
++		case 0x1007: listTitleInfo(messagePointer); break;
++		case 0x100D: getPatchTitleInfo(messagePointer); break;
++		default:
++			Helpers::warn("Unimplemented AM command: %08X\n", command);
++			mem.write32(messagePointer, IPC::responseHeader(commandID, 1, 0));
++			mem.write32(messagePointer + 4, Result::FailurePlaceholder);
++			break;
+ 	}
+ }
+ 
++void AMService::getTitleCount(u32 messagePointer) {
++	log("AM::GetTitleCount\n");
++	mem.write32(messagePointer, IPC::responseHeader(0x0018, 2, 0));
++	mem.write32(messagePointer + 4, Result::Success);
++	mem.write32(messagePointer + 8, 0);
++}
++
++void AMService::getTitleList(u32 messagePointer) {
++	log("AM::GetTitleList\n");
++	mem.write32(messagePointer, IPC::responseHeader(0x0019, 2, 0));
++	mem.write32(messagePointer + 4, Result::Success);
++	mem.write32(messagePointer + 8, 0);
++}
++
++void AMService::getTitleIdList(u32 messagePointer) {
++	log("AM::GetTitleIdList\n");
++	mem.write32(messagePointer, IPC::responseHeader(0x001A, 2, 0));
++	mem.write32(messagePointer + 4, Result::Success);
++	mem.write32(messagePointer + 8, 0);
++}
++
+ void AMService::listTitleInfo(u32 messagePointer) {
+ 	log("AM::ListDLCOrLicenseTicketInfos\n");  // Yes this is the actual name
+ 	u32 ticketCount = mem.read32(messagePointer + 4);
 diff --git a/src/core/services/fs.cpp b/src/core/services/fs.cpp
 index 5d6cb44..1afe66f 100644
 --- a/src/core/services/fs.cpp
@@ -440,8 +517,26 @@ index 5d6cb44..1afe66f 100644
  		mem.write32(messagePointer + 4, Result::FS::FileNotFound);
  	} else {
  		mem.write32(messagePointer + 4, Result::Success);
+diff --git a/src/core/services/ir/ir_user.cpp b/src/core/services/ir/ir_user.cpp
+index 48aed95..7bfdaf1 100644
+--- a/src/core/services/ir/ir_user.cpp
++++ b/src/core/services/ir/ir_user.cpp
+@@ -55,7 +55,12 @@ void IRUserService::handleSyncRequest(u32 messagePointer) {
+ 		case IRUserCommands::ClearReceiveBuffer: clearReceiveBuffer(messagePointer); break;
+ 		case IRUserCommands::ClearSendBuffer: clearSendBuffer(messagePointer); break;
+ 		case IRUserCommands::ReleaseReceivedData: releaseReceivedData(messagePointer); break;
+-		default: Helpers::panic("ir:USER service requested. Command: %08X\n", command);
++		default:
++			Helpers::warn("Unimplemented ir:USER command: %08X\n", command);
++			const u32 cmdId = command >> 16;
++			mem.write32(messagePointer, IPC::responseHeader(cmdId, 1, 0));
++			mem.write32(messagePointer + 4, Result::FailurePlaceholder);
++			break;
+ 	}
+ }
+ 
 diff --git a/src/core/services/service_manager.cpp b/src/core/services/service_manager.cpp
-index bd4488e..7aeca48 100644
+index bd4488e..dfb6e92 100644
 --- a/src/core/services/service_manager.cpp
 +++ b/src/core/services/service_manager.cpp
 @@ -87,6 +87,7 @@ void ServiceManager::handleSyncRequest(u32 messagePointer) {
@@ -452,7 +547,16 @@ index bd4488e..7aeca48 100644
  		default: Helpers::panic("Unknown \"srv:\" command: %08X", header); break;
  	}
  }
-@@ -135,6 +136,7 @@ static const ServiceMapEntry serviceMapArray[] = {
+@@ -106,6 +107,8 @@ static const ServiceMapEntry serviceMapArray[] = {
+ 	{ "act:u", KernelHandles::ACT },
+ 	{ "am:app", KernelHandles::AM },
+ 	{ "am:sys", KernelHandles::AM },
++	{ "am:u", KernelHandles::AM },
++	{ "am:net", KernelHandles::AM },
+ 	{ "APT:S", KernelHandles::APT }, // TODO: APT:A, APT:S and APT:U are slightly different
+ 	{ "APT:A", KernelHandles::APT },
+ 	{ "APT:U", KernelHandles::APT },
+@@ -135,6 +138,7 @@ static const ServiceMapEntry serviceMapArray[] = {
  	{ "ndm:u", KernelHandles::NDM },
  	{ "news:u", KernelHandles::NEWS_U },
  	{ "nfc:u", KernelHandles::NFC },
@@ -460,7 +564,7 @@ index bd4488e..7aeca48 100644
  	{ "ns:s", KernelHandles::NS_S },
  	{ "nwm::EXT", KernelHandles::NWM_EXT },
  	{ "nwm::UDS", KernelHandles::NWM_UDS },
-@@ -161,15 +163,28 @@ void ServiceManager::getServiceHandle(u32 messagePointer) {
+@@ -161,15 +165,28 @@ void ServiceManager::getServiceHandle(u32 messagePointer) {
  	std::string service = mem.readString(messagePointer + 4, 8);
  	log("srv::getServiceHandle (Service: %s, nameLength: %d, flags: %d)\n", service.c_str(), nameLength, flags);
  
