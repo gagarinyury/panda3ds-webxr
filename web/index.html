@@ -250,7 +250,7 @@ async function loadRomUrl(url) {
 }
 
 async function start() {
-  if (useGL) { const g = document.getElementById('gl'); g.width = GLW; g.height = GLH; g.style.width = Math.round(GLW * (innerWidth >= 900 ? Math.min(scale, (innerWidth - 440) / GLW) : Math.min(scale, (innerWidth - 16) / GLW))) + 'px';   // never wider than what fits next to the diagnostics column g.style.display = 'block'; document.getElementById('pad').style.display = 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
+  if (useGL) { const g = document.getElementById('gl'); g.width = GLW; g.height = GLH; g.style.width = Math.round(GLW * (innerWidth >= 900 ? Math.min(scale, (innerWidth - 440) / GLW) : Math.min(scale, (innerWidth - 16) / GLW))) + 'px'; g.style.display = 'block'; document.getElementById('pad').style.display = 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
   if (!Module._web_init(useGL ? 1 : 0, GLW, GLH)) { log('[FATAL] web_init failed', true); finish(); return; }
   initGpuTimer();   // after web_init: the emulator must be the one that creates the WebGL context (its attributes: no alpha, depth, stencil)
 
