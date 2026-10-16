@@ -13,5 +13,5 @@ Not affiliated with Nintendo or Apple. No game data, firmware or keys are includ
 |---|---|
 | Dynarmic A32 front end + IR build with Emscripten (wasm32) | ✅ builds; needs [two small patches](patches/dynarmic-wasm32.patch) |
 | Panda3DS core builds with Emscripten | ⏳ |
-| A real ARMv6 block decoded to IR inside WASM | ⏳ |
+| A real ARMv6 block decoded to IR inside WASM | ✅ [`probe/ir_dump.cpp`](probe/ir_dump.cpp), output in [`probe/data/`](probe/data/hash_loop.ir.txt) — a 29-instruction raw IR block optimises to 17 |
 | IR → WASM backend | — |

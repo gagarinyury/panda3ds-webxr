@@ -5,7 +5,7 @@ set(D ${CMAKE_CURRENT_LIST_DIR}/../Panda3DS/third_party/dynarmic)
 set(S ${D}/src/dynarmic)
 file(GLOB_RECURSE SRCS
   ${S}/common/*.cpp ${S}/ir/*.cpp ${S}/ir/opt/*.cpp
-  ${S}/frontend/imm.cpp ${S}/frontend/A32/*.cpp ${S}/frontend/A32/translate/*.cpp ${S}/frontend/A32/translate/impl/*.cpp
+  ${S}/frontend/imm.cpp ${S}/frontend/A64/a64_types.cpp ${D}/externals/mcl/src/assert.cpp ${S}/frontend/A32/*.cpp ${S}/frontend/A32/translate/*.cpp ${S}/frontend/A32/translate/impl/*.cpp
 )
 list(FILTER SRCS EXCLUDE REGEX "llvm_disassemble|x64_disassemble|spin_lock_arm64|spin_lock_x64|/disassembler/|ir/opt/a64_")
 add_library(dynfront STATIC ${SRCS})

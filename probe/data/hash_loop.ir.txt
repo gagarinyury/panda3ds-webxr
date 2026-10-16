@@ -1,0 +1,103 @@
+loaded 56 bytes
+
+===== block @0x0 : raw IR (11 instructions) =====
+Block: location={0000000000000000}
+cycles=3, entry_cond=al
+[0000000000048e18] noname = GetCFlag (uses: 1)
+[0000000000048e78] noname = GetRegister r0 (uses: 1)
+[0000000000048ed8] noname = LogicalShiftLeft32 %<unnamed inst 0000000000048e78>, #0, %<unnamed inst 0000000000048e18> (uses: 2)
+[0000000000048f38] noname = GetCarryFromOp %<unnamed inst 0000000000048ed8> (uses: 0)
+[0000000000048f98]          SetRegister r2, %<unnamed inst 0000000000048ed8> (uses: 0)
+[0000000000048ff8] noname = ReadMemory32 #0x4, #0x30, <unknown immediate type> (uses: 1)
+[0000000000049058]          SetRegister r0, %<unnamed inst 0000000000048ff8> (uses: 0)
+[00000000000490b8] noname = GetRegister r1 (uses: 1)
+[0000000000049118] noname = Sub32 %<unnamed inst 00000000000490b8>, #0x0, #1 (uses: 1)
+[0000000000049178] noname = GetNZCVFromOp %<unnamed inst 0000000000049118> (uses: 1)
+[00000000000491d8]          SetCpsrNZCV %<unnamed inst 0000000000049178> (uses: 0)
+terminal = LinkBlockFast{{000000000000000c}}
+
+===== block @0x0 : optimised IR (8 instructions) =====
+Block: location={0000000000000000}
+cycles=3, entry_cond=al
+[0000000000048e78] noname = GetRegister r0 (uses: 1)
+[0000000000048f98]          SetRegister r2, %<unnamed inst 0000000000048e78> (uses: 0)
+[0000000000048ff8] noname = ReadMemory32 #0x4, #0x30, <unknown immediate type> (uses: 1)
+[0000000000049058]          SetRegister r0, %<unnamed inst 0000000000048ff8> (uses: 0)
+[00000000000490b8] noname = GetRegister r1 (uses: 1)
+[0000000000049118] noname = Sub32 %<unnamed inst 00000000000490b8>, #0x0, #1 (uses: 1)
+[0000000000049178] noname = GetNZCVFromOp %<unnamed inst 0000000000049118> (uses: 1)
+[00000000000491d8]          SetCpsrNZCV %<unnamed inst 0000000000049178> (uses: 0)
+terminal = LinkBlockFast{{000000000000000c}}
+
+
+===== block @0x10 : raw IR (29 instructions) =====
+Block: location={0000000000000010}
+cycles=6, entry_cond=al
+[0000000000048e18] noname = ReadMemory32 #0x10, #0x34, <unknown immediate type> (uses: 1)
+[0000000000048e78]          SetRegister r12, %<unnamed inst 0000000000048e18> (uses: 0)
+[0000000000048ed8] noname = GetRegister r2 (uses: 1)
+[0000000000048f38] noname = Add32 %<unnamed inst 0000000000048ed8>, #0x4, #0 (uses: 1)
+[0000000000048f98] noname = GetRegister r2 (uses: 1)
+[0000000000048ff8]          SetRegister r2, %<unnamed inst 0000000000048f38> (uses: 0)
+[0000000000049058] noname = ReadMemory32 #0x14, %<unnamed inst 0000000000048f98>, <unknown immediate type> (uses: 1)
+[00000000000490b8]          SetRegister r3, %<unnamed inst 0000000000049058> (uses: 0)
+[0000000000049118] noname = GetRegister r1 (uses: 1)
+[0000000000049178] noname = Sub32 %<unnamed inst 0000000000049118>, #0x1, #1 (uses: 2)
+[00000000000491d8]          SetRegister r1, %<unnamed inst 0000000000049178> (uses: 0)
+[0000000000049238] noname = GetNZCVFromOp %<unnamed inst 0000000000049178> (uses: 1)
+[0000000000049298]          SetCpsrNZCV %<unnamed inst 0000000000049238> (uses: 0)
+[00000000000492f8] noname = GetCFlag (uses: 1)
+[0000000000049358] noname = GetRegister r0 (uses: 1)
+[00000000000493b8] noname = LogicalShiftLeft32 %<unnamed inst 0000000000049358>, #0, %<unnamed inst 00000000000492f8> (uses: 2)
+[0000000000049418] noname = GetCarryFromOp %<unnamed inst 00000000000493b8> (uses: 0)
+[0000000000049478] noname = GetRegister r3 (uses: 1)
+[00000000000494d8] noname = Eor32 %<unnamed inst 0000000000049478>, %<unnamed inst 00000000000493b8> (uses: 1)
+[0000000000049538]          SetRegister r0, %<unnamed inst 00000000000494d8> (uses: 0)
+[0000000000049598] noname = GetRegister r0 (uses: 1)
+[00000000000495f8] noname = GetRegister r12 (uses: 1)
+[0000000000049658] noname = Mul32 %<unnamed inst 0000000000049598>, %<unnamed inst 00000000000495f8> (uses: 1)
+[00000000000496b8]          SetRegister r0, %<unnamed inst 0000000000049658> (uses: 0)
+[0000000000049718] noname = GetCFlag (uses: 1)
+[0000000000049778] noname = GetRegister r0 (uses: 1)
+[00000000000497d8] noname = RotateRight32 %<unnamed inst 0000000000049778>, #27, %<unnamed inst 0000000000049718> (uses: 2)
+[0000000000049838] noname = GetCarryFromOp %<unnamed inst 00000000000497d8> (uses: 0)
+[0000000000049898]          SetRegister r0, %<unnamed inst 00000000000497d8> (uses: 0)
+terminal = LinkBlockFast{{0000000000000028}}
+
+===== block @0x10 : optimised IR (17 instructions) =====
+Block: location={0000000000000010}
+cycles=6, entry_cond=al
+[0000000000048e18] noname = ReadMemory32 #0x10, #0x34, <unknown immediate type> (uses: 2)
+[0000000000048e78]          SetRegister r12, %<unnamed inst 0000000000048e18> (uses: 0)
+[0000000000048ed8] noname = GetRegister r2 (uses: 2)
+[0000000000048f38] noname = Add32 %<unnamed inst 0000000000048ed8>, #0x4, #0 (uses: 1)
+[0000000000048ff8]          SetRegister r2, %<unnamed inst 0000000000048f38> (uses: 0)
+[0000000000049058] noname = ReadMemory32 #0x14, %<unnamed inst 0000000000048ed8>, <unknown immediate type> (uses: 2)
+[00000000000490b8]          SetRegister r3, %<unnamed inst 0000000000049058> (uses: 0)
+[0000000000049118] noname = GetRegister r1 (uses: 1)
+[0000000000049178] noname = Sub32 %<unnamed inst 0000000000049118>, #0x1, #1 (uses: 2)
+[00000000000491d8]          SetRegister r1, %<unnamed inst 0000000000049178> (uses: 0)
+[0000000000049238] noname = GetNZCVFromOp %<unnamed inst 0000000000049178> (uses: 1)
+[0000000000049298]          SetCpsrNZCV %<unnamed inst 0000000000049238> (uses: 0)
+[0000000000049358] noname = GetRegister r0 (uses: 1)
+[00000000000494d8] noname = Eor32 %<unnamed inst 0000000000049058>, %<unnamed inst 0000000000049358> (uses: 1)
+[0000000000049658] noname = Mul32 %<unnamed inst 00000000000494d8>, %<unnamed inst 0000000000048e18> (uses: 1)
+[00000000000497d8] noname = RotateRight32 %<unnamed inst 0000000000049658>, #27, #0 (uses: 1)
+[0000000000049898]          SetRegister r0, %<unnamed inst 00000000000497d8> (uses: 0)
+terminal = LinkBlockFast{{0000000000000028}}
+
+
+===== block @0x2c : raw IR (2 instructions) =====
+Block: location={000000000000002c}
+cycles=1, entry_cond=al
+[0000000000048e18] noname = GetRegister lr (uses: 1)
+[0000000000048e78]          BXWritePC %<unnamed inst 0000000000048e18> (uses: 0)
+terminal = PopRSBHint{}
+
+===== block @0x2c : optimised IR (2 instructions) =====
+Block: location={000000000000002c}
+cycles=1, entry_cond=al
+[0000000000048e18] noname = GetRegister lr (uses: 1)
+[0000000000048e78]          BXWritePC %<unnamed inst 0000000000048e18> (uses: 0)
+terminal = PopRSBHint{}
+
