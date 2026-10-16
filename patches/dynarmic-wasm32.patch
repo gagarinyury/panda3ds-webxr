@@ -1,3 +1,159 @@
+diff --git a/src/dynarmic/CMakeLists.txt b/src/dynarmic/CMakeLists.txt
+index b234cd2..b0c251d 100644
+--- a/src/dynarmic/CMakeLists.txt
++++ b/src/dynarmic/CMakeLists.txt
+@@ -340,6 +340,15 @@ if ("x86_64" IN_LIST ARCHITECTURE)
+     endif()
+ endif()
+ 
++if ("wasm" IN_LIST ARCHITECTURE)
++    if ("A32" IN_LIST DYNARMIC_FRONTENDS)
++        target_architecture_specific_sources(dynarmic "wasm"
++            backend/wasm/a32_interface.cpp
++            backend/wasm/exclusive_monitor.cpp
++        )
++    endif()
++endif()
++
+ if ("arm64" IN_LIST ARCHITECTURE)
+     target_link_libraries(dynarmic PRIVATE merry::oaknut)
+ 
+@@ -485,6 +494,8 @@ elseif (APPLE)
+             backend/exception_handler_macos_mig.c
+         )
+     endif()
++elseif ("wasm" IN_LIST ARCHITECTURE)
++    # no hardware fault handling / fastmem on WebAssembly
+ elseif (UNIX)
+     if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+         target_link_libraries(dynarmic PRIVATE rt)
+diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
+new file mode 100644
+index 0000000..31fd43d
+--- /dev/null
++++ b/src/dynarmic/backend/wasm/a32_interface.cpp
+@@ -0,0 +1,49 @@
++/* This file is part of the panda3ds-wasm project.
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * A32 Jit interface for the WebAssembly backend.
++ * STUB: holds guest state only; Run() does not execute code yet.
++ */
++
++#include <memory>
++#include <string>
++#include <vector>
++
++#include "dynarmic/interface/A32/a32.h"
++#include "dynarmic/interface/A32/config.h"
++
++namespace Dynarmic::A32 {
++
++struct Jit::Impl {
++    explicit Impl(UserConfig c) : conf(std::move(c)) {}
++    UserConfig conf;
++    std::array<std::uint32_t, 16> regs{};
++    std::array<std::uint32_t, 64> ext_regs{};
++    std::uint32_t cpsr = 0;
++    std::uint32_t fpscr = 0;
++    HaltReason halt{};
++};
++
++Jit::Jit(UserConfig conf) : impl(std::make_unique<Impl>(std::move(conf))) {}
++Jit::~Jit() = default;
++
++HaltReason Jit::Run() { return HaltReason::UserDefined8; }  // not implemented yet
++HaltReason Jit::Step() { return HaltReason::Step; }
++void Jit::ClearCache() {}
++void Jit::InvalidateCacheRange(std::uint32_t, std::size_t) {}
++void Jit::Reset() { impl->regs.fill(0); impl->ext_regs.fill(0); impl->cpsr = 0; impl->fpscr = 0; }
++void Jit::HaltExecution(HaltReason hr) { impl->halt = impl->halt | hr; }
++void Jit::ClearHalt(HaltReason hr) { impl->halt = impl->halt & ~hr; }
++std::array<std::uint32_t, 16>& Jit::Regs() { return impl->regs; }
++const std::array<std::uint32_t, 16>& Jit::Regs() const { return impl->regs; }
++std::array<std::uint32_t, 64>& Jit::ExtRegs() { return impl->ext_regs; }
++const std::array<std::uint32_t, 64>& Jit::ExtRegs() const { return impl->ext_regs; }
++std::uint32_t Jit::Cpsr() const { return impl->cpsr; }
++void Jit::SetCpsr(std::uint32_t value) { impl->cpsr = value; }
++std::uint32_t Jit::Fpscr() const { return impl->fpscr; }
++void Jit::SetFpscr(std::uint32_t value) { impl->fpscr = value; }
++void Jit::ClearExclusiveState() {}
++void Jit::DumpDisassembly() const {}
++std::vector<std::string> Jit::Disassemble() const { return {}; }
++
++}  // namespace Dynarmic::A32
+diff --git a/src/dynarmic/backend/wasm/exclusive_monitor.cpp b/src/dynarmic/backend/wasm/exclusive_monitor.cpp
+new file mode 100644
+index 0000000..c1651b4
+--- /dev/null
++++ b/src/dynarmic/backend/wasm/exclusive_monitor.cpp
+@@ -0,0 +1,66 @@
++/* This file is part of the dynarmic project.
++ * Copyright (c) 2018 MerryMage
++ * SPDX-License-Identifier: 0BSD
++ */
++
++#include "dynarmic/interface/exclusive_monitor.h"
++
++#include <algorithm>
++
++#include <mcl/assert.hpp>
++
++namespace Dynarmic {
++
++ExclusiveMonitor::ExclusiveMonitor(size_t processor_count)
++        : exclusive_addresses(processor_count, INVALID_EXCLUSIVE_ADDRESS), exclusive_values(processor_count) {}
++
++size_t ExclusiveMonitor::GetProcessorCount() const {
++    return exclusive_addresses.size();
++}
++
++void ExclusiveMonitor::Lock() {
++    lock.Lock();
++}
++
++void ExclusiveMonitor::Unlock() {
++    lock.Unlock();
++}
++
++bool ExclusiveMonitor::CheckAndClear(size_t processor_id, VAddr address) {
++    const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
++
++    Lock();
++    if (exclusive_addresses[processor_id] != masked_address) {
++        Unlock();
++        return false;
++    }
++
++    for (VAddr& other_address : exclusive_addresses) {
++        if (other_address == masked_address) {
++            other_address = INVALID_EXCLUSIVE_ADDRESS;
++        }
++    }
++    return true;
++}
++
++void ExclusiveMonitor::Clear() {
++    Lock();
++    std::fill(exclusive_addresses.begin(), exclusive_addresses.end(), INVALID_EXCLUSIVE_ADDRESS);
++    Unlock();
++}
++
++void ExclusiveMonitor::ClearProcessor(size_t processor_id) {
++    Lock();
++    exclusive_addresses[processor_id] = INVALID_EXCLUSIVE_ADDRESS;
++    Unlock();
++}
++
++}  // namespace Dynarmic
++
++// SpinLock for WebAssembly: Dynarmic's guest runs on one thread here, so a plain atomic flag is enough.
++#include "dynarmic/common/spin_lock.h"
++
++namespace Dynarmic {
++void SpinLock::Lock() { while (__atomic_exchange_n(&storage, 1, __ATOMIC_ACQUIRE) != 0) {} }
++void SpinLock::Unlock() { __atomic_store_n(&storage, 0, __ATOMIC_RELEASE); }
++}  // namespace Dynarmic
 diff --git a/src/dynarmic/common/fp/op/FPRecipExponent.cpp b/src/dynarmic/common/fp/op/FPRecipExponent.cpp
 index 171b94e..9ed8637 100644
 --- a/src/dynarmic/common/fp/op/FPRecipExponent.cpp
@@ -11,6 +167,19 @@ index 171b94e..9ed8637 100644
      if constexpr (sizeof(FPT) == sizeof(u32)) {
          return static_cast<FPT>(mcl::bit::get_bits<23, 30>(value));
      } else if constexpr (sizeof(FPT) == sizeof(u64)) {
+diff --git a/src/dynarmic/common/llvm_disassemble.cpp b/src/dynarmic/common/llvm_disassemble.cpp
+index 636ee3a..2861b7d 100644
+--- a/src/dynarmic/common/llvm_disassemble.cpp
++++ b/src/dynarmic/common/llvm_disassemble.cpp
+@@ -50,7 +50,7 @@ std::string DisassembleX64(const void* begin, const void* end) {
+     LLVMDisasmDispose(llvm_ctx);
+ #else
+     result += fmt::format("(recompile with DYNARMIC_USE_LLVM=ON to disassemble the generated x86_64 code)\n");
+-    result += fmt::format("start: {:016x}, end: {:016x}\n", mcl::bit_cast<u64>(begin), mcl::bit_cast<u64>(end));
++    result += fmt::format("start: {:016x}, end: {:016x}\n", static_cast<u64>(reinterpret_cast<uintptr_t>(begin)), static_cast<u64>(reinterpret_cast<uintptr_t>(end)));
+ #endif
+ 
+     return result;
 diff --git a/src/dynarmic/ir/ir_emitter.cpp b/src/dynarmic/ir/ir_emitter.cpp
 index fc4f69b..c1de9a5 100644
 --- a/src/dynarmic/ir/ir_emitter.cpp
