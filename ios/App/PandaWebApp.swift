@@ -174,6 +174,7 @@ final class Host: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         lastMsg = Date()
         if type == "frame" { lastFrame = obj?["n"] as? Int ?? lastFrame }
         if type == "crumb" || type == "frame" { return }
+        if type == "shot" { plog(s); return }   // canvas screenshot (gl=1 + report=1): the host script saves it
         if type == "done" {
             let g = { (k: String) -> String in
                 if let v = obj?[k] as? Double { return String(format: "%.1f", v) }
