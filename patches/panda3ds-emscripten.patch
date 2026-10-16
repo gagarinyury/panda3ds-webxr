@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2f4d9df..8b3ea37 100644
+index 2f4d9df..2b9ddae 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -177,7 +177,10 @@ if(ENABLE_DISCORD_RPC AND NOT ANDROID)
@@ -50,7 +50,7 @@ index 2f4d9df..8b3ea37 100644
 +    target_link_libraries(AlberWeb PRIVATE AlberCore)
 +    target_link_options(AlberWeb PRIVATE -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456 -sSTACK_SIZE=2097152 -sFORCE_FILESYSTEM=1
 +        -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1
-+        "-sEXPORTED_FUNCTIONS=_main,_web_init,_web_load,_web_frame,_web_screen" "-sEXPORTED_RUNTIME_METHODS=FS,ccall,cwrap,HEAPU8,stringToNewUTF8,ENV" --profiling-funcs)
++        "-sEXPORTED_FUNCTIONS=_main,_web_init,_web_load,_web_frame,_web_screen,_web_key,_web_touch,_web_circle" "-sEXPORTED_RUNTIME_METHODS=FS,ccall,cwrap,HEAPU8,stringToNewUTF8,ENV" --profiling-funcs)
 +endif()
 +
  if(NOT BUILD_HYDRA_CORE AND NOT BUILD_LIBRETRO_CORE)

@@ -11,6 +11,7 @@
 #include "PICA/gpu.hpp"
 #include "PICA/regs.hpp"
 #include "emulator.hpp"
+#include "services/hid.hpp"
 #include "opengl.hpp"
 
 static std::unique_ptr<Emulator> emu;
@@ -81,8 +82,24 @@ EMSCRIPTEN_KEEPALIVE int web_load(const char* path) {
 }
 
 EMSCRIPTEN_KEEPALIVE int web_frame() {
+    emu->getServiceManager().getHID().updateInputs(emu->getTicks());   // publish the button / touch state to the guest, once per frame like the SDL frontend
     emu->runFrame();
     return emu->running ? 1 : 0;
+}
+
+// Input: mask = HID::Keys bit(s); touch x/y are bottom-screen pixels (0..319, 0..239); circle pad x/y are -156..156
+EMSCRIPTEN_KEEPALIVE void web_key(unsigned mask, int down) {
+    auto& hid = emu->getServiceManager().getHID();
+    if (down) hid.pressKey(mask); else hid.releaseKey(mask);
+}
+EMSCRIPTEN_KEEPALIVE void web_touch(int x, int y, int down) {
+    auto& hid = emu->getServiceManager().getHID();
+    if (down) hid.setTouchScreenPress(static_cast<u16>(x), static_cast<u16>(y)); else hid.releaseTouchScreen();
+}
+EMSCRIPTEN_KEEPALIVE void web_circle(int x, int y) {
+    auto& hid = emu->getServiceManager().getHID();
+    hid.setCirclepadX(static_cast<s16>(x));
+    hid.setCirclepadY(static_cast<s16>(y));
 }
 
 // Fills the RGBA buffer of one screen and returns a pointer to it (or 0 if the guest has not presented anything yet)
