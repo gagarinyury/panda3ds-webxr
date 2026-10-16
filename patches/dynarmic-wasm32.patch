@@ -36,10 +36,10 @@ index b234cd2..9ffbb3c 100644
          target_link_libraries(dynarmic PRIVATE rt)
 diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
 new file mode 100644
-index 0000000..6fc15d3
+index 0000000..bdce841
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_interface.cpp
-@@ -0,0 +1,352 @@
+@@ -0,0 +1,364 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -98,6 +98,8 @@ index 0000000..6fc15d3
 +        const inst = new WebAssembly.Instance(mod, imports);
 +        while (slot >= impl.table.length) impl.table.grow(impl.table.length);
 +        impl.table.set(slot, inst.exports.b);
++        if (!impl.fnCache) impl.fnCache = [];
++        impl.fnCache[slot] = inst.exports.b;
 +        impl.count = (impl.count || 0) + 1; impl.bytes = (impl.bytes || 0) + n;
 +        return slot;
 +    } catch (e) {
@@ -106,10 +108,19 @@ index 0000000..6fc15d3
 +    }
 +});
 +
-+EM_JS(int, jit_js_run, (int id, int slot, int state), { return Module.jit.impls[id].table.get(slot)(state); });
++EM_JS(int, jit_js_run, (int id, int slot, int state), {
++    const impl = Module.jit.impls[id];
++    const fn = (impl.fnCache && impl.fnCache[slot]) || impl.table.get(slot);
++    return fn(state);
++});
 +
 +// Drops all compiled blocks: a fresh table (old blocks keep a reference to the old one but are never entered again).
-+EM_JS(void, jit_js_clear, (int id), { Module.jit.impls[id].table = new WebAssembly.Table({ element: 'anyfunc', initial: 256 }); });
++EM_JS(void, jit_js_clear, (int id, int dropped), {
++    const impl = Module.jit.impls[id];
++    impl.table = new WebAssembly.Table({ element: 'anyfunc', initial: 256 });
++    impl.fnCache = [];
++    impl.flushes = (impl.flushes || 0) + 1; impl.droppedBlocks = (impl.droppedBlocks || 0) + dropped;   // diagnostics: how often the whole cache is thrown away, and how many blocks that wasted
++});
 +
 +// Breadcrumb for hang diagnosis: the message reaches the native app even if the page then spins forever.
 +EM_JS(void, jit_js_crumb, (int kind, int pc, int x), {
@@ -315,10 +326,11 @@ index 0000000..6fc15d3
 +    }
 +
 +    void DropAllBlocks() {
++        const int dropped = static_cast<int>(cache.size());
 +        cache.clear();
 +        std::fill(link.begin(), link.end(), Backend::Wasm::LinkEntry{0xFFFFFFFFu, 0, 0, 0});
 +        next_slot = 0;
-+        jit_js_clear(js_id);
++        jit_js_clear(js_id, dropped);
 +    }
 +};
 +
