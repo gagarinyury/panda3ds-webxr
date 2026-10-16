@@ -1,8 +1,8 @@
 diff --git a/src/dynarmic/CMakeLists.txt b/src/dynarmic/CMakeLists.txt
-index b234cd2..51d508b 100644
+index b234cd2..9ffbb3c 100644
 --- a/src/dynarmic/CMakeLists.txt
 +++ b/src/dynarmic/CMakeLists.txt
-@@ -340,6 +340,20 @@ if ("x86_64" IN_LIST ARCHITECTURE)
+@@ -340,6 +340,22 @@ if ("x86_64" IN_LIST ARCHITECTURE)
      endif()
  endif()
  
@@ -15,6 +15,8 @@ index b234cd2..51d508b 100644
 +            backend/wasm/emit_a32.cpp
 +            backend/wasm/emit_a32.h
 +            backend/wasm/exclusive_monitor.cpp
++            backend/wasm/fp_soft.cpp
++            backend/wasm/fp_soft.h
 +            backend/wasm/wasm_builder.h
 +        )
 +    endif()
@@ -23,7 +25,7 @@ index b234cd2..51d508b 100644
  if ("arm64" IN_LIST ARCHITECTURE)
      target_link_libraries(dynarmic PRIVATE merry::oaknut)
  
-@@ -485,6 +499,8 @@ elseif (APPLE)
+@@ -485,6 +501,8 @@ elseif (APPLE)
              backend/exception_handler_macos_mig.c
          )
      endif()
@@ -34,10 +36,10 @@ index b234cd2..51d508b 100644
          target_link_libraries(dynarmic PRIVATE rt)
 diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
 new file mode 100644
-index 0000000..2b328cc
+index 0000000..6108194
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_interface.cpp
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,275 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -56,6 +58,7 @@ index 0000000..2b328cc
 +
 +#include "dynarmic/backend/wasm/a32_jitstate.h"
 +#include "dynarmic/backend/wasm/emit_a32.h"
++#include "dynarmic/backend/wasm/fp_soft.h"
 +#include "dynarmic/frontend/A32/a32_location_descriptor.h"
 +#include "dynarmic/frontend/A32/translate/a32_translate.h"
 +#include "dynarmic/interface/A32/a32.h"
@@ -111,6 +114,9 @@ index 0000000..2b328cc
 +            REG("clrex", H_clrex); REG("svc", H_svc); REG("exc", H_exc); REG("interp", H_interp); REG("isb", H_isb);
 +            REG("getcpsr", H_getcpsr); REG("setcpsr", H_setcpsr); REG("getfpscr", H_getfpscr); REG("setfpscr", H_setfpscr);
 +            REG("cpget1", H_cpget1); REG("cpcall", H_cpcall);
++            REG("fadd32", H_fadd32); REG("fsub32", H_fsub32); REG("fmul32", H_fmul32); REG("fdiv32", H_fdiv32); REG("fsqrt32", H_fsqrt32);
++            REG("fadd64", H_fadd64); REG("fsub64", H_fsub64); REG("fmul64", H_fmul64); REG("fdiv64", H_fdiv64); REG("fsqrt64", H_fsqrt64);
++            REG("fcmp32", H_fcmp32); REG("fcmp64", H_fcmp64); REG("fs2d", H_fs2d); REG("fd2s", H_fd2s); REG("ftoi", H_ftoi); REG("itof", H_itof);
 +#undef REG
 +        }
 +        st.ctx = static_cast<u32>(reinterpret_cast<uintptr_t>(this));
@@ -172,6 +178,43 @@ index 0000000..2b328cc
 +    }
 +    static void H_cpcall(u32, u32 fn, u32 ua, u32 a0, u32 a1) {
 +        reinterpret_cast<std::uint64_t (*)(void*, u32, u32)>(static_cast<uintptr_t>(fn))(reinterpret_cast<void*>(static_cast<uintptr_t>(ua)), a0, a1);
++    }
++
++    // ----- VFP -----
++    template<typename F>
++    static auto Fp(u32 c, u32 fpcr, F f) {
++        auto* i = I(c);
++        FP::FPSR sr{i->st.fpsr};
++        auto r = f(FP::FPCR{fpcr}, sr);
++        i->st.fpsr = sr.Value();
++        return r;
++    }
++#define FP2(NAME, T, FN) static T NAME(u32 c, u32 fpcr, T a, T b) { return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) { return Backend::Wasm::FPSoft::FN<T>(a, b, cr, sr); }); }
++    FP2(H_fadd32, u32, Add) FP2(H_fsub32, u32, Sub) FP2(H_fmul32, u32, Mul) FP2(H_fdiv32, u32, Div)
++    FP2(H_fadd64, u64, Add) FP2(H_fsub64, u64, Sub) FP2(H_fmul64, u64, Mul) FP2(H_fdiv64, u64, Div)
++#undef FP2
++    static u32 H_fsqrt32(u32 c, u32 fpcr, u32 a) { return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) { return Backend::Wasm::FPSoft::Sqrt<u32>(a, cr, sr); }); }
++    static u64 H_fsqrt64(u32 c, u32 fpcr, u64 a) { return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) { return Backend::Wasm::FPSoft::Sqrt<u64>(a, cr, sr); }); }
++    static u32 H_fcmp32(u32 c, u32 fpcr, u32 a, u32 b, u32 exc) { return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) { return Backend::Wasm::FPSoft::Compare<u32>(a, b, exc != 0, cr, sr); }); }
++    static u32 H_fcmp64(u32 c, u32 fpcr, u64 a, u64 b, u32 exc) { return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) { return Backend::Wasm::FPSoft::Compare<u64>(a, b, exc != 0, cr, sr); }); }
++    static u64 H_fs2d(u32 c, u32 fpcr, u32 a, u32 rm) { return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) { return Backend::Wasm::FPSoft::SingleToDouble(a, cr, static_cast<FP::RoundingMode>(rm), sr); }); }
++    static u32 H_fd2s(u32 c, u32 fpcr, u64 a, u32 rm) { return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) { return Backend::Wasm::FPSoft::DoubleToSingle(a, cr, static_cast<FP::RoundingMode>(rm), sr); }); }
++    // mode: bit0 = 64-bit float, bit1 = unsigned, bits 2..7 = integer bits, bits 8..15 = fractional bits, bits 16..19 = rounding mode
++    static u32 H_ftoi(u32 c, u32 fpcr, u64 a, u32 mode) {
++        const bool f64 = mode & 1, uns = mode & 2;
++        const size_t ibits = (mode >> 2) & 63, fbits = (mode >> 8) & 255;
++        const auto rm = static_cast<FP::RoundingMode>((mode >> 16) & 15);
++        return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) {
++            return f64 ? Backend::Wasm::FPSoft::ToFixed<u64>(a, ibits, fbits, uns, cr, rm, sr) : Backend::Wasm::FPSoft::ToFixed<u32>(static_cast<u32>(a), ibits, fbits, uns, cr, rm, sr);
++        });
++    }
++    static u64 H_itof(u32 c, u32 fpcr, u32 a, u32 mode) {
++        const bool f64 = mode & 1, uns = mode & 2;
++        const size_t ibits = (mode >> 2) & 63, fbits = (mode >> 8) & 255;
++        const auto rm = static_cast<FP::RoundingMode>((mode >> 16) & 15);
++        return Fp(c, fpcr, [&](FP::FPCR cr, FP::FPSR& sr) -> u64 {
++            return f64 ? Backend::Wasm::FPSoft::FromFixed<u64>(a, ibits, fbits, uns, cr, rm, sr) : Backend::Wasm::FPSoft::FromFixed<u32>(a, ibits, fbits, uns, cr, rm, sr);
++        });
 +    }
 +
 +    // ----- translation -----
@@ -412,10 +455,10 @@ index 0000000..cfbc9df
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.cpp b/src/dynarmic/backend/wasm/emit_a32.cpp
 new file mode 100644
-index 0000000..57de3ee
+index 0000000..883050f
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.cpp
-@@ -0,0 +1,828 @@
+@@ -0,0 +1,882 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -670,6 +713,7 @@ index 0000000..57de3ee
 +    }
 +
 +    IR::Inst* P(IR::Inst* inst, Opcode op) { return inst->GetAssociatedPseudoOperation(op); }
++    u32 Fpcr() const { return A32::LocationDescriptor{block.Location()}.FPSCR().Value(); }
 +
 +    // N and Z in bits 31 and 30 for the 32-bit value in `local`.
 +    void EmitNZ(u32 local) {
@@ -1104,6 +1148,59 @@ index 0000000..57de3ee
 +            Set(inst);
 +            return;
 +        }
++        // ----- VFP scalar floating point (bit-exact soft-float helpers; FPCR is known per block) -----
++        case Opcode::FPAdd32: case Opcode::FPSub32: case Opcode::FPMul32: case Opcode::FPDiv32:
++        case Opcode::FPAdd64: case Opcode::FPSub64: case Opcode::FPMul64: case Opcode::FPDiv64: {
++            const bool is64 = op == Opcode::FPAdd64 || op == Opcode::FPSub64 || op == Opcode::FPMul64 || op == Opcode::FPDiv64;
++            static const char* n32[] = {"fadd32", "fsub32", "fmul32", "fdiv32"};
++            static const char* n64[] = {"fadd64", "fsub64", "fmul64", "fdiv64"};
++            const int k = (op == Opcode::FPAdd32 || op == Opcode::FPAdd64) ? 0 : (op == Opcode::FPSub32 || op == Opcode::FPSub64) ? 1
++                        : (op == Opcode::FPMul32 || op == Opcode::FPMul64) ? 2 : 3;
++            PushCtx(); c.I32Const(static_cast<s32>(Fpcr())); Ld(inst->GetArg(0)); Ld(inst->GetArg(1));
++            CallHelper(is64 ? n64[k] : n32[k]); Set(inst);
++            return;
++        }
++        case Opcode::FPSqrt32: case Opcode::FPSqrt64:
++            PushCtx(); c.I32Const(static_cast<s32>(Fpcr())); Ld(inst->GetArg(0));
++            CallHelper(op == Opcode::FPSqrt32 ? "fsqrt32" : "fsqrt64"); Set(inst);
++            return;
++        case Opcode::FPAbs32: Ld(inst->GetArg(0)); c.I32Const(0x7fffffff); c.I32And(); Set(inst); return;
++        case Opcode::FPNeg32: Ld(inst->GetArg(0)); c.I32Const(static_cast<s32>(0x80000000u)); c.I32Xor(); Set(inst); return;
++        case Opcode::FPAbs64: Ld(inst->GetArg(0)); c.I64Const(0x7fffffffffffffffLL); c.I64And(); Set(inst); return;
++        case Opcode::FPNeg64: Ld(inst->GetArg(0)); c.I64Const(static_cast<s64>(0x8000000000000000ULL)); c.I64Xor(); Set(inst); return;
++        case Opcode::FPCompare32: case Opcode::FPCompare64:
++            PushCtx(); c.I32Const(static_cast<s32>(Fpcr())); Ld(inst->GetArg(0)); Ld(inst->GetArg(1)); Ld(inst->GetArg(2));
++            CallHelper(op == Opcode::FPCompare32 ? "fcmp32" : "fcmp64"); Set(inst);
++            return;
++        case Opcode::FPSingleToDouble:
++            PushCtx(); c.I32Const(static_cast<s32>(Fpcr())); Ld(inst->GetArg(0)); Ld(inst->GetArg(1)); CallHelper("fs2d"); Set(inst);
++            return;
++        case Opcode::FPDoubleToSingle:
++            PushCtx(); c.I32Const(static_cast<s32>(Fpcr())); Ld(inst->GetArg(0)); Ld(inst->GetArg(1)); CallHelper("fd2s"); Set(inst);
++            return;
++        case Opcode::FPSingleToFixedS32: case Opcode::FPSingleToFixedU32: case Opcode::FPSingleToFixedS16: case Opcode::FPSingleToFixedU16:
++        case Opcode::FPDoubleToFixedS32: case Opcode::FPDoubleToFixedU32: case Opcode::FPDoubleToFixedS16: case Opcode::FPDoubleToFixedU16: {
++            const bool src64 = op == Opcode::FPDoubleToFixedS32 || op == Opcode::FPDoubleToFixedU32 || op == Opcode::FPDoubleToFixedS16 || op == Opcode::FPDoubleToFixedU16;
++            const bool uns = op == Opcode::FPSingleToFixedU32 || op == Opcode::FPSingleToFixedU16 || op == Opcode::FPDoubleToFixedU32 || op == Opcode::FPDoubleToFixedU16;
++            const u32 ibits = (op == Opcode::FPSingleToFixedS16 || op == Opcode::FPSingleToFixedU16 || op == Opcode::FPDoubleToFixedS16 || op == Opcode::FPDoubleToFixedU16) ? 16 : 32;
++            const u32 mode = (src64 ? 1u : 0u) | (uns ? 2u : 0u) | (ibits << 2) | (static_cast<u32>(inst->GetArg(1).GetU8()) << 8) | (static_cast<u32>(inst->GetArg(2).GetU8()) << 16);
++            PushCtx(); c.I32Const(static_cast<s32>(Fpcr())); Ld(inst->GetArg(0)); if (!src64) c.I64ExtendI32U(); c.I32Const(static_cast<s32>(mode));
++            CallHelper("ftoi"); Set(inst);
++            return;
++        }
++        case Opcode::FPFixedS32ToSingle: case Opcode::FPFixedU32ToSingle: case Opcode::FPFixedS16ToSingle: case Opcode::FPFixedU16ToSingle:
++        case Opcode::FPFixedS32ToDouble: case Opcode::FPFixedU32ToDouble: case Opcode::FPFixedS16ToDouble: case Opcode::FPFixedU16ToDouble: {
++            const bool dst64 = op == Opcode::FPFixedS32ToDouble || op == Opcode::FPFixedU32ToDouble || op == Opcode::FPFixedS16ToDouble || op == Opcode::FPFixedU16ToDouble;
++            const bool uns = op == Opcode::FPFixedU32ToSingle || op == Opcode::FPFixedU16ToSingle || op == Opcode::FPFixedU32ToDouble || op == Opcode::FPFixedU16ToDouble;
++            const u32 ibits = (op == Opcode::FPFixedS16ToSingle || op == Opcode::FPFixedU16ToSingle || op == Opcode::FPFixedS16ToDouble || op == Opcode::FPFixedU16ToDouble) ? 16 : 32;
++            const u32 mode = (dst64 ? 1u : 0u) | (uns ? 2u : 0u) | (ibits << 2) | (static_cast<u32>(inst->GetArg(1).GetU8()) << 8) | (static_cast<u32>(inst->GetArg(2).GetU8()) << 16);
++            PushCtx(); c.I32Const(static_cast<s32>(Fpcr())); Ld(inst->GetArg(0)); c.I32Const(static_cast<s32>(mode));
++            CallHelper("itof");
++            if (!dst64) c.I32WrapI64();
++            Set(inst);
++            return;
++        }
++
 +        default:
 +            Fail("unsupported IR opcode " + IR::GetNameOf(op));
 +            return;
@@ -1246,10 +1343,10 @@ index 0000000..57de3ee
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.h b/src/dynarmic/backend/wasm/emit_a32.h
 new file mode 100644
-index 0000000..7998efb
+index 0000000..946b33b
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.h
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,52 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + */
@@ -1282,6 +1379,13 @@ index 0000000..7998efb
 +    {"getcpsr", "i>i"}, {"setcpsr", "ii>v"}, {"getfpscr", "i>i"}, {"setfpscr", "ii>v"},
 +    {"cpget1", "iiiii>i"},  // ctx, callback fn, user_arg, arg0, arg1 -> u32
 +    {"cpcall", "iiiii>v"},  // ctx, callback fn, user_arg, arg0, arg1 (result ignored)
++    // VFP scalar arithmetic: (ctx, fpcr, a, b) -> result; FPSR cumulative flags are updated in the state
++    {"fadd32", "iiii>i"}, {"fsub32", "iiii>i"}, {"fmul32", "iiii>i"}, {"fdiv32", "iiii>i"}, {"fsqrt32", "iii>i"},
++    {"fadd64", "iill>l"}, {"fsub64", "iill>l"}, {"fmul64", "iill>l"}, {"fdiv64", "iill>l"}, {"fsqrt64", "iil>l"},
++    {"fcmp32", "iiiii>i"}, {"fcmp64", "iilli>i"},
++    {"fs2d", "iiii>l"}, {"fd2s", "iili>i"},
++    {"ftoi", "iili>i"},   // (ctx, fpcr, value as i64, mode) -> int bits
++    {"itof", "iiii>l"},   // (ctx, fpcr, int bits, mode) -> float bits (zero-extended)
 +};
 +
 +struct EmitResult {
@@ -1367,6 +1471,291 @@ index 0000000..c1651b4
 +void SpinLock::Lock() { while (__atomic_exchange_n(&storage, 1, __ATOMIC_ACQUIRE) != 0) {} }
 +void SpinLock::Unlock() { __atomic_store_n(&storage, 0, __ATOMIC_RELEASE); }
 +}  // namespace Dynarmic
+diff --git a/src/dynarmic/backend/wasm/fp_soft.cpp b/src/dynarmic/backend/wasm/fp_soft.cpp
+new file mode 100644
+index 0000000..a04dbbd
+--- /dev/null
++++ b/src/dynarmic/backend/wasm/fp_soft.cpp
+@@ -0,0 +1,237 @@
++/* This file is part of the panda3ds-wasm project.
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++
++#include "dynarmic/backend/wasm/fp_soft.h"
++
++#include <mcl/bit/bit_count.hpp>
++
++#include "dynarmic/common/fp/fused.h"
++#include "dynarmic/common/fp/info.h"
++#include "dynarmic/common/fp/op/FPConvert.h"
++#include "dynarmic/common/fp/op/FPToFixed.h"
++#include "dynarmic/common/fp/process_exception.h"
++#include "dynarmic/common/fp/process_nan.h"
++#include "dynarmic/common/fp/unpacked.h"
++
++namespace Dynarmic::Backend::Wasm::FPSoft {
++
++using namespace Dynarmic::FP;
++
++namespace {
++
++constexpr FPUnpacked kOne = {false, 0, u64(1) << normalized_point_position};
++
++template<typename FPT>
++FPT AddSub(FPT op1, FPT op2, bool negate2, FPCR fpcr, FPSR& fpsr) {
++    const RoundingMode rounding = fpcr.RMode();
++    auto [type1, sign1, value1] = FPUnpack(op1, fpcr, fpsr);
++    auto [type2, sign2, value2] = FPUnpack(op2, fpcr, fpsr);
++
++    // NaN operands propagate unchanged (a negated NaN keeps its own sign), so look at them before negating.
++    if (const auto nan = FPProcessNaNs(type1, type2, op1, op2, fpcr, fpsr)) return *nan;
++
++    if (negate2) {
++        sign2 = !sign2;
++        value2.sign = !value2.sign;
++    }
++    const bool inf1 = type1 == FPType::Infinity, inf2 = type2 == FPType::Infinity;
++    const bool zero1 = type1 == FPType::Zero, zero2 = type2 == FPType::Zero;
++
++    if (inf1 && inf2 && sign1 == !sign2) {
++        FPProcessException(FPExc::InvalidOp, fpcr, fpsr);
++        return FPInfo<FPT>::DefaultNaN();
++    }
++    if ((inf1 && !sign1) || (inf2 && !sign2)) return FPInfo<FPT>::Infinity(false);
++    if ((inf1 && sign1) || (inf2 && sign2)) return FPInfo<FPT>::Infinity(true);
++    if (zero1 && zero2 && sign1 == sign2) return FPInfo<FPT>::Zero(sign1);
++
++    const FPUnpacked result = FusedMulAdd(value1, value2, kOne);  // value1 + value2 * 1, exact
++    if (result.mantissa == 0) return FPInfo<FPT>::Zero(rounding == RoundingMode::TowardsMinusInfinity);
++    return FPRound<FPT>(result, fpcr, fpsr);
++}
++
++// Unsigned 128/64 -> quotient and "remainder != 0" without 128-bit division intrinsics.
++inline bool DivideNumerator(u64 num_hi, u64 num_lo, u64 den, u64& quotient) {
++    // Restoring division of the 128-bit value (num_hi:num_lo) by den; quotient must fit in 64 bits (num_hi < den).
++    u64 rem = num_hi;
++    u64 q = 0;
++    for (int i = 63; i >= 0; i--) {
++        const bool carry = rem >> 63;
++        rem = (rem << 1) | ((num_lo >> i) & 1);
++        q <<= 1;
++        if (carry || rem >= den) {
++            rem -= den;
++            q |= 1;
++        }
++    }
++    quotient = q;
++    return rem != 0;
++}
++
++inline u64 IntSqrt128(u64 hi, u64 lo, bool& inexact) {
++    // floor(sqrt(hi:lo)) by the classic restoring method over bit pairs; hi:lo < 2^126 so the result fits in 63 bits.
++    unsigned __int128 x = (static_cast<unsigned __int128>(hi) << 64) | lo, res = 0, bit = static_cast<unsigned __int128>(1) << 126;
++    while (bit > x) bit >>= 2;
++    while (bit != 0) {
++        if (x >= res + bit) {
++            x -= res + bit;
++            res = (res >> 1) + bit;
++        } else {
++            res >>= 1;
++        }
++        bit >>= 2;
++    }
++    inexact = x != 0;
++    return static_cast<u64>(res);
++}
++
++}  // namespace
++
++template<typename FPT>
++FPT Add(FPT a, FPT b, FPCR fpcr, FPSR& fpsr) { return AddSub<FPT>(a, b, false, fpcr, fpsr); }
++template<typename FPT>
++FPT Sub(FPT a, FPT b, FPCR fpcr, FPSR& fpsr) { return AddSub<FPT>(a, b, true, fpcr, fpsr); }
++
++template<typename FPT>
++FPT Mul(FPT op1, FPT op2, FPCR fpcr, FPSR& fpsr) {
++    const auto [type1, sign1, value1] = FPUnpack(op1, fpcr, fpsr);
++    const auto [type2, sign2, value2] = FPUnpack(op2, fpcr, fpsr);
++    if (const auto nan = FPProcessNaNs(type1, type2, op1, op2, fpcr, fpsr)) return *nan;
++
++    const bool inf1 = type1 == FPType::Infinity, inf2 = type2 == FPType::Infinity;
++    const bool zero1 = type1 == FPType::Zero, zero2 = type2 == FPType::Zero;
++    if ((inf1 && zero2) || (zero1 && inf2)) {
++        FPProcessException(FPExc::InvalidOp, fpcr, fpsr);
++        return FPInfo<FPT>::DefaultNaN();
++    }
++    if (inf1 || inf2) return FPInfo<FPT>::Infinity(sign1 != sign2);
++    if (zero1 || zero2) return FPInfo<FPT>::Zero(sign1 != sign2);
++
++    const FPUnpacked zero = {false, 0, 0};
++    return FPRound<FPT>(FusedMulAdd(zero, value1, value2), fpcr, fpsr);
++}
++
++template<typename FPT>
++FPT Div(FPT op1, FPT op2, FPCR fpcr, FPSR& fpsr) {
++    const auto [type1, sign1, value1] = FPUnpack(op1, fpcr, fpsr);
++    const auto [type2, sign2, value2] = FPUnpack(op2, fpcr, fpsr);
++    if (const auto nan = FPProcessNaNs(type1, type2, op1, op2, fpcr, fpsr)) return *nan;
++
++    const bool inf1 = type1 == FPType::Infinity, inf2 = type2 == FPType::Infinity;
++    const bool zero1 = type1 == FPType::Zero, zero2 = type2 == FPType::Zero;
++    if ((inf1 && inf2) || (zero1 && zero2)) {
++        FPProcessException(FPExc::InvalidOp, fpcr, fpsr);
++        return FPInfo<FPT>::DefaultNaN();
++    }
++    if (inf1 || zero2) {
++        if (!inf1) FPProcessException(FPExc::DivideByZero, fpcr, fpsr);
++        return FPInfo<FPT>::Infinity(sign1 != sign2);
++    }
++    if (zero1 || inf2) return FPInfo<FPT>::Zero(sign1 != sign2);
++
++    // value1 / value2 = (m1 / m2) * 2^(e1 - e2) with m in [1,2) represented at point position 62.
++    // quotient = floor(m1 * 2^62 / m2) as a 64-bit value in (2^61, 2^63); a non-zero remainder becomes a sticky low bit.
++    u64 q = 0;
++    const u64 num_hi = value1.mantissa >> 2;           // (m1 << 62) as a 128-bit number: high part
++    const u64 num_lo = value1.mantissa << 62;          // low part
++    const bool inexact = DivideNumerator(num_hi, num_lo, value2.mantissa, q);
++    const FPUnpacked result = ToNormalized(sign1 != sign2, value1.exponent - value2.exponent, q | static_cast<u64>(inexact));
++    // ToNormalized treats `q` as an integer scaled by 2^exponent; q already carries 2^-62 scaling, so compensate.
++    FPUnpacked fixed = result;
++    fixed.exponent -= static_cast<int>(normalized_point_position);
++    return FPRound<FPT>(fixed, fpcr, fpsr);
++}
++
++template<typename FPT>
++FPT Sqrt(FPT op, FPCR fpcr, FPSR& fpsr) {
++    const auto [type, sign, value] = FPUnpack(op, fpcr, fpsr);
++    if (type == FPType::SNaN || type == FPType::QNaN) return FPProcessNaN(type, op, fpcr, fpsr);
++    if (type == FPType::Zero) return FPInfo<FPT>::Zero(sign);
++    if (type == FPType::Infinity && !sign) return FPInfo<FPT>::Infinity(false);
++    if (sign) {
++        FPProcessException(FPExc::InvalidOp, fpcr, fpsr);
++        return FPInfo<FPT>::DefaultNaN();
++    }
++    // value = (m / 2^62) * 2^e, m in [2^62, 2^63).  Make the exponent even, then sqrt(m' * 2^62) / 2^62 * 2^(e'/2).
++    int e = value.exponent;
++    u64 m = value.mantissa;
++    unsigned __int128 n;
++    if (e & 1) {  // odd exponent (works for negative e: e & 1 is 1 for odd in two's complement)
++        n = static_cast<unsigned __int128>(m) << 63;  // m' = m * 2
++        e -= 1;
++    } else {
++        n = static_cast<unsigned __int128>(m) << 62;
++    }
++    bool inexact = false;
++    const u64 r = IntSqrt128(static_cast<u64>(n >> 64), static_cast<u64>(n), inexact);
++    FPUnpacked result = ToNormalized(false, e / 2, r | static_cast<u64>(inexact));
++    result.exponent -= static_cast<int>(normalized_point_position);
++    return FPRound<FPT>(result, fpcr, fpsr);
++}
++
++template<typename FPT>
++u32 Compare(FPT a, FPT b, bool exc_on_qnan, FPCR fpcr, FPSR& fpsr) {
++    const auto [type1, sign1, value1] = FPUnpack(a, fpcr, fpsr);
++    const auto [type2, sign2, value2] = FPUnpack(b, fpcr, fpsr);
++    const bool nan1 = type1 == FPType::QNaN || type1 == FPType::SNaN;
++    const bool nan2 = type2 == FPType::QNaN || type2 == FPType::SNaN;
++    if (nan1 || nan2) {
++        if (type1 == FPType::SNaN || type2 == FPType::SNaN || exc_on_qnan) FPProcessException(FPExc::InvalidOp, fpcr, fpsr);
++        return 0x30000000;  // unordered: C and V
++    }
++    // Order the (flushed) values. Zero compares equal regardless of sign.
++    auto cmp = [](FPType t1, bool s1, const FPUnpacked& v1, FPType t2, bool s2, const FPUnpacked& v2) -> int {
++        auto key_sign = [](FPType t, bool s) { return t == FPType::Zero ? 0 : (s ? -1 : 1); };
++        const int k1 = key_sign(t1, s1), k2 = key_sign(t2, s2);
++        if (k1 != k2) return k1 < k2 ? -1 : 1;
++        if (k1 == 0) return 0;
++        // same sign, both non-zero: compare magnitudes
++        int mag;
++        if (t1 == FPType::Infinity || t2 == FPType::Infinity) mag = (t1 == FPType::Infinity) - (t2 == FPType::Infinity);
++        else if (v1.exponent != v2.exponent) mag = v1.exponent < v2.exponent ? -1 : 1;
++        else mag = v1.mantissa == v2.mantissa ? 0 : (v1.mantissa < v2.mantissa ? -1 : 1);
++        return k1 > 0 ? mag : -mag;
++    };
++    const int c = cmp(type1, sign1, value1, type2, sign2, value2);
++    if (c == 0) return 0x60000000;   // equal: Z, C
++    if (c < 0) return 0x80000000;    // less: N
++    return 0x20000000;               // greater: C
++}
++
++u64 SingleToDouble(u32 a, FPCR fpcr, RoundingMode rm, FPSR& fpsr) { return FPConvert<u64, u32>(a, fpcr, rm, fpsr); }
++u32 DoubleToSingle(u64 a, FPCR fpcr, RoundingMode rm, FPSR& fpsr) { return FPConvert<u32, u64>(a, fpcr, rm, fpsr); }
++
++template<typename FPT>
++u32 ToFixed(FPT a, size_t ibits, size_t fbits, bool is_unsigned, FPCR fpcr, RoundingMode rm, FPSR& fpsr) {
++    return static_cast<u32>(FPToFixed<FPT>(ibits, a, fbits, is_unsigned, fpcr, rm, fpsr));
++}
++
++template<typename FPT>
++FPT FromFixed(u32 value, size_t ibits, size_t fbits, bool is_unsigned, FPCR fpcr, RoundingMode rm, FPSR& fpsr) {
++    bool sign = false;
++    u64 mag = value;
++    if (ibits < 32) mag &= (u64(1) << ibits) - 1;
++    if (!is_unsigned) {
++        const u64 sign_bit = u64(1) << (ibits - 1);
++        if (mag & sign_bit) {
++            sign = true;
++            mag = ((u64(1) << ibits) - mag) & ((u64(1) << ibits) - 1);
++            if (mag == 0) mag = u64(1) << ibits;  // most negative value
++        }
++    }
++    if (mag == 0) return FPInfo<FPT>::Zero(false);
++    return FPRound<FPT>(ToNormalized(sign, -static_cast<int>(fbits), mag), fpcr, rm, fpsr);
++}
++
++#define INST(T)                                                                                              \
++    template T Add<T>(T, T, FPCR, FPSR&);   template T Sub<T>(T, T, FPCR, FPSR&);                           \
++    template T Mul<T>(T, T, FPCR, FPSR&);   template T Div<T>(T, T, FPCR, FPSR&);                           \
++    template T Sqrt<T>(T, FPCR, FPSR&);     template u32 Compare<T>(T, T, bool, FPCR, FPSR&);               \
++    template u32 ToFixed<T>(T, size_t, size_t, bool, FPCR, RoundingMode, FPSR&);                            \
++    template T FromFixed<T>(u32, size_t, size_t, bool, FPCR, RoundingMode, FPSR&);
++INST(u32)
++INST(u64)
++#undef INST
++
++}  // namespace Dynarmic::Backend::Wasm::FPSoft
+diff --git a/src/dynarmic/backend/wasm/fp_soft.h b/src/dynarmic/backend/wasm/fp_soft.h
+new file mode 100644
+index 0000000..20f847b
+--- /dev/null
++++ b/src/dynarmic/backend/wasm/fp_soft.h
+@@ -0,0 +1,36 @@
++/* This file is part of the panda3ds-wasm project.
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * Bit-exact ARM VFP scalar arithmetic on top of Dynarmic's portable soft-float building blocks (FPUnpack/FPRound/FusedMulAdd).
++ * Handles every FPCR mode (rounding, flush-to-zero, default-NaN) and accumulates exception flags into the FPSR.
++ */
++#pragma once
++
++#include <mcl/stdint.hpp>
++
++#include "dynarmic/common/fp/fpcr.h"
++#include "dynarmic/common/fp/fpsr.h"
++#include "dynarmic/common/fp/rounding_mode.h"
++
++namespace Dynarmic::Backend::Wasm::FPSoft {
++
++template<typename FPT> FPT Add(FPT a, FPT b, FP::FPCR fpcr, FP::FPSR& fpsr);
++template<typename FPT> FPT Sub(FPT a, FPT b, FP::FPCR fpcr, FP::FPSR& fpsr);
++template<typename FPT> FPT Mul(FPT a, FPT b, FP::FPCR fpcr, FP::FPSR& fpsr);
++template<typename FPT> FPT Div(FPT a, FPT b, FP::FPCR fpcr, FP::FPSR& fpsr);
++template<typename FPT> FPT Sqrt(FPT a, FP::FPCR fpcr, FP::FPSR& fpsr);
++
++/// VCMP/VCMPE: returns NZCV in bits 31..28.
++template<typename FPT> u32 Compare(FPT a, FPT b, bool exc_on_qnan, FP::FPCR fpcr, FP::FPSR& fpsr);
++
++/// float <-> float
++u64 SingleToDouble(u32 a, FP::FPCR fpcr, FP::RoundingMode rm, FP::FPSR& fpsr);
++u32 DoubleToSingle(u64 a, FP::FPCR fpcr, FP::RoundingMode rm, FP::FPSR& fpsr);
++
++/// float -> fixed/integer (ibits <= 32), result left in the low `ibits` bits (two's complement for signed).
++template<typename FPT> u32 ToFixed(FPT a, size_t ibits, size_t fbits, bool is_unsigned, FP::FPCR fpcr, FP::RoundingMode rm, FP::FPSR& fpsr);
++
++/// fixed/integer (ibits <= 32) -> float
++template<typename FPT> FPT FromFixed(u32 value, size_t ibits, size_t fbits, bool is_unsigned, FP::FPCR fpcr, FP::RoundingMode rm, FP::FPSR& fpsr);
++
++}  // namespace Dynarmic::Backend::Wasm::FPSoft
 diff --git a/src/dynarmic/backend/wasm/wasm_builder.h b/src/dynarmic/backend/wasm/wasm_builder.h
 new file mode 100644
 index 0000000..6840bc5
@@ -1492,6 +1881,43 @@ index 171b94e..9ed8637 100644
      if constexpr (sizeof(FPT) == sizeof(u32)) {
          return static_cast<FPT>(mcl::bit::get_bits<23, 30>(value));
      } else if constexpr (sizeof(FPT) == sizeof(u64)) {
+diff --git a/src/dynarmic/common/fp/op/FPToFixed.cpp b/src/dynarmic/common/fp/op/FPToFixed.cpp
+index b1a57d3..19d5c13 100644
+--- a/src/dynarmic/common/fp/op/FPToFixed.cpp
++++ b/src/dynarmic/common/fp/op/FPToFixed.cpp
+@@ -38,11 +38,6 @@ u64 FPToFixed(size_t ibits, FPT op, size_t fbits, bool unsigned_, FPCR fpcr, Rou
+         return 0;
+     }
+ 
+-    if (sign && unsigned_) {
+-        FPProcessException(FPExc::InvalidOp, fpcr, fpsr);
+-        return 0;
+-    }
+-
+     // value *= 2.0^fbits and reshift the decimal point back to bit zero.
+     int exponent = value.exponent + static_cast<int>(fbits) - normalized_point_position;
+ 
+@@ -75,6 +70,20 @@ u64 FPToFixed(size_t ibits, FPT op, size_t fbits, bool unsigned_, FPCR fpcr, Rou
+         int_result++;
+     }
+ 
++    // Unsigned conversion of a negative value: a result that rounds to zero is only inexact; anything else is invalid and saturates to zero.
++    // (Verified against Apple Silicon FCVTZU/FCVTNU: the check must come after rounding.)
++    if (sign && unsigned_) {
++        // |value| >= 1 (mantissa has bit 62 set, so exponent >= -62) can never round to zero.
++        if (exponent >= -static_cast<int>(normalized_point_position) || int_result != 0) {
++            FPProcessException(FPExc::InvalidOp, fpcr, fpsr);
++            return 0;
++        }
++        if (error != ResidualError::Zero) {
++            FPProcessException(FPExc::Inexact, fpcr, fpsr);
++        }
++        return 0;
++    }
++
+     // Detect Overflow
+     const int min_exponent_for_overflow = static_cast<int>(ibits) - static_cast<int>(mcl::bit::highest_set_bit(value.mantissa + (round_up ? Safe::LogicalShiftRight<u64>(1, exponent) : 0))) - (unsigned_ ? 0 : 1);
+     if (exponent >= min_exponent_for_overflow) {
 diff --git a/src/dynarmic/common/llvm_disassemble.cpp b/src/dynarmic/common/llvm_disassemble.cpp
 index 636ee3a..2861b7d 100644
 --- a/src/dynarmic/common/llvm_disassemble.cpp

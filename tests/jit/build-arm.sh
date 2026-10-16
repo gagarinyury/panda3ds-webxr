@@ -12,3 +12,9 @@ for mode in arm thumb; do
   echo "$mode: $(wc -c < out/tests_$mode.bin) bytes"
   python3 -I patch-relocs.py out/tests_$mode.o out/tests_$mode.bin out/tests_$mode.syms $mode
 done
+# VFP kernels: ARM mode only (Thumb-1 cannot address the FPU)
+/usr/bin/clang --target=armv6k-none-eabihf -mcpu=arm1176jzf-s -mfpu=vfpv2 -mfloat-abi=hard -marm $FLAGS -fno-math-errno -ffp-contract=off -c tests_fp.c -o out/tests_fp.o
+$EM/llvm-objcopy -O binary -j .text out/tests_fp.o out/tests_fp.bin
+$EM/llvm-nm out/tests_fp.o | awk '$2 ~ /^[tT]$/ {print $3, $1}' > out/tests_fp.syms
+echo "fp: $(wc -c < out/tests_fp.bin) bytes"
+python3 -I patch-relocs.py out/tests_fp.o out/tests_fp.bin out/tests_fp.syms arm

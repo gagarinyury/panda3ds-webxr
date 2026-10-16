@@ -13,10 +13,12 @@
 #include "dynarmic/interface/A32/config.h"
 #include "dynarmic/interface/exclusive_monitor.h"
 #include "tests.h"
+#include "tests_fp.h"
 
 extern "C" {
 #define X(n) unsigned n(unsigned, unsigned, unsigned*);
 TEST_LIST(X)
+TEST_LIST_FP(X)
 #undef X
 }
 
@@ -25,7 +27,7 @@ using u32 = std::uint32_t;
 using u8 = std::uint8_t;
 using u64 = std::uint64_t;
 
-constexpr u32 CODE_ARM = 0x10000, CODE_THUMB = 0x20000, SENTINEL = 0x30000, BUF = 0x40000, STACK_TOP = 0x100000;
+constexpr u32 CODE_ARM = 0x10000, CODE_THUMB = 0x20000, CODE_FP = 0x28000, SENTINEL = 0x30000, BUF = 0x40000, STACK_TOP = 0x100000;
 
 struct Env final : Dynarmic::A32::UserCallbacks {
     std::vector<u8> mem = std::vector<u8>(0x110000);
@@ -73,6 +75,11 @@ static const Ref refs[] = {
     TEST_LIST(X)
 #undef X
 };
+static const Ref refs_fp[] = {
+#define X(n) {#n, n},
+    TEST_LIST_FP(X)
+#undef X
+};
 
 static u32 rng = 0x12345678;
 static u32 Rnd() { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
@@ -80,13 +87,14 @@ static u32 Rnd() { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return r
 int main(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : nullptr;
     int total_fail = 0, total_pass = 0;
-    for (const char* mode : {"arm", "thumb"}) {
+    for (const char* mode : {"arm", "thumb", "fp"}) {
         const bool thumb = std::string(mode) == "thumb";
+        const bool fpgroup = std::string(mode) == "fp";
         Env env;
         std::string base = std::string("out/tests_") + mode;
         auto code = LoadBin((base + ".bin").c_str());
         auto syms = LoadSyms((base + ".syms").c_str());
-        const u32 code_base = thumb ? CODE_THUMB : CODE_ARM;
+        const u32 code_base = fpgroup ? CODE_FP : (thumb ? CODE_THUMB : CODE_ARM);
         std::memcpy(&env.mem[code_base], code.data(), code.size());
         env.Wr<u32>(SENTINEL, 0xEF000123);  // svc 0x123
 
@@ -103,7 +111,7 @@ int main(int argc, char** argv) {
                                                     {100, 0x40}, {0x12345678, 31}, {0xdeadbeef, 0x1234}, {1000, 7}};
         for (int i = 0; i < 20; i++) inputs.push_back({Rnd(), Rnd()});
 
-        for (const auto& r : refs) {
+        for (const auto& r : (fpgroup ? std::vector<Ref>(std::begin(refs_fp), std::end(refs_fp)) : std::vector<Ref>(std::begin(refs), std::end(refs)))) {
             if (only && std::string(only) != r.name) continue;
             u32 fn = 0; for (auto& s : syms) if (s.name == r.name) fn = s.off;
             int fails = 0; std::string first;
