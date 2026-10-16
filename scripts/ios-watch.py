@@ -62,6 +62,10 @@ while True:
         last_frame = m.get('n', last_frame)
         if last_frame == 1: out('FIRST_FRAME %.1fs after launch ms=%s' % (now - t0, m.get('ms')))
         elif last_frame % 60 == 0: out('PROGRESS frame %d ms=%s' % (last_frame, m.get('ms')))
+    elif t == 'shot':
+        import base64
+        png = '/tmp/shot-%s.png' % m.get('name', 'run')
+        open(png, 'wb').write(base64.b64decode(m['png'].split(',', 1)[1])); out('SHOT saved ' + png)
     elif t == 'playlist_start': out('PLAYLIST START %s items' % m.get('count'))
     elif t == 'playlist_item': out('%s %s/%s %s :: %s %s (%ss)' % ('OK  ' if m.get('result') == 'DONE' else 'FAIL', m.get('i'), m.get('of'), m.get('name'), m.get('result'), m.get('detail', '')[:150], m.get('sec')))
     elif t == 'playlist_done': out('PLAYLIST DONE: %s ok, %s failed of %s' % (m.get('ok'), m.get('failed'), m.get('count')))

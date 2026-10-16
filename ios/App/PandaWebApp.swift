@@ -96,7 +96,8 @@ final class Host: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let report = d.string(forKey: "report") ?? "1"
         let dbg = d.string(forKey: "dbg") ?? "0"
         let env = d.string(forKey: "env") ?? ""
-        return "rom=\(rom)&frames=\(frames)&turbo=\(turbo)&name=\(name)&report=\(report)&dbg=\(dbg)&env=\(env)"
+        let gl = d.string(forKey: "gl") ?? "0"
+        return "rom=\(rom)&frames=\(frames)&turbo=\(turbo)&name=\(name)&report=\(report)&dbg=\(dbg)&env=\(env)&gl=\(gl)"
     }
 
     func start() {

@@ -124,6 +124,7 @@ async function finish() {
   const wall = (performance.now() - t0) / 1000;
   const result = { rom, frames, avgMs: frames ? sum / frames : 0, worstMs: worst, late, hitches, fps: wall > 0 ? frames / wall : 0, wallSec: wall, ...mem(),
                    ...(useGL ? litGL() : { topLit: lit(ctx[0], 400), bottomLit: lit(ctx[1], 320) }), errors, userAgent: navigator.userAgent, turbo, done: true };
+  if (useGL && report) { try { post('shot', { png: document.getElementById('gl').toDataURL('image/png') }); } catch (e) { log('shot failed: ' + e); } }
   document.getElementById('stats').textContent = `done: ${frames} frames, avg ${result.avgMs.toFixed(2)} ms, worst ${worst.toFixed(0)} ms, ${result.fps.toFixed(1)} fps, lit px top ${result.topLit} / bottom ${result.bottomLit}`;
   window.__result = result;
   if (report) {
