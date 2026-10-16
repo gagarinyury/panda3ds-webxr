@@ -42,6 +42,14 @@ Inline memory = the same page tables Panda3DS uses, indexed from generated code.
 round-to-nearest and round-to-zero modes (the 3DS default is round-to-zero + flush-to-zero + default-NaN) with NaN cases delegated
 to the bit-exact helper. The inline path does not accumulate FPSR exception flags.
 
+### Idle thread fix (Panda3DS)
+
+When every guest thread is waiting, Panda3DS runs an idle thread that loops on `svcSleepThread(0)`. It already skips ahead to the next
+event, but the CPU time slice (sized for a whole frame when it began) kept running, so the idle loop spun through the rest of it:
+~300 000 supervisor calls per frame, ~20 ms/frame for a program that does nothing. The fix (`Kernel::sleepThread` + `CPU::stopSlice`)
+ends the slice after the skip so the scheduler handles the event immediately.
+All 58 devkitPro examples: mean 16.9 → 2.3 ms/frame, worst 24.2 → 5.6 ms/frame (budget 16.7 ms), same pass rate (54/58).
+
 ## Build
 
 ```sh

@@ -47,6 +47,20 @@ index 2f4d9df..aa20e27 100644
  if(NOT BUILD_HYDRA_CORE AND NOT BUILD_LIBRETRO_CORE)
      add_executable(Alber)
  
+diff --git a/include/cpu_dynarmic.hpp b/include/cpu_dynarmic.hpp
+index 2435853..6732f3c 100644
+--- a/include/cpu_dynarmic.hpp
++++ b/include/cpu_dynarmic.hpp
+@@ -180,6 +180,9 @@ class CPU {
+ 
+     void addTicks(u64 ticks) { env.AddTicks(ticks); }
+ 
++    // End the current time slice: Run() returns after the current block so the scheduler can process due events
++    void stopSlice() { env.ticksLeft = 0; }
++
+     void clearCache() { jit->ClearCache(); }
+     void clearCacheRange(u32 start, u32 size) { jit->InvalidateCacheRange(start, size); }
+ 
 diff --git a/include/emulator.hpp b/include/emulator.hpp
 index b1191f6..5eb1dc7 100644
 --- a/include/emulator.hpp
@@ -90,6 +104,21 @@ index 124647d..a317f28 100644
  	jit = std::make_unique<Dynarmic::A32::Jit>(config);
  }
  
+diff --git a/src/core/kernel/threads.cpp b/src/core/kernel/threads.cpp
+index 5ada30e..12b1028 100644
+--- a/src/core/kernel/threads.cpp
++++ b/src/core/kernel/threads.cpp
+@@ -400,6 +400,10 @@ void Kernel::sleepThread(s64 ns) {
+ 					u64 idleCycles = timestamp - scheduler.currentTimestamp;
+ 					cpu.addTicks(idleCycles);
+ 				}
++
++				// We have skipped to the next event, so end the CPU's time slice and let the scheduler handle it now. Without this the
++				// slice (sized for the whole frame when it started) keeps running and the idle thread spins through the remainder of it.
++				cpu.stopSlice();
+ 			}
+ 		}
+ 	} else {  // If we're sleeping for >= 0 ns
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
 index 659a1e1..7127c0c 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
