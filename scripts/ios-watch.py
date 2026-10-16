@@ -22,7 +22,7 @@ q = queue.Queue()
 threading.Thread(target=lambda: [q.put(l) for l in p.stdout] or q.put(None), daemon=True).start()
 def out(*a): print(*a, flush=True)
 
-done_at = None; t0 = time.time(); last_line = t0; last_frame = -1; last_crumb = None; stalled = False; got_any = False
+last_tick_print = 0; done_at = None; t0 = time.time(); last_line = t0; last_frame = -1; last_crumb = None; stalled = False; got_any = False
 seen_logs = {}
 pcs = collections.deque(maxlen=12); loop_reported = set(); crumbs = 0
 while True:
@@ -62,6 +62,10 @@ while True:
         last_frame = m.get('n', last_frame)
         if last_frame == 1: out('FIRST_FRAME %.1fs after launch ms=%s' % (now - t0, m.get('ms')))
         elif last_frame % 60 == 0: out('PROGRESS frame %d ms=%s' % (last_frame, m.get('ms')))
+    elif t == 'tick':
+        if now - last_tick_print >= 5:
+            last_tick_print = now
+            out('TICK frame %s speed %s fps  emu %s ms  loop %s Hz  modules %s  wasm %s MB' % (m.get('frames'), m.get('speed'), m.get('emuMs'), m.get('loopHz'), m.get('blocks'), m.get('wasmMB')))
     elif t == 'shot':
         import base64
         png = '/tmp/shot-%s.png' % m.get('name', 'run')

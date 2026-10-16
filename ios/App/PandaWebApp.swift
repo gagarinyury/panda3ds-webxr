@@ -25,9 +25,45 @@ func plog(_ s: String) {
 // Serves the bundled Site/ folder under panda://app/ (any path maps to Site/<path>)
 final class SiteHandler: NSObject, WKURLSchemeHandler {
     let root = Bundle.main.url(forResource: "Site", withExtension: nil)!
+    // Files in the app's Documents folder (copied there with `devicectl device copy to`), served under panda://app/docs/<name> in 4 MB pieces
+    // with Range support, so a 512 MB game never has to sit in memory as one Data object.
+    func serveDoc(_ name: String, _ task: WKURLSchemeTask) {
+        let url = task.request.url!
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let path = docs.appendingPathComponent(name)
+        guard let fh = try? FileHandle(forReadingFrom: path),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
+              let size = (attrs[.size] as? NSNumber)?.uint64Value, size > 0 else {
+            task.didReceive(HTTPURLResponse(url: url, statusCode: 404, httpVersion: "HTTP/1.1", headerFields: nil)!)
+            task.didFinish(); return
+        }
+        var start: UInt64 = 0, end = size - 1, status = 200
+        if let r = task.request.value(forHTTPHeaderField: "Range"), r.hasPrefix("bytes=") {
+            let parts = r.dropFirst(6).split(separator: "-", omittingEmptySubsequences: false)
+            if let a = parts.first.flatMap({ UInt64($0) }) { start = a; status = 206 }
+            if parts.count > 1, let b = UInt64(parts[1]) { end = min(b, size - 1) }
+        }
+        let length = end >= start ? end - start + 1 : 0
+        var headers = ["Content-Type": "application/octet-stream", "Content-Length": "\(length)", "Accept-Ranges": "bytes", "Cache-Control": "no-store"]
+        if status == 206 { headers["Content-Range"] = "bytes \(start)-\(end)/\(size)" }
+        task.didReceive(HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!)
+        try? fh.seek(toOffset: start)
+        var remaining = length
+        while remaining > 0 {
+            let ok: Bool = autoreleasepool {
+                guard let d = try? fh.read(upToCount: Int(min(remaining, 4 * 1024 * 1024))), !d.isEmpty else { return false }
+                task.didReceive(d); remaining -= UInt64(d.count); return true
+            }
+            if !ok { break }
+        }
+        try? fh.close()
+        task.didFinish()
+    }
+
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         let url = task.request.url!
         let rel = String(url.path.dropFirst())
+        if rel.hasPrefix("docs/") { serveDoc(String(rel.dropFirst(5)), task); return }
         guard let data = try? Data(contentsOf: root.appendingPathComponent(rel)) else {
             task.didReceive(HTTPURLResponse(url: url, statusCode: 404, httpVersion: "HTTP/1.1", headerFields: nil)!)
             task.didFinish(); return
@@ -98,7 +134,10 @@ final class Host: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let env = d.string(forKey: "env") ?? ""
         let gl = d.string(forKey: "gl") ?? "0"
         let sd = d.string(forKey: "sd") ?? ""
-        return "rom=\(rom)&frames=\(frames)&turbo=\(turbo)&name=\(name)&report=\(report)&dbg=\(dbg)&env=\(env)&gl=\(gl)&sd=\(sd)"
+        let script = d.string(forKey: "script") ?? ""
+        let shots = d.string(forKey: "shots") ?? "0"
+        let pace = d.string(forKey: "pace") ?? ""
+        return "rom=\(rom)&frames=\(frames)&turbo=\(turbo)&name=\(name)&report=\(report)&dbg=\(dbg)&env=\(env)&gl=\(gl)&sd=\(sd)&script=\(script)&shots=\(shots)&pace=\(pace)"
     }
 
     func start() {

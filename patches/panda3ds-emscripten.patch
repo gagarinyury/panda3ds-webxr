@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2f4d9df..e0ae987 100644
+index 2f4d9df..97217c4 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -177,7 +177,10 @@ if(ENABLE_DISCORD_RPC AND NOT ANDROID)
@@ -49,13 +49,25 @@ index 2f4d9df..e0ae987 100644
 +    add_executable(AlberWeb "${CMAKE_SOURCE_DIR}/../web/web_main.cpp")
 +    target_link_libraries(AlberWeb PRIVATE AlberCore)
 +    target_link_options(AlberWeb PRIVATE -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456 -sMAXIMUM_MEMORY=2147483648 -sSTACK_SIZE=2097152 -sFORCE_FILESYSTEM=1
-+        -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1
++        -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1 -lidbfs.js
 +        "-sEXPORTED_FUNCTIONS=_main,_web_init,_web_load,_web_frame,_web_screen,_web_key,_web_touch,_web_circle" "-sEXPORTED_RUNTIME_METHODS=FS,ccall,cwrap,HEAPU8,stringToNewUTF8,ENV" --profiling-funcs)
 +endif()
 +
  if(NOT BUILD_HYDRA_CORE AND NOT BUILD_LIBRETRO_CORE)
      add_executable(Alber)
  
+diff --git a/include/PICA/regs.hpp b/include/PICA/regs.hpp
+index 3185d35..16a2cf1 100644
+--- a/include/PICA/regs.hpp
++++ b/include/PICA/regs.hpp
+@@ -72,6 +72,7 @@ namespace PICA {
+ 			StencilTest = 0x105,
+ 			StencilOp = 0x106,
+ 			DepthAndColorMask = 0x107,
++			ColourBufferWrite = 0x113,  // GPUREG_COLORBUFFER_WRITE: 0 = no colour writes at all (stencil/depth-only passes, e.g. shadow volumes), 0xF = enabled
+ 			DepthBufferWrite = 0x115,
+ 			DepthBufferFormat = 0x116,
+ 			ColourBufferFormat = 0x117,
 diff --git a/include/cpu_dynarmic.hpp b/include/cpu_dynarmic.hpp
 index 2435853..209e002 100644
 --- a/include/cpu_dynarmic.hpp
@@ -122,8 +134,28 @@ index 27d6a43..43ca8fb 100644
  
  	u32 colourBufferLoc;                // Location in 3DS VRAM for the colour buffer
  	PICA::ColorFmt colourBufferFormat;  // Format of the colours stored in the colour buffer
+diff --git a/include/renderer_gl/gl_state.hpp b/include/renderer_gl/gl_state.hpp
+index d6cbcbc..2687862 100644
+--- a/include/renderer_gl/gl_state.hpp
++++ b/include/renderer_gl/gl_state.hpp
+@@ -191,10 +191,11 @@ struct GLStateManager {
+ 
+ 	void setColourMask(bool r, bool g, bool b, bool a) {
+ 		if (r != redMask || g != greenMask || b != blueMask || a != alphaMask) {
+-			r = redMask;
+-			g = greenMask;
+-			b = blueMask;
+-			a = alphaMask;
++			// (the assignments used to be the other way round: the cache never changed and the previous mask was re-applied, so no colour mask ever took effect)
++			redMask = r;
++			greenMask = g;
++			blueMask = b;
++			alphaMask = a;
+ 
+ 			OpenGL::setColourMask(r, g, b, a);
+ 		}
 diff --git a/include/renderer_gl/renderer_gl.hpp b/include/renderer_gl/renderer_gl.hpp
-index 2023966..8c3c21f 100644
+index 2023966..45c988e 100644
 --- a/include/renderer_gl/renderer_gl.hpp
 +++ b/include/renderer_gl/renderer_gl.hpp
 @@ -11,6 +11,7 @@
@@ -134,7 +166,15 @@ index 2023966..8c3c21f 100644
  #include "PICA/pica_hash.hpp"
  #include "PICA/pica_vert_config.hpp"
  #include "PICA/pica_vertex.hpp"
-@@ -104,6 +105,11 @@ class RendererGL final : public Renderer {
+@@ -63,6 +64,7 @@ class RendererGL final : public Renderer {
+ 	bool oldDepthmapEnable = false;
+ 	// Set by prepareForDraw, tells us whether the current draw is using hw-accelerated shader
+ 	bool usingAcceleratedShader = false;
++	bool logicOpPreservesColour = false;  // OpenGL ES / WebGL2 have no logic ops: set when the guest selected NOOP, which we emulate by not writing colour at all
+ 	bool performIndexedRender = false;
+ 	bool usingShortIndices = false;
+ 
+@@ -104,6 +106,11 @@ class RendererGL final : public Renderer {
  	// Current offset for our hw shader uniform UBO
  	u32 hwShaderUniformUBOOffset = 0;
  
@@ -237,11 +277,62 @@ index 124647d..a94570e 100644
 +
  #endif  // CPU_DYNARMIC
 \ No newline at end of file
+diff --git a/src/core/PICA/gpu.cpp b/src/core/PICA/gpu.cpp
+index e38f441..d5f1234 100644
+--- a/src/core/PICA/gpu.cpp
++++ b/src/core/PICA/gpu.cpp
+@@ -75,6 +75,7 @@ GPU::GPU(Memory& mem, EmulatorConfig& config) : mem(mem), config(config) {
+ 
+ void GPU::reset() {
+ 	regs.fill(0);
++	regs[PICA::InternalRegs::ColourBufferWrite] = 0xF;  // colour writes are allowed until the guest says otherwise
+ 	shaderUnit.reset();
+ 	shaderJIT.reset();
+ 	shaderJIT.setAccurateMul(config.accurateShaderMul);
 diff --git a/src/core/PICA/shader_gen_glsl.cpp b/src/core/PICA/shader_gen_glsl.cpp
-index a9ad3a9..efc5bcd 100644
+index a9ad3a9..63141b4 100644
 --- a/src/core/PICA/shader_gen_glsl.cpp
 +++ b/src/core/PICA/shader_gen_glsl.cpp
-@@ -408,6 +408,8 @@ void FragmentGenerator::getSource(std::string& shader, TexEnvConfig::Source sour
+@@ -81,6 +81,8 @@ std::string FragmentGenerator::getDefaultVertexShader() {
+ 
+ 	#ifndef USING_GLES
+ 		out float gl_ClipDistance[2];
++	#else
++		out vec2 v_clipDist;  // GLES / WebGL2 have no gl_ClipDistance: the fragment shader discards instead
+ 	#endif
+ 
+ 		void main() {
+@@ -97,6 +99,8 @@ std::string FragmentGenerator::getDefaultVertexShader() {
+ 		#ifndef USING_GLES
+ 			gl_ClipDistance[0] = -a_coords.z;
+ 			gl_ClipDistance[1] = dot(clipCoords, a_coords);
++		#else
++			v_clipDist = vec2(-a_coords.z, dot(clipCoords, a_coords));
+ 		#endif
+ 		}
+ )";
+@@ -153,6 +157,9 @@ std::string FragmentGenerator::generate(const FragmentConfig& config, void* driv
+ 		in vec2 v_texcoord1;
+ 		in vec3 v_view;
+ 		in vec2 v_texcoord2;
++	#ifdef USING_GLES
++		in vec2 v_clipDist;
++	#endif
+ 
+ 		out vec4 fragColor;
+ 		uniform sampler2D u_tex0;
+@@ -185,6 +192,10 @@ std::string FragmentGenerator::generate(const FragmentConfig& config, void* driv
+ 	// When not initialized, source 13 is set to vec4(0.0) and 15 is set to the vertex colour
+ 	ret += R"(
+ 		void main() {
++		#ifdef USING_GLES
++			// Emulates the two PICA clip planes (near plane and the user plane): both must be >= 0
++			if (v_clipDist.x < 0.0 || v_clipDist.y < 0.0) discard;
++		#endif
+ 			vec4 combinerOutput = v_colour;
+ 			vec4 previousBuffer = vec4(0.0);
+ 			vec4 tevNextPreviousBuffer = tevBufferColor;
+@@ -408,6 +419,8 @@ void FragmentGenerator::getSource(std::string& shader, TexEnvConfig::Source sour
  		case TexEnvConfig::Source::PrimaryFragmentColor: shader += "primaryColor"; break;
  		case TexEnvConfig::Source::SecondaryFragmentColor: shader += "secondaryColor"; break;
  
@@ -250,6 +341,24 @@ index a9ad3a9..efc5bcd 100644
  		default:
  			Helpers::warn("Unimplemented TEV source: %d", static_cast<int>(source));
  			shader += "vec4(1.0, 1.0, 1.0, 1.0)";
+@@ -785,6 +798,8 @@ out vec2 v_texcoord2;
+ 
+ #ifndef USING_GLES
+ 	out float gl_ClipDistance[2];
++#else
++	out vec2 v_clipDist;  // GLES / WebGL2 have no gl_ClipDistance: the fragment shader discards instead
+ #endif
+ 
+ void main() {
+@@ -807,6 +822,8 @@ void main() {
+ #ifndef USING_GLES
+ 	gl_ClipDistance[0] = -a_coords.z;
+ 	gl_ClipDistance[1] = dot(clipCoords, a_coords);
++#else
++	v_clipDist = vec2(-a_coords.z, dot(clipCoords, a_coords));
+ #endif
+ })";
+ 		return ret;
 diff --git a/src/core/fs/archive_ncch.cpp b/src/core/fs/archive_ncch.cpp
 index 5844bbd..e557813 100644
 --- a/src/core/fs/archive_ncch.cpp
@@ -357,10 +466,23 @@ index 5ada30e..12b1028 100644
  		}
  	} else {  // If we're sleeping for >= 0 ns
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
-index 659a1e1..afb5df1 100644
+index 659a1e1..7b836d0 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
 +++ b/src/core/renderer_gl/renderer_gl.cpp
-@@ -58,22 +58,30 @@ void RendererGL::reset() {
+@@ -1,5 +1,12 @@
+ #include "renderer_gl/renderer_gl.hpp"
+ 
++#include <algorithm>
++#include <cstdio>
++#include <cstdlib>
++#include <map>
++#include <string>
++#include <vector>
++
+ #include <stb_image_write.h>
+ 
+ #include <algorithm>
+@@ -58,22 +65,30 @@ void RendererGL::reset() {
  
  void RendererGL::initGraphicsContextInternal() {
  	gl.reset();
@@ -401,17 +523,91 @@ index 659a1e1..afb5df1 100644
  
  	hwIndexBuffer = StreamBuffer::Create(GL_ELEMENT_ARRAY_BUFFER, hwIndexBufferSize);
  	hwVertexBuffer = StreamBuffer::Create(GL_ARRAY_BUFFER, hwVertexBufferSize);
-@@ -422,6 +430,9 @@ void RendererGL::updateFogLUT() {
+@@ -232,9 +247,20 @@ void RendererGL::setupBlending() {
+ 		const u32 logicOp = getBits<0, 4>(regs[PICA::InternalRegs::LogicOp]);
+ 		gl.setLogicOp(logicOps[logicOp]);
+ 
+-		// If logic ops are enabled we don't need to disable blending because they override it
++		// If logic ops are enabled we don't need to disable blending on desktop GL because they override it. OpenGL ES / WebGL2 have no logic ops
++		// (enableLogicOp is a no-op there), so blending must be switched off explicitly or the previous draw's blend state would stay in effect.
++		gl.disableBlend();
+ 		gl.enableLogicOp();
++		// GLES / WebGL2 cannot do logic ops. The two that games really use are COPY (plain replace, which blending-off gives us) and NOOP, which
++		// stencil-only passes such as the shadow volumes in Super Mario 3D Land rely on (colour must stay untouched: without this they show up as black prisms).
++		logicOpPreservesColour = driverInfo.usingGLES && logicOps[logicOp] == GL_NOOP;
++		if (driverInfo.usingGLES && logicOps[logicOp] == GL_CLEAR) {  // result is zero: blend (0 * src + 0 * dst)
++			gl.enableBlend();
++			gl.setBlendEquation(GL_FUNC_ADD, GL_FUNC_ADD);
++			gl.setBlendFunc(GL_ZERO, GL_ZERO, GL_ZERO, GL_ZERO);
++		}
+ 	} else {
++		logicOpPreservesColour = false;
+ 		gl.enableBlend();
+ 		gl.disableLogicOp();
+ 
+@@ -275,10 +301,11 @@ void RendererGL::setupStencilTest(bool stencilEnable) {
+ 
+ 	const u32 stencilConfig = regs[PICA::InternalRegs::StencilTest];
+ 	const u32 stencilFunc = getBits<4, 3>(stencilConfig);
+-	const s32 reference = s8(getBits<16, 8>(stencilConfig));  // Signed reference value
++	// 3dbrew calls the reference value signed, but OpenGL takes the reference as 0..255 and clamps negative numbers to 0, which broke every value >= 128
++	const s32 reference = s32(getBits<16, 8>(stencilConfig));
+ 	const u32 stencilRefMask = getBits<24, 8>(stencilConfig);
+ 
+-	const bool stencilWrite = regs[PICA::InternalRegs::DepthBufferWrite];
++	const bool stencilWrite = (regs[PICA::InternalRegs::DepthBufferWrite] & 1) != 0;  // GPUREG_DEPTHBUFFER_WRITE: bit 0 = stencil write, bit 1 = depth write (3dbrew)
+ 	const u32 stencilBufferMask = stencilWrite ? getBits<8, 8>(stencilConfig) : 0;
+ 
+ 	// TODO: Throw stencilFunc/stencilOp to the GL state manager
+@@ -422,6 +449,30 @@ void RendererGL::updateFogLUT() {
  }
  
  void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> vertices) {
 +	// A game may draw before it has configured the framebuffer (size 0, or uninitialised memory in a non-zeroed heap): skip such draws
 +	if (fbSize[0] == 0 || fbSize[1] == 0 || fbSize[0] > 4096 || fbSize[1] > 4096) return;
 +
++	// Debug aid (env GL_DEBUG_STATE=1): print the most frequent combinations of the output-merger registers every 3000 draws
++	static const bool dbgState = std::getenv("GL_DEBUG_STATE") != nullptr;
++	if (dbgState) {
++		static std::map<std::string, int> seen;
++		static int drawCount = 0;
++		char key[300];
++		std::snprintf(key, sizeof key, "colOp=%08x stencil=%08x stencilOp=%08x depthColorMask=%08x depthWrite=%x colourWrite=%x depthRead=%x colourRead=%x alphaTest=%08x clipEn=%x logicOp=%x blendFunc=%08x vertices=%s",
++			regs[PICA::InternalRegs::ColourOperation], regs[PICA::InternalRegs::StencilTest], regs[PICA::InternalRegs::StencilOp], regs[PICA::InternalRegs::DepthAndColorMask],
++			regs[PICA::InternalRegs::DepthBufferWrite], regs[PICA::InternalRegs::ColourBufferWrite], regs[0x114], regs[0x112], regs[PICA::InternalRegs::AlphaTestConfig],
++			regs[PICA::InternalRegs::ClipEnable] & 1, regs[PICA::InternalRegs::LogicOp] & 0xF, regs[PICA::InternalRegs::BlendFunc], vertices.size() <= 3 ? "<=3" : (vertices.size() <= 12 ? "<=12" : ">12"));
++		seen[key]++;
++		if (++drawCount % 3000 == 0) {
++			std::vector<std::pair<int, std::string>> top;
++			for (auto& [k, v] : seen) top.emplace_back(v, k);
++			std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return a.first > b.first; });
++			for (size_t i = 0; i < top.size() && i < 10; i++) std::printf("[state] %5d x %s\n", top[i].first, top[i].second.c_str());
++			std::printf("[state] ---\n");
++			seen.clear();
++		}
++	}
++
  	// The fourth type is meant to be "Geometry primitive". TODO: Find out what that is
  	static constexpr std::array<OpenGL::Primitives, 4> primTypes = {
  		OpenGL::Triangle,
-@@ -722,7 +733,7 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
+@@ -449,12 +500,14 @@ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> v
+ 	poop->fbo.bind(OpenGL::DrawAndReadFramebuffer);
+ 
+ 	const u32 depthControl = regs[PICA::InternalRegs::DepthAndColorMask];
+-	const bool depthWrite = regs[PICA::InternalRegs::DepthBufferWrite];
++	const bool depthWrite = (regs[PICA::InternalRegs::DepthBufferWrite] & 2) != 0;
+ 	const bool depthEnable = depthControl & 1;
+ 	const bool depthWriteEnable = getBit<12>(depthControl);
+ 	const int depthFunc = getBits<4, 3>(depthControl);
+ 	const int colourMask = getBits<8, 4>(depthControl);
+-	gl.setColourMask(colourMask & 1, colourMask & 2, colourMask & 4, colourMask & 8);
++	// GPUREG_COLORBUFFER_WRITE can forbid every colour write regardless of the per-channel mask (used for stencil-only passes such as shadow volumes)
++	const bool colourWriteAllowed = (regs[PICA::InternalRegs::ColourBufferWrite] & 0xF) != 0 && !logicOpPreservesColour;
++	gl.setColourMask(colourWriteAllowed && (colourMask & 1), colourWriteAllowed && (colourMask & 2), colourWriteAllowed && (colourMask & 4), colourWriteAllowed && (colourMask & 8));
+ 
+ 	static constexpr std::array<GLenum, 8> depthModes = {
+ 		GL_NEVER, GL_ALWAYS, GL_EQUAL, GL_NOTEQUAL, GL_LESS, GL_LEQUAL, GL_GREATER, GL_GEQUAL,
+@@ -722,7 +775,7 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
  			return blankTexture;
  		}
  
@@ -420,7 +616,17 @@ index 659a1e1..afb5df1 100644
  		Texture& newTex = textureCache.add(tex);
  		newTex.decodeTexture(textureData);
  
-@@ -1018,16 +1029,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -955,6 +1008,9 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+ 		uniforms.clipCoords[1] = f24::fromRaw(regs[PICA::InternalRegs::ClipData1] & 0xffffff).toFloat32();
+ 		uniforms.clipCoords[2] = f24::fromRaw(regs[PICA::InternalRegs::ClipData2] & 0xffffff).toFloat32();
+ 		uniforms.clipCoords[3] = f24::fromRaw(regs[PICA::InternalRegs::ClipData3] & 0xffffff).toFloat32();
++	} else {
++		// The user clip plane is disabled: a zero plane gives distance 0, which never discards (matters on GLES, where the plane is emulated in the fragment shader)
++		uniforms.clipCoords[0] = uniforms.clipCoords[1] = uniforms.clipCoords[2] = uniforms.clipCoords[3] = 0.0f;
+ 	}
+ 
+ 	// Set up the constant color for the 6 TEV stages
+@@ -1018,16 +1074,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  		}
  	}
  

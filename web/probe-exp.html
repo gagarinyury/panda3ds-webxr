@@ -39,9 +39,17 @@ f.src = `/web/index.html?rom=${rom}&gl=1&name=${name}-inner${extra}`;
   const bsd = O.bufferSubData;
   P.bufferSubData = function (t, off, d) { uploads++; const n = arguments.length >= 5 ? arguments[4] : d.byteLength; /* Emscripten passes (target, off, HEAPU8, srcOffset, length): the real size is the 5th argument */ if (t === 35345) bytesUbo += n; else if (t === 34962) bytesVtx += n; else if (t === 34963) bytesIdx += n; return bsd.apply(this, arguments); };
   const skipTarget = (target) => { const prev = P.bufferSubData; P.bufferSubData = function (t, off, d) { if (t === target) { uploads++; return; } return prev.apply(this, arguments); }; return () => { P.bufferSubData = prev; }; };
+  const skipTex = () => { const prev = P.texSubImage2D; P.texSubImage2D = function () {}; return () => { P.texSubImage2D = prev; }; };
   const EXP = {
-    baseline: () => () => {},
-    'baseline (again)': () => () => {},
+    'baseline': () => () => {},
+    'no uniform-buffer uploads': () => skipTarget(35345),
+    'baseline (check 1)': () => () => {},
+    'no index-buffer uploads': () => skipTarget(34963),
+    'baseline (check 2)': () => () => {},
+    'no vertex-buffer uploads': () => skipTarget(34962),
+    'baseline (check 3)': () => () => {},
+    'no texture uploads (texSubImage2D)': () => skipTex(),
+    'baseline (check 4)': () => () => {},
   };
 
   const results = [];

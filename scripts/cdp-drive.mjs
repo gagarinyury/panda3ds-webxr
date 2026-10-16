@@ -13,6 +13,7 @@ const ev = async (expression) => (await call('Runtime.evaluate', { expression, r
 await call('Emulation.setDeviceMetricsOverride', { width: +width, height: +height, deviceScaleFactor: 1, mobile: false });
 let n = 0;
 for (const st of steps.split(',')) {
+  if (st.startsWith('waitframe:')) { const target = +st.slice(10); const t0w = Date.now(); while (Date.now() - t0w < 600000) { const f = await ev('typeof frames === "number" ? frames : 0'); if (f >= target) break; await new Promise((r) => setTimeout(r, 500)); } console.log('reached frame', await ev('frames')); continue; }
   if (st.startsWith('wait:')) { await new Promise((r) => setTimeout(r, +st.slice(5) * 1000)); continue; }
   if (st === 'shot') { const s = await call('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(`${prefix}-${String(++n).padStart(2, '0')}.png`, Buffer.from(s.result.data, 'base64')); console.log(n, await ev("document.getElementById('counters').innerText.replace(/\\n/g, ' | ').slice(0, 520)")); continue; }
   if (st.startsWith('evalfile:')) { console.log(await ev(fs.readFileSync(st.slice(9), 'utf8'))); continue; }

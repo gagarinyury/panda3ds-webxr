@@ -21,3 +21,4 @@ ios/*.xcodeproj/
 ios/build/
 web/block-*.wasm
 run/homebrew/
+/config.toml

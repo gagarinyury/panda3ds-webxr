@@ -80,9 +80,14 @@ const log = (s, err) => {
 };
 var Module = {
   canvas: document.getElementById('gl'),
-  print: (s) => { log(s, /\[FATAL\]/.test(s)); post('log', { msg: String(s).slice(0, 300) }); },
+  print: (s) => { if (typeof s === 'string' && s.startsWith('[state]')) { (window.__state || (window.__state = [])).push(s); if (window.__state.length > 4000) window.__state.splice(0, 2000); return; } log(s, /\[FATAL\]/.test(s)); post('log', { msg: String(s).slice(0, 300) }); },
   printErr: (s) => { log(s, /error|fatal|abort|unsupported|failed/i.test(s)); post('log', { msg: '[err] ' + String(s).slice(0, 300) }); },
   preRun: [() => {
+    if (params.get('persist') === '1') {   // keep the emulator's app data (SD card, game saves) in IndexedDB between runs: first-run dialogs of a game do not repeat
+      Module.FS.mkdirTree('/libsdl/Alber/rom'); Module.FS.mount(Module.FS.filesystems.IDBFS, {}, '/libsdl/Alber/rom');
+      Module.addRunDependency('idbfs'); Module.FS.syncfs(true, (err) => { if (err) log('IDBFS load failed: ' + err, true); else log('persistent app data loaded'); Module.removeRunDependency('idbfs'); });
+      let syncing = false; setInterval(() => { if (syncing) return; syncing = true; Module.FS.syncfs(false, () => { syncing = false; }); }, 4000);
+    }
     for (const kv of envs.split(',').filter(Boolean)) { const [k, v] = kv.split(':'); Module.ENV[k] = v || '1'; }
     // render with no GPU backend and no audio: only the presented framebuffers are shown
     Module.FS.writeFile('/config.toml', `[GPU]\nRenderer = "${useGL ? 'opengl' : 'null'}"\nScreenLayout = "${side ? 'SideBySide' : 'Default'}"\nTopScreenSize = ${side ? 0.5556 : 0.5}\nEnableShaderJIT = false\n[Audio]\nEnableAudio = false\nDSPEmulation = "Null"\n`);
@@ -193,7 +198,10 @@ async function loadRomBuffer(buf, filename) {
   log(`loading ${filename} (${(buf.byteLength / 1048576).toFixed(1)} MB) as ${guestPath}...`);
   try { Module.FS.unlink(guestPath); } catch (e) {}
   Module.FS.writeFile(guestPath, new Uint8Array(buf));
+  return bootRom(guestPath, filename);
+}
 
+async function bootRom(guestPath, filename) {
   if (params.get('dsp') !== '0') {
     Module.FS.mkdirTree('/libsdl/Alber/rom/SDMC/3ds');
     try { Module.FS.writeFile('/libsdl/Alber/rom/SDMC/3ds/dspfirm.cdc', new Uint8Array(262144)); } catch (e) {}
@@ -220,6 +228,10 @@ async function loadRomBuffer(buf, filename) {
   frames = 0; sum = 0; worst = 0; late = 0; hitches = 0;
   running = true;
   t0 = performance.now(); lastTick = t0;
+  // unattended runs: script=A@30,A@39,B@48 presses a button for 250 ms at the given seconds after boot; shots=10 posts a canvas screenshot every 10 s
+  for (const item of (params.get('script') || '').split(',').filter(Boolean)) { const [b, sec] = item.split('@'); setTimeout(() => { press(b, true); setTimeout(() => press(b, false), 250); }, +sec * 1000); }
+  const shotEvery = +params.get('shots') || 0;
+  if (shotEvery && useGL) setInterval(() => { try { post('shot', { png: document.getElementById('gl').toDataURL('image/png') }); } catch (e) {} }, shotEvery * 1000);
   schedule();
 }
 
@@ -228,29 +240,26 @@ async function loadRomUrl(url) {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error('cannot fetch ' + url + ': HTTP ' + resp.status);
   const total = parseInt(resp.headers.get('content-length') || '0');
-  let buf;
+  const extMatch = url.split('?')[0].split('#')[0].match(/\.([a-zA-Z0-9]+)$/);
+  const guestPath = '/rom' + (extMatch ? '.' + extMatch[1].toLowerCase() : '.3dsx');
   if (total && resp.body) {
-    const reader = resp.body.getReader();
-    const chunks = [];
-    let received = 0;
+    // Stream straight into the emulator's in-memory file system. The whole file is allocated once up front (MEMFS would otherwise grow it in steps
+    // and briefly hold several copies, which a 512 MB game cannot afford on a phone) and no list of chunks is kept.
+    try { Module.FS.unlink(guestPath); } catch (e) {}
+    const stream = Module.FS.open(guestPath, 'w+');
+    Module.FS.write(stream, new Uint8Array(1), 0, 1, total - 1);
+    const reader = resp.body.getReader(); let pos = 0, lastShown = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      chunks.push(value);
-      received += value.length;
-      document.getElementById('stats').textContent = `downloading: ${(received / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB (${Math.round(received * 100 / total)}%)`;
+      Module.FS.write(stream, value, 0, value.length, pos); pos += value.length;
+      if (pos - lastShown > 16 * 1048576 || pos === total) { lastShown = pos; document.getElementById('stats').textContent = `loading game: ${(pos / 1048576).toFixed(0)} / ${(total / 1048576).toFixed(0)} MB (${Math.round(pos * 100 / total)}%)`; }
     }
-    const merged = new Uint8Array(received);
-    let offset = 0;
-    for (const chunk of chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.length;
-    }
-    buf = merged.buffer;
-  } else {
-    buf = await resp.arrayBuffer();
+    Module.FS.close(stream);
+    log(`loaded ${url} (${(total / 1048576).toFixed(1)} MB) as ${guestPath}`);
+    return bootRom(guestPath, url);
   }
-  await loadRomBuffer(buf, url);
+  return loadRomBuffer(await resp.arrayBuffer(), url);
 }
 
 async function start() {
@@ -323,6 +332,13 @@ setInterval(renderDiag, 250);
 (function presentProbe() { presentCount++; requestAnimationFrame(presentProbe); })();   // how often the browser actually repaints this page
 if (navigator.getBattery) navigator.getBattery().then((b) => { battery = b; }).catch(() => {});
 
+// fscript=A:2100,A:2660,B:3780: press a button (held for 6 frames) when the emulated frame counter reaches the given number - independent of machine speed
+const fsched = (params.get('fscript') || '').split(',').filter(Boolean).map((x) => { const [b, f] = x.split(':'); return [b, +f]; }).sort((p, q) => p[1] - q[1]), frel = [];
+function runScripted() {
+  while (fsched.length && frames >= fsched[0][1]) { const [b] = fsched.shift(); press(b, true); frel.push([frames + 6, b]); }
+  while (frel.length && frames >= frel[0][0]) { press(frel.shift()[1], false); }
+}
+
 function runFrame() {
   const a = performance.now();
   let qo = null; if (tq) { pollGpu(); qo = glx.createQuery(); glx.beginQuery(tq.TIME_ELAPSED_EXT, qo); }
@@ -330,19 +346,19 @@ function runFrame() {
   if (qo) { glx.endQuery(tq.TIME_ELAPSED_EXT); pendingQ.push(qo); }
   const ms = performance.now() - a;
   frameMs.push(ms); if (frameMs.length > 240) frameMs.shift();
-  frames++; sum += ms; if (ms > worst) { worst = ms; worstFrame = frames; const j = Module.jit && Module.jit.impls[0]; flushesAtWorst = j ? (j.flushes || 0) : 0; } if (ms > FRAME_MS) hitches++;
+  frames++; if (fsched.length || frel.length) runScripted(); sum += ms; if (ms > worst) { worst = ms; worstFrame = frames; const j = Module.jit && Module.jit.impls[0]; flushesAtWorst = j ? (j.flushes || 0) : 0; } if (ms > FRAME_MS) hitches++;
   if (dbg) post('frame', { n: frames, ms: +ms.toFixed(1), ...mem() });
   return alive;
 }
 
-function schedule() { if (useTimer) setTimeout(() => tick(performance.now()), Math.max(0, FRAME_MS - acc - 1)); else requestAnimationFrame(tick); }
+function schedule() { if (turbo) setTimeout(() => tick(performance.now()), 0); else if (useTimer) setTimeout(() => tick(performance.now()), Math.max(0, FRAME_MS - acc - 1)); else requestAnimationFrame(tick); }
 
 function tick(now) {
   if (!running) return;
   const tickStart = performance.now(); rafCount++; if (lastTickAt) { const gap = now - lastTickAt; if (gap > gapWin) gapWin = gap; } lastTickAt = now;
   let alive = 1, ran = 0;
   if (turbo) {
-    for (; ran < 4 && alive && !(maxFrames && frames >= maxFrames); ran++) alive = runFrame();
+    const tt0 = performance.now(); for (; ran < 16 && alive && !(maxFrames && frames >= maxFrames) && (ran === 0 || performance.now() - tt0 < 12); ran++) alive = runFrame();
   } else {
     acc += Math.min(now - lastTick, 100); lastTick = now;     // fixed time step: the display may refresh at 60 or 120 Hz
     // The browser may call us less often than 60 times a second (Comet on battery / low-power / occluded: ~30 per second, measured), so run as many
@@ -365,7 +381,7 @@ function tick(now) {
     lastBeat = now;
     const st = `frame ${frames}  avg ${(sum / Math.max(frames, 1)).toFixed(2)} ms  worst ${worst.toFixed(0)} ms  late ${late}  ${mem().wasmMB} MB  (budget 16.7)`;
     document.getElementById('stats').textContent = st;
-    post('tick', { frames, avgMs: sum / Math.max(frames, 1), worstMs: worst, late, hitches, ...mem(), fps: frames / ((performance.now() - t0) / 1000) });
+    post('tick', { speed: +fpsNow.toFixed(1), loopHz: +rafHz.toFixed(0), emuMs: +(frameMs.slice(-60).reduce((x, y) => x + y, 0) / Math.max(1, frameMs.slice(-60).length)).toFixed(1), frames, avgMs: sum / Math.max(frames, 1), worstMs: worst, late, hitches, ...mem(), fps: frames / ((performance.now() - t0) / 1000) });
   }
   tickMsAvg = tickMsAvg * 0.95 + (performance.now() - tickStart) * 0.05;
   if (!alive || (maxFrames && frames >= maxFrames)) { finish(); return; }
