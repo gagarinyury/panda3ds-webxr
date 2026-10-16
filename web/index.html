@@ -51,6 +51,9 @@
 </main>
 <script>
 const params = new URLSearchParams(location.search);
+// test aid: rafcap=30 makes requestAnimationFrame fire at most 30 times per second (reproduces a browser that throttles the page)
+{ const cap = parseFloat(new URLSearchParams(location.search).get('rafcap') || '0');
+  if (cap) { const orig = window.requestAnimationFrame.bind(window); let last = -1e9; window.requestAnimationFrame = (cb) => orig(function f(t) { if (t - last < 1000 / cap - 2) return void orig(f); last = t; cb(t); }); } }
 const rom = params.get('rom') || '/run/ctr-hello.3dsx';   // absolute path on the dev server / app scheme
 const maxFrames = parseInt(params.get('frames') || '0');   // 0 = run forever
 const report = params.get('report') === '1';               // send a result to the host (server or native app) when done
@@ -336,11 +339,14 @@ function tick(now) {
     for (; ran < 4 && alive && !(maxFrames && frames >= maxFrames); ran++) alive = runFrame();
   } else {
     acc += Math.min(now - lastTick, 100); lastTick = now;     // fixed time step: the display may refresh at 60 or 120 Hz
-    // Cap to at most 1 frame per animation frame to prevent freezing the browser event loop:
-    if (acc >= FRAME_MS && alive && !(maxFrames && frames >= maxFrames)) {
+    // The browser may call us less often than 60 times a second (Comet on battery / low-power / occluded: ~30 per second, measured), so run as many
+    // emulated frames as the elapsed time asks for, but never more than 3 and never once this tick has already used 10 ms (a spiral of death
+    // when frames are expensive is what the old one-frame-per-tick cap was for; the time guard keeps that protection).
+    const tickT0 = performance.now();
+    while (acc >= FRAME_MS && alive && !(maxFrames && frames >= maxFrames) && ran < 3 && (ran === 0 || performance.now() - tickT0 < 10)) {
       alive = runFrame();
       acc -= FRAME_MS;
-      ran = 1;
+      ran++;
     }
     // Drop lag debt immediately when falling behind:
     if (acc > FRAME_MS) {
