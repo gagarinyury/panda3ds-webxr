@@ -9,7 +9,7 @@ index 2cd57e6..802dd96 100644
 -	url = https://github.com/azahar-emu/dynarmic.git
 +	url = https://github.com/gagarinyury/dynarmic.git
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2f4d9df..e7148bc 100644
+index 2f4d9df..a309fa4 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -177,7 +177,10 @@ if(ENABLE_DISCORD_RPC AND NOT ANDROID)
@@ -60,7 +60,7 @@ index 2f4d9df..e7148bc 100644
 +    target_link_libraries(AlberWeb PRIVATE AlberCore)
 +    target_link_options(AlberWeb PRIVATE -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456 -sMAXIMUM_MEMORY=2147483648 -sSTACK_SIZE=2097152 -sFORCE_FILESYSTEM=1
 +        -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sGL_TRACK_ERRORS=0 -lidbfs.js
-+        "-sEXPORTED_FUNCTIONS=_main,_web_init,_web_load,_web_frame,_web_screen,_web_key,_web_touch,_web_circle" "-sEXPORTED_RUNTIME_METHODS=FS,ccall,cwrap,HEAPU8,stringToNewUTF8,ENV" --profiling-funcs)
++        "-sEXPORTED_FUNCTIONS=_main,_web_init,_web_load,_web_frame,_web_screen,_web_key,_web_touch,_web_circle" "-sEXPORTED_RUNTIME_METHODS=FS,ccall,cwrap,HEAPU8,HEAPF32,stringToNewUTF8,ENV" --profiling-funcs)
 +endif()
 +
  if(NOT BUILD_HYDRA_CORE AND NOT BUILD_LIBRETRO_CORE)
@@ -469,6 +469,75 @@ index a9ad3a9..63141b4 100644
  #endif
  })";
  		return ret;
+diff --git a/src/core/audio/hle_core.cpp b/src/core/audio/hle_core.cpp
+index 092f94a..86100b0 100644
+--- a/src/core/audio/hle_core.cpp
++++ b/src/core/audio/hle_core.cpp
+@@ -1,6 +1,8 @@
+ #include "audio/hle_core.hpp"
+ 
+ #include <algorithm>
++#include <cstdio>
++#include <cstdlib>
+ #include <cassert>
+ #include <iterator>
+ #include <thread>
+@@ -244,6 +246,27 @@ namespace Audio {
+ 		generateFrame(frame);
+ 
+ 		if (audioEnabled) {
++#ifdef __EMSCRIPTEN__
++			// Single-threaded web build: the audio device runs on this very thread (between page ticks, and not at all until the browser allows sound),
++			// so waiting for room would never end and froze the page. Drop the oldest audio instead, which also keeps the delay short.
++			while (sampleBuffer.size() + frame.size() * 2 > sampleBuffer.Capacity()) {
++				s16 discard[512];
++				const usize need = sampleBuffer.size() + frame.size() * 2 - sampleBuffer.Capacity();
++				if (sampleBuffer.pop(discard, std::min<usize>(need, 512)) == 0) break;
++			}
++			if (sampleBuffer.size() + frame.size() * 2 <= sampleBuffer.Capacity()) sampleBuffer.push(frame.data(), frame.size() * 2);
++			{
++				static const bool dbg = std::getenv("AUDIO_DEBUG") != nullptr;
++				static u64 frames = 0, loud = 0; static s32 peak = 0;
++				if (dbg) {
++					frames++;
++					for (usize i = 0; i < frame.size(); i++) { for (int c = 0; c < 2; c++) { const s32 v = std::abs(static_cast<s32>(frame[i][c])); if (v > peak) peak = v; } }
++					if (peak > 0) loud++;
++					if (frames % 400 == 0) { std::printf("[audio-dbg] dsp frames %llu, frames with sound %llu, peak %d, buffer fill %zu / %zu\n", (unsigned long long)frames, (unsigned long long)loud, peak, (size_t)sampleBuffer.size(), (size_t)sampleBuffer.Capacity()); peak = 0; }
++				}
++			}
++			return;
++#endif
+ 			// Wait until we've actually got room to push our frame
+ 			while (sampleBuffer.size() + frame.size() * 2 > sampleBuffer.Capacity()) {
+ 				std::this_thread::sleep_for(std::chrono::milliseconds{1});
+diff --git a/src/core/audio/miniaudio_device.cpp b/src/core/audio/miniaudio_device.cpp
+index 8e2a1e7..3cd40a3 100644
+--- a/src/core/audio/miniaudio_device.cpp
++++ b/src/core/audio/miniaudio_device.cpp
+@@ -1,6 +1,8 @@
+ #include "audio/miniaudio_device.hpp"
+ 
+ #include <algorithm>
++#include <cstdio>
++#include <cstdlib>
+ #include <cmath>
+ #include <cstring>
+ #include <limits>
+@@ -105,6 +107,14 @@ void MiniAudioDevice::init(Samples& samples, bool safe) {
+ 		s16* output = reinterpret_cast<ma_int16*>(out);
+ 		usize samplesWritten = 0;
+ 		samplesWritten += self->samples->pop(output, frameCount * channelCount);
++		{
++			static const bool dbg = std::getenv("AUDIO_DEBUG") != nullptr;
++			static u64 calls = 0, got = 0, wanted = 0;
++			if (dbg) {
++				calls++; got += samplesWritten; wanted += frameCount * channelCount;
++				if (calls % 100 == 0) std::printf("[audio-dbg] device callbacks %llu, samples wanted %llu, got %llu\n", (unsigned long long)calls, (unsigned long long)wanted, (unsigned long long)got);
++			}
++		}
+ 
+ 		// Get the last sample for underrun handling
+ 		if (samplesWritten != 0) {
 diff --git a/src/core/fs/archive_ext_save_data.cpp b/src/core/fs/archive_ext_save_data.cpp
 index 2aaa157..a1fe95e 100644
 --- a/src/core/fs/archive_ext_save_data.cpp

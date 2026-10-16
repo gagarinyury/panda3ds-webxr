@@ -16,9 +16,11 @@ Measured on an M-series Mac (Comet 154 and a clean Chromium 148, visible window)
 | Super Mario 3D Land (own dump, not included) | ✅ ~60 fps on the Mac, 55-63 fps on the iPhone in 3D scenes |
 | Mario Kart 7 (own dump) | ✅ ~55-60 fps on the Mac (panel readings and by eye); 🔍 gameplay not tested in depth, iPhone not tried (1 GB image) |
 | Super Smash Bros. for 3DS (2 GB dump) | ⚠ boots (image read in 1 MB pieces), then waits at an "extra data is corrupted" dialog and shows black screens after OK; being investigated |
-| Audio | ✗ none (Panda's HLE DSP exists but is not wired to the page; the DSP firmware is a zero stub) |
+| Audio | ✅ works (Panda's HLE DSP + miniaudio over Web Audio, 32768 Hz): music plays in Mario 3D Land after the first click or key (browsers keep sound suspended until a gesture); the first ~500 frames stutter while the JIT compiles. Not checked: iPhone, sound effects in other games |
 | Save data | ✅ `persist=1` keeps SD card and game saves in IndexedDB; ✗ no full save states |
 | Input | ✅ keyboard, on-screen buttons, touch on the lower screen; ✗ circle pad |
+
+Audio notes: in the single-threaded web build the DSP used to wait for the audio device to drain its buffer and froze the page (a deadlock): it now drops the oldest audio instead; miniaudio's Web Audio code needs `HEAPF32` exported from the Emscripten runtime.
 
 Known problems: freezes of 0.5-1 s the first time a new shader is compiled; the first ~500 frames of a big game run slower while the JIT compiles 50-100 thousand blocks; the rendering of five homebrew examples is suspicious and not compared with native Panda; on the iPhone one launch right after install was killed for memory (not reproduced). Open ideas are listed in [docs/upstream-pr-plan.md](docs/upstream-pr-plan.md) (what could go upstream) and the issues above.
 
@@ -38,7 +40,7 @@ scripts/serve-web.py 8777 &       # static server with Range support, collects /
 open "http://127.0.0.1:8777/web/index.html?rom=/run/examples/graphics__gpu__simple_tri.3dsx&gl=1"
 ```
 
-Page parameters (`web/index.html`): `rom=<url>` game image or homebrew; `gl=1` WebGL2 renderer; `persist=1` keep saves; `lazy=0|1` read big images in pieces (automatic above 700 MB); `turbo=1` no frame limiter; `fscript=A:2100,B:3780` button presses by frame number; `env=KEY:VALUE,...` environment for the core (e.g. `FS_DEBUG:1`, `GL_STREAM_SUBDATA:1` for the old buffer path); `name=<id>`. Keys: X=A, Z=B, S=X, A=Y, Q/W=L/R, Enter=Start, Backspace=Select, arrows.
+Page parameters (`web/index.html`): `rom=<url>` game image or homebrew; `gl=1` WebGL2 renderer; `persist=1` keep saves; `lazy=0|1` read big images in pieces (automatic above 700 MB); `turbo=1` no frame limiter; `fscript=A:2100,B:3780` button presses by frame number; `audio=0|on|dsp|dev` sound off / on (default) / HLE DSP only / output device only; `beep=1` plays a 440 Hz test tone on the first click (checks the output device); `env=KEY:VALUE,...` environment for the core (e.g. `FS_DEBUG:1`, `AUDIO_DEBUG:1`, `GL_STREAM_SUBDATA:1` for the old buffer path); `name=<id>`. Keys: X=A, Z=B, S=X, A=Y, Q/W=L/R, Enter=Start, Backspace=Select, arrows.
 
 iPhone: `ios/prepare-site.sh`, then build `ios/PandaWeb.xcodeproj` for your device and install; `IOS_UDID=<udid> python3 scripts/ios-watch.py <seconds> -rom /docs/<image> -gl 1 -frames 1500` launches it and prints the console live.
 

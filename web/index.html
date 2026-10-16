@@ -57,6 +57,8 @@ const params = new URLSearchParams(location.search);
 const rom = params.get('rom') || '/run/ctr-hello.3dsx';   // absolute path on the dev server / app scheme
 const maxFrames = parseInt(params.get('frames') || '0');   // 0 = run forever
 const report = params.get('report') === '1';               // send a result to the host (server or native app) when done
+const audioMode = params.get('turbo') ? '0' : (params.get('audio') || 'on');   // audio=0 off; on = HLE DSP + output device; dsp = HLE DSP only; dev = output device only (debugging aids); turbo runs are silent
+const audioOn = audioMode === 'on' || audioMode === 'dev';
 const turbo = params.get('turbo') === '1';                 // run as fast as possible (benchmark) instead of real time
 const name = params.get('name') || 'run';
 const useGL = params.get('gl') === '1';                     // OpenGL ES renderer on a WebGL2 canvas instead of the Null renderer + 2D canvases
@@ -86,6 +88,7 @@ if (liveOn) {   // dev only: a fixed CPU benchmark (compare browsers) and the ti
       let d; try { d = P[k]; } catch (e) { continue; } if (typeof d !== 'function' || k === 'constructor' || /^get|^is|^create|^delete/.test(k)) continue;
       const orig = d; P[k] = function (...a) { const t = performance.now(); const r = orig.apply(this, a); const dt = performance.now() - t; acc.ms += dt; acc.n++; const o = per[k] || (per[k] = { n: 0, ms: 0 }); o.n++; o.ms += dt; return r; };
     }
+    setInterval(() => { const A = window.__audio; post('log', { msg: '[audio] ' + (A.ctxs.length ? A.ctxs[0].state + ' rate ' + A.rate + ' level ' + A.rms.toFixed(4) + ' peak ' + A.peak.toFixed(3) : 'no device yet') }); }, 5000);
     let lastF = 0;
     setInterval(() => { const f = typeof frames === 'number' ? frames : 0, df = f - lastF; if (df < 20) return; lastF = f; const top = Object.entries(per).sort((a, b) => b[1].ms - a[1].ms).slice(0, 4).map(([k, v]) => k + ' ' + (v.ms / df).toFixed(1) + 'ms x' + Math.round(v.n / df)).join(', ');
       post('log', { msg: '[gl] frame ' + f + ': GL calls ' + (acc.ms / df).toFixed(1) + ' ms/frame, ' + Math.round(acc.n / df) + ' calls/frame; top: ' + top }); acc.ms = 0; acc.n = 0; for (const k in per) delete per[k]; }, 4000);
@@ -94,7 +97,7 @@ if (liveOn) {   // dev only: a fixed CPU benchmark (compare browsers) and the ti
 function native0() { return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda); }
 const post = (type, payload) => {
   if (native) native.postMessage(JSON.stringify({ type, name, ...payload }));
-  else if (liveOn && (type === 'tick' || (type === 'log' && /\[jit\]|\[gl\]|\[abort\]|FATAL|panic|warning|unimplemented|failed|abort/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
+  else if (liveOn && (type === 'tick' || (type === 'log' && /\[jit\]|\[gl\]|\[audio|\[abort\]|FATAL|panic|warning|unimplemented|failed|abort/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
 };
 const log = (s, err) => {
   const lines = logEl.textContent.split('\n');
@@ -103,6 +106,25 @@ const log = (s, err) => {
   logEl.scrollTop = logEl.scrollHeight;
   if (err) { errors.push(s); post('error', { msg: s }); }
 };
+// Audio: miniaudio's Web Audio backend creates a ScriptProcessorNode. Browsers keep the context suspended until a user gesture: resume it on the first one.
+// An analyser tapped onto the node gives the output level (shown in the panel) so sound can be checked without listening.
+window.__audio = { ctxs: [], rms: 0, peak: 0, rate: 0 };
+(function () {
+  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+  const csp = AC.prototype.createScriptProcessor, A = window.__audio;
+  AC.prototype.createScriptProcessor = function (...a) {
+    const node = csp.apply(this, a); if (A.ctxs.indexOf(this) < 0) A.ctxs.push(this); A.rate = this.sampleRate;
+    try { const an = this.createAnalyser(); an.fftSize = 2048; node.connect(an); A.analyser = an; } catch (e) {}
+    return node;
+  };
+  const resume = () => { for (const c of A.ctxs) if (c.state !== 'running') c.resume().catch(() => {}); };
+  for (const ev of ['pointerdown', 'keydown', 'touchstart', 'click']) window.addEventListener(ev, resume, { capture: true });
+  if (new URLSearchParams(location.search).get('beep') === '1') {   // output test: a 440 Hz tone for one second on the first click or key, independent of the emulator
+    const once = () => { try { const c = new AC(), o = c.createOscillator(), g = c.createGain(); g.gain.value = 0.2; o.frequency.value = 440; o.connect(g); g.connect(c.destination); c.resume().then(() => { o.start(); setTimeout(() => o.stop(), 1000); }); } catch (e) {} for (const ev of ['pointerdown', 'keydown', 'touchstart', 'click']) window.removeEventListener(ev, once, true); };
+    for (const ev of ['pointerdown', 'keydown', 'touchstart', 'click']) window.addEventListener(ev, once, true);
+  }
+  setInterval(() => { if (!A.analyser) return; const d = new Float32Array(A.analyser.fftSize); A.analyser.getFloatTimeDomainData(d); let sq = 0, pk = 0; for (const v of d) { sq += v * v; if (Math.abs(v) > pk) pk = Math.abs(v); } A.rms = Math.sqrt(sq / d.length); A.peak = pk; }, 500);
+})();
 var Module = {
   onAbort: (what) => { let st = ''; try { st = new Error().stack.split('\n').slice(2, 14).map((l) => l.trim().replace(/^at /, '')).join(' < '); } catch (e) {} log('[ABORT] ' + what + ' | ' + st, true); post('log', { msg: '[abort] ' + what + ' | ' + st.slice(0, 900) }); },
   canvas: document.getElementById('gl'),
@@ -116,7 +138,7 @@ var Module = {
     }
     for (const kv of envs.split(',').filter(Boolean)) { const [k, v] = kv.split(':'); Module.ENV[k] = v || '1'; }
     // render with no GPU backend and no audio: only the presented framebuffers are shown
-    Module.FS.writeFile('/config.toml', `[GPU]\nRenderer = "${useGL ? 'opengl' : 'null'}"\nScreenLayout = "${side ? 'SideBySide' : 'Default'}"\nTopScreenSize = ${side ? 0.5556 : 0.5}\nEnableShaderJIT = false\n[Audio]\nEnableAudio = false\nDSPEmulation = "Null"\n`);
+    Module.FS.writeFile('/config.toml', `[GPU]\nRenderer = "${useGL ? 'opengl' : 'null'}"\nScreenLayout = "${side ? 'SideBySide' : 'Default'}"\nTopScreenSize = ${side ? 0.5556 : 0.5}\nEnableShaderJIT = false\n[Audio]\nEnableAudio = ${audioMode === 'on' || audioMode === 'dev'}\nDSPEmulation = "${audioMode === 'on' || audioMode === 'dsp' ? 'HLE' : 'Null'}"\n`);
   }],
   onRuntimeInitialized: () => start().catch((e) => { log('start failed: ' + e, true); finish(); }),
 };
@@ -374,7 +396,7 @@ function renderDiag() {
   const m = mem(), last = frameMs.slice(-60), avg = last.length ? last.reduce((a, b) => a + b, 0) / last.length : 0;
   const gpuRender = gpuMs.slice(-60).filter((x) => x > 0.05), gAvg = gpuRender.length ? gpuRender.reduce((a, b) => a + b, 0) / gpuRender.length : null;
   const rows = [['frame', frames], ['speed (real)', fmt(fpsNow) + ' fps' + (fpsNow >= 58 ? '' : '  (target 59.8)')], ['our loop ticks (' + (useTimer ? 'timer' : 'rAF') + ')', fmt(rafHz, 0) + ' per s  (longest gap ' + fmt(maxGapMs, 0) + ' ms)'], ['browser repaints (rAF)', fmt(presentHz, 0) + ' per s'], ['browser state', document.visibilityState + ', ' + (document.hasFocus() ? 'focused' : 'NOT focused') + (battery ? ', battery ' + Math.round(battery.level * 100) + '% ' + (battery.charging ? 'charging' : 'on battery') : '')], ['one tick takes (JS)', fmt(tickMsAvg) + ' ms'], ['emulator, avg 60 fr', fmt(avg) + ' ms'], ['emulator, worst', fmt(worst, 0) + ' ms'],
-    ['GPU / rendered frame', tq ? (gAvg === null ? '…' : fmt(gAvg) + ' ms') : 'n/a in this browser'], ['late (dropped)', late], ['worst frame at', worstFrame ? '#' + worstFrame + '  (flushes by then: ' + flushesAtWorst + ')' : '–'], ['JIT cache flushes', flushes + (jit0 && jit0.droppedBlocks ? '  (' + jit0.droppedBlocks + ' blocks thrown away)' : '')], ['compiling now', fmt(compileRate, 0) + ' blocks/s'], ['  JIT cost: translate+emit', fmt(jitRate[0], 0) + ' ms/s'], ['  JIT cost: wasm compile', fmt(jitRate[1], 0) + ' ms/s'], ['  JIT cost: instantiate', fmt(jitRate[2], 0) + ' ms/s'], ['JIT modules (total compiled)', m.blocks], ['JIT wasm code', m.jitKB + ' KB'], ['wasm memory', m.wasmMB + ' MB'],
+    ['GPU / rendered frame', tq ? (gAvg === null ? '…' : fmt(gAvg) + ' ms') : 'n/a in this browser'], ['audio', audioOn ? (window.__audio.ctxs.length ? window.__audio.ctxs[0].state + ', level ' + window.__audio.rms.toFixed(3) + ' (peak ' + window.__audio.peak.toFixed(2) + ')' : 'no device') : 'off'], ['late (dropped)', late], ['worst frame at', worstFrame ? '#' + worstFrame + '  (flushes by then: ' + flushesAtWorst + ')' : '–'], ['JIT cache flushes', flushes + (jit0 && jit0.droppedBlocks ? '  (' + jit0.droppedBlocks + ' blocks thrown away)' : '')], ['compiling now', fmt(compileRate, 0) + ' blocks/s'], ['  JIT cost: translate+emit', fmt(jitRate[0], 0) + ' ms/s'], ['  JIT cost: wasm compile', fmt(jitRate[1], 0) + ' ms/s'], ['  JIT cost: instantiate', fmt(jitRate[2], 0) + ' ms/s'], ['JIT modules (total compiled)', m.blocks], ['JIT wasm code', m.jitKB + ' KB'], ['wasm memory', m.wasmMB + ' MB'],
     ['layout', (side ? 'side by side' : 'stacked') + (useGL ? ', WebGL2' : ', no GPU')]];
   document.getElementById('counters').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
   const c = document.getElementById('spark'), g = c.getContext('2d'), W = c.width, H = c.height, N = 240, bw = W / N;
