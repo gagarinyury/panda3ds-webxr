@@ -1,7 +1,7 @@
 # Resolves intra-object BL relocations (the test object is not linked) by patching the raw code.
-import re, struct, subprocess, sys
+import os, re, struct, subprocess, sys
 obj, binf, syms, mode = sys.argv[1:5]
-llvm = '../../emsdk/upstream/bin/llvm-readobj'
+llvm = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../emsdk/upstream/bin/llvm-readobj')
 text = subprocess.run([llvm, '-r', obj], capture_output=True, text=True).stdout
 symoff = {l.split()[0]: int(l.split()[1], 16) for l in open(syms) if l.strip()}
 data = bytearray(open(binf, 'rb').read())

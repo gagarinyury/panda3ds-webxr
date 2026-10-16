@@ -1,0 +1,55 @@
+
+[Audio]
+AudioVolume = 1.0
+DSPEmulation = "null"
+EnableAACAudio = true
+EnableAudio = false
+MuteAudio = false
+PrintDSPFirmware = false
+VolumeCurve = "cubic"
+
+[Battery]
+BatteryPercentage = 3
+ChargerPlugged = true
+
+[GPU]
+AccelerateShaders = true
+AccurateShaderMultiplication = false
+EnableRenderdoc = false
+EnableShaderJIT = false
+EnableVSync = false
+ForceShadergenForLighting = true
+HashTextures = false
+Renderer = "null"
+ScreenLayout = "default"
+ShadergenLightThreshold = 1
+TopScreenSize = 0.5
+UseUbershaders = true
+
+[General]
+DefaultRomPath = ""
+EnableCirclePadPro = true
+EnableDiscordRPC = false
+EnableFastmem = true
+PrintAppVersion = true
+RecentGames = []
+SystemLanguage = "en"
+UsePortableBuild = false
+
+[SD]
+UseVirtualSD = true
+WriteProtectVirtualSD = false
+
+[UI]
+Language = "en"
+Theme = "dark"
+WindowIcon = "rpog"
+
+[Window]
+AppVersionOnWindow = false
+RememberWindowPosition = false
+WindowHeight = 480
+WindowPosX = 200
+WindowPosY = 200
+WindowWidth = 480
+
