@@ -109,6 +109,30 @@ index 27d6a43..43ca8fb 100644
  
  	u32 colourBufferLoc;                // Location in 3DS VRAM for the colour buffer
  	PICA::ColorFmt colourBufferFormat;  // Format of the colours stored in the colour buffer
+diff --git a/include/renderer_gl/renderer_gl.hpp b/include/renderer_gl/renderer_gl.hpp
+index 2023966..8c3c21f 100644
+--- a/include/renderer_gl/renderer_gl.hpp
++++ b/include/renderer_gl/renderer_gl.hpp
+@@ -11,6 +11,7 @@
+ 
+ #include "PICA/float_types.hpp"
+ #include "PICA/pica_frag_config.hpp"
++#include "PICA/pica_frag_uniforms.hpp"
+ #include "PICA/pica_hash.hpp"
+ #include "PICA/pica_vert_config.hpp"
+ #include "PICA/pica_vertex.hpp"
+@@ -104,6 +105,11 @@ class RendererGL final : public Renderer {
+ 	// Current offset for our hw shader uniform UBO
+ 	u32 hwShaderUniformUBOOffset = 0;
+ 
++	// Dirty tracking for fragment uniforms UBO
++	PICA::FragmentUniforms prevFragmentUniforms{};
++	bool hasPrevFragmentUniforms = false;
++	u32 prevFragmentUBOOffset = 0;
++
+ 	// Cache of fixed attribute values so that we don't do any duplicate updates
+ 	std::array<std::array<float, 4>, 16> fixedAttrValues;
+ 
 diff --git a/include/renderer_gl/surfaces.hpp b/include/renderer_gl/surfaces.hpp
 index ad1a1f5..0482518 100644
 --- a/include/renderer_gl/surfaces.hpp
@@ -168,11 +192,14 @@ index 5ada30e..12b1028 100644
  		}
  	} else {  // If we're sleeping for >= 0 ns
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
-index 659a1e1..62de050 100644
+index 659a1e1..cd12852 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
 +++ b/src/core/renderer_gl/renderer_gl.cpp
-@@ -60,13 +60,17 @@ void RendererGL::initGraphicsContextInternal() {
+@@ -58,15 +58,20 @@ void RendererGL::reset() {
+ 
+ void RendererGL::initGraphicsContextInternal() {
  	gl.reset();
++	hasPrevFragmentUniforms = false;
  
  	auto gl_resources = cmrc::RendererGL::get_filesystem();
 -	auto vertexShaderSource = gl_resources.open("opengl_vertex_shader.vert");
@@ -195,7 +222,7 @@ index 659a1e1..62de050 100644
  
  	compileDisplayShader();
  	// Create stream buffers for vertex, index and uniform buffers
-@@ -422,6 +426,9 @@ void RendererGL::updateFogLUT() {
+@@ -422,6 +427,9 @@ void RendererGL::updateFogLUT() {
  }
  
  void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> vertices) {
@@ -205,7 +232,7 @@ index 659a1e1..62de050 100644
  	// The fourth type is meant to be "Geometry primitive". TODO: Find out what that is
  	static constexpr std::array<OpenGL::Primitives, 4> primTypes = {
  		OpenGL::Triangle,
-@@ -722,7 +729,7 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
+@@ -722,7 +730,7 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
  			return blankTexture;
  		}
  
@@ -214,6 +241,38 @@ index 659a1e1..62de050 100644
  		Texture& newTex = textureCache.add(tex);
  		newTex.decodeTexture(textureData);
  
+@@ -1018,16 +1026,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+ 		}
+ 	}
+ 
+-	// Upload fragment uniforms to UBO
+-	shadergenFragmentUBO->Bind();
+-	auto uboRes = shadergenFragmentUBO->Map(driverInfo.uboAlignment, sizeof(PICA::FragmentUniforms));
+-	std::memcpy(uboRes.pointer, &uniforms, sizeof(PICA::FragmentUniforms));
+-	shadergenFragmentUBO->Unmap(sizeof(PICA::FragmentUniforms));
++	// Upload fragment uniforms to UBO if changed
++	if (!hasPrevFragmentUniforms || std::memcmp(&prevFragmentUniforms, &uniforms, sizeof(PICA::FragmentUniforms)) != 0) {
++		shadergenFragmentUBO->Bind();
++		auto uboRes = shadergenFragmentUBO->Map(driverInfo.uboAlignment, sizeof(PICA::FragmentUniforms));
++		std::memcpy(uboRes.pointer, &uniforms, sizeof(PICA::FragmentUniforms));
++		shadergenFragmentUBO->Unmap(sizeof(PICA::FragmentUniforms));
+ 
+-	// Bind our UBOs
+-	glBindBufferRange(
+-		GL_UNIFORM_BUFFER, fsUBOBlockBinding, shadergenFragmentUBO->GetGLBufferId(), uboRes.buffer_offset, sizeof(PICA::FragmentUniforms)
+-	);
++		prevFragmentUBOOffset = uboRes.buffer_offset;
++		prevFragmentUniforms = uniforms;
++		hasPrevFragmentUniforms = true;
++
++		// Bind our UBOs
++		glBindBufferRange(
++			GL_UNIFORM_BUFFER, fsUBOBlockBinding, shadergenFragmentUBO->GetGLBufferId(), uboRes.buffer_offset, sizeof(PICA::FragmentUniforms)
++		);
++	}
+ 
+ 	if (usingAcceleratedShader) {
+ 		glBindBufferRange(
 diff --git a/src/core/services/fs.cpp b/src/core/services/fs.cpp
 index 5d6cb44..1afe66f 100644
 --- a/src/core/services/fs.cpp
@@ -250,6 +309,80 @@ index 04fadfc..c232e61 100644
  precision mediump float;
  
  out vec2 UV;
+diff --git a/third_party/duckstation/gl/stream_buffer.cpp b/third_party/duckstation/gl/stream_buffer.cpp
+index b7a4060..52cbda4 100644
+--- a/third_party/duckstation/gl/stream_buffer.cpp
++++ b/third_party/duckstation/gl/stream_buffer.cpp
+@@ -23,22 +23,36 @@ void OpenGLStreamBuffer::SetDebugName(std::string_view name) {
+ }
+ 
+ namespace {
+-	// Uses glBufferSubData() to update. Preferred for drivers which don't support {ARB,EXT}_buffer_storage.
++	// Uses glBufferSubData() in a ring buffer (bump allocator) to avoid GPU pipeline stalls on WebGL2 / GLES.
+ 	class BufferSubDataStreamBuffer final : public OpenGLStreamBuffer {
+ 	  public:
+ 		~BufferSubDataStreamBuffer() override { Common::alignedFree(m_cpu_buffer); }
+ 
+-		MappingResult Map(u32 alignment, u32 min_size) override { return MappingResult{static_cast<void*>(m_cpu_buffer), 0, 0, m_size / alignment}; }
++		MappingResult Map(u32 alignment, u32 min_size) override {
++			u32 offset = m_position > 0 ? Common::alignUp(m_position, alignment) : 0;
++			if (offset + min_size > m_size) {
++				// Wrap around: orphan the buffer to let previous in-flight GPU reads finish without stalling
++				glBindBuffer(m_target, m_buffer_id);
++				glBufferData(m_target, m_size, nullptr, GL_STREAM_DRAW);
++				offset = 0;
++			}
++			m_current_offset = offset;
++			const u32 space_aligned = (m_size - offset) / alignment;
++			return MappingResult{static_cast<void*>(m_cpu_buffer + offset), offset, offset / alignment, space_aligned};
++		}
+ 
+ 		u32 Unmap(u32 used_size) override {
+-			if (used_size == 0) return 0;
++			if (used_size == 0) return m_current_offset;
+ 
+ 			glBindBuffer(m_target, m_buffer_id);
+-			glBufferSubData(m_target, 0, used_size, m_cpu_buffer);
+-			return 0;
++			glBufferSubData(m_target, m_current_offset, used_size, m_cpu_buffer + m_current_offset);
++
++			const u32 prev_offset = m_current_offset;
++			m_position = m_current_offset + used_size;
++			return prev_offset;
+ 		}
+ 
+-		u32 GetChunkSize() const override { return m_size; }
++		u32 GetChunkSize() const override { return 64 * 1024; }
+ 
+ 		static std::unique_ptr<OpenGLStreamBuffer> Create(GLenum target, u32 size) {
+ 			glGetError();
+@@ -65,6 +79,8 @@ namespace {
+ 		}
+ 
+ 		u8* m_cpu_buffer;
++		u32 m_position = 0;
++		u32 m_current_offset = 0;
+ 	};
+ 
+ 	// Uses BufferData() to orphan the buffer after every update. Used on Mali where BufferSubData forces a sync.
+@@ -273,16 +289,5 @@ std::unique_ptr<OpenGLStreamBuffer> OpenGLStreamBuffer::Create(GLenum target, u3
+ 		if (buf) return buf;
+ 	}
+ 
+-	// BufferSubData is slower on all drivers except NVIDIA...
+-#if 0
+-	const char* vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+-	if (std::strcmp(vendor, "ARM") == 0 || std::strcmp(vendor, "Qualcomm") == 0) {
+-		// Mali and Adreno drivers can't do sub-buffer tracking...
+-		return BufferDataStreamBuffer::Create(target, size);
+-	}
+-
+ 	return BufferSubDataStreamBuffer::Create(target, size);
+-#else
+-	return BufferDataStreamBuffer::Create(target, size);
+-#endif
+ }
+\ No newline at end of file
 diff --git a/third_party/host_memory/host_memory.cpp b/third_party/host_memory/host_memory.cpp
 index 2aaa2f1..95a17d9 100644
 --- a/third_party/host_memory/host_memory.cpp
