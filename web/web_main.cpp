@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Browser driver for the Panda3DS core: JS calls web_init / web_load / web_frame from requestAnimationFrame and reads the two screens as RGBA.
 #include <emscripten.h>
+#include <emscripten/html5.h>
+#include <emscripten/html5_webgl.h>
 
 #include <cstdio>
 #include <memory>
@@ -9,6 +11,7 @@
 #include "PICA/gpu.hpp"
 #include "PICA/regs.hpp"
 #include "emulator.hpp"
+#include "opengl.hpp"
 
 static std::unique_ptr<Emulator> emu;
 static std::vector<u8> screens[2];  // [0] top 400x240, [1] bottom 320x240, RGBA8
@@ -45,8 +48,28 @@ static int convertScreen(bool top) {
 }
 
 extern "C" {
-EMSCRIPTEN_KEEPALIVE int web_init() {
+// gl != 0: use the OpenGL ES renderer on a WebGL2 canvas (#gl) of w x h pixels; the renderer draws both screens into the canvas itself.
+EMSCRIPTEN_KEEPALIVE int web_init(int gl, int w, int h) {
     emu = std::make_unique<Emulator>();
+    if (gl) {
+        EmscriptenWebGLContextAttributes a;
+        emscripten_webgl_init_context_attributes(&a);
+        a.majorVersion = 2;
+        a.minorVersion = 0;
+        a.alpha = false;
+        a.depth = true;
+        a.stencil = true;
+        a.antialias = false;
+        a.preserveDrawingBuffer = true;   // lets the page read the picture back after the frame
+        a.powerPreference = EM_WEBGL_POWER_PREFERENCE_HIGH_PERFORMANCE;
+        a.enableExtensionsByDefault = true;
+        EMSCRIPTEN_WEBGL_CONTEXT_HANDLE ctx = emscripten_webgl_create_context("#gl", &a);
+        if (ctx <= 0) { std::printf("[FATAL] WebGL2 context creation failed (%d)\n", static_cast<int>(ctx)); return 0; }
+        emscripten_webgl_make_context_current(ctx);
+        if (!gladLoadGLES2Loader(reinterpret_cast<GLADloadproc>(emscripten_webgl_get_proc_address))) { std::printf("[FATAL] glad failed to load GLES2\n"); return 0; }
+        emu->getRenderer()->setupGLES();
+        emu->setOutputSize(static_cast<u32>(w), static_cast<u32>(h));
+    }
     emu->initGraphicsContext(nullptr);
     return 1;
 }

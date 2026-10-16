@@ -12,6 +12,7 @@
   pre { background: #0d0f12; padding: 8px; max-height: 160px; overflow: auto; white-space: pre-wrap; }
 </style>
 <main>
+  <canvas id="gl" width="400" height="480" style="display:none; width: 800px; max-width: 95%; margin: 8px auto"></canvas>
   <canvas id="top" width="400" height="240"></canvas>
   <canvas id="bottom" width="320" height="240"></canvas>
   <div id="stats">loading…</div>
@@ -24,6 +25,7 @@ const maxFrames = parseInt(params.get('frames') || '0');   // 0 = run forever
 const report = params.get('report') === '1';               // send a result to the host (server or native app) when done
 const turbo = params.get('turbo') === '1';                 // run as fast as possible (benchmark) instead of real time
 const name = params.get('name') || 'run';
+const useGL = params.get('gl') === '1';                     // OpenGL ES renderer on a WebGL2 canvas instead of the Null renderer + 2D canvases
 const dbg = params.get('dbg') === '1';                      // post every frame (find where a crash happens)
 const envs = params.get('env') || '';                       // e.g. env=JIT_NOCHAIN:1,JIT_NOFASTMEM:1
 const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda;
@@ -33,12 +35,13 @@ const FRAME_MS = 1000 / 59.83;                              // 3DS refresh rate
 const post = (type, payload) => { if (native) native.postMessage(JSON.stringify({ type, name, ...payload })); };
 const log = (s, err) => { logEl.textContent += s + '\n'; if (err) { errors.push(s); post('error', { msg: s }); } };
 var Module = {
+  canvas: document.getElementById('gl'),
   print: (s) => { log(s, /\[FATAL\]/.test(s)); post('log', { msg: String(s).slice(0, 300) }); },
   printErr: (s) => { log(s, /error|fatal|abort|unsupported|failed/i.test(s)); post('log', { msg: '[err] ' + String(s).slice(0, 300) }); },
   preRun: [() => {
     for (const kv of envs.split(',').filter(Boolean)) { const [k, v] = kv.split(':'); Module.ENV[k] = v || '1'; }
     // render with no GPU backend and no audio: only the presented framebuffers are shown
-    Module.FS.writeFile('/config.toml', '[GPU]\nRenderer = "Null"\nEnableShaderJIT = false\n[Audio]\nEnableAudio = false\nDSPEmulation = "Null"\n');
+    Module.FS.writeFile('/config.toml', `[GPU]\nRenderer = "${useGL ? 'opengl' : 'null'}"\nEnableShaderJIT = false\n[Audio]\nEnableAudio = false\nDSPEmulation = "Null"\n`);
   }],
   onRuntimeInitialized: () => start().catch((e) => { log('start failed: ' + e, true); finish(); }),
 };
@@ -48,6 +51,7 @@ const imgs = [new ImageData(400, 240), new ImageData(320, 240)];
 const mem = () => { const j = Module.jit && Module.jit.impls[0]; return { wasmMB: Math.round(Module.HEAPU8.length / 1048576), blocks: j ? (j.count || 0) : 0, jitKB: j ? Math.round((j.bytes || 0) / 1024) : 0 }; };
 
 function draw() {
+  if (useGL) return;
   [1, 0].forEach((top) => {
     const p = Module._web_screen(top);
     if (!p) return;
@@ -58,7 +62,8 @@ function draw() {
 }
 
 async function start() {
-  Module._web_init();
+  if (useGL) { document.getElementById('gl').style.display = 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
+  if (!Module._web_init(useGL ? 1 : 0, 400, 480)) { log('[FATAL] web_init failed', true); finish(); return; }
   const resp = await fetch(rom);
   if (!resp.ok) throw new Error('cannot fetch ' + rom + ': HTTP ' + resp.status);
   Module.FS.writeFile('/rom.3dsx', new Uint8Array(await resp.arrayBuffer()));
@@ -103,12 +108,22 @@ function tick(now) {
   requestAnimationFrame(tick);
 }
 
+// GL mode: count non-black pixels in the canvas halves (top screen = upper 240 rows, bottom screen = lower 240 rows)
+function litGL() {
+  const gl = document.getElementById('gl').getContext('webgl2');
+  const w = 400, h = 480, d = new Uint8Array(w * h * 4);
+  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, d);
+  let topLit = 0, bottomLit = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4; if (d[i] | d[i + 1] | d[i + 2]) { if (y >= 240) topLit++; else bottomLit++; } }   // GL rows run bottom to top
+  return { topLit, bottomLit };
+}
+
 async function finish() {
   running = false;
   const lit = (c, w) => { const d = c.getImageData(0, 0, w, 240).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] | d[i + 1] | d[i + 2]) n++; return n; };
   const wall = (performance.now() - t0) / 1000;
   const result = { rom, frames, avgMs: frames ? sum / frames : 0, worstMs: worst, late, hitches, fps: wall > 0 ? frames / wall : 0, wallSec: wall, ...mem(),
-                   topLit: lit(ctx[0], 400), bottomLit: lit(ctx[1], 320), errors, userAgent: navigator.userAgent, turbo, done: true };
+                   ...(useGL ? litGL() : { topLit: lit(ctx[0], 400), bottomLit: lit(ctx[1], 320) }), errors, userAgent: navigator.userAgent, turbo, done: true };
   document.getElementById('stats').textContent = `done: ${frames} frames, avg ${result.avgMs.toFixed(2)} ms, worst ${worst.toFixed(0)} ms, ${result.fps.toFixed(1)} fps, lit px top ${result.topLit} / bottom ${result.bottomLit}`;
   window.__result = result;
   if (report) {

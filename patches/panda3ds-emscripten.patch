@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2f4d9df..11e99f1 100644
+index 2f4d9df..8b3ea37 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -177,7 +177,10 @@ if(ENABLE_DISCORD_RPC AND NOT ANDROID)
@@ -32,7 +32,7 @@ index 2f4d9df..11e99f1 100644
      set(DYNARMIC_TESTS OFF)
      set(DYNARMIC_FRONTENDS "A32" CACHE STRING "")
      add_subdirectory(third_party/dynarmic)
-@@ -755,6 +758,22 @@ else()
+@@ -755,6 +758,23 @@ else()
      target_compile_definitions(AlberCore PUBLIC "PANDA3DS_FRONTEND_SDL=1")
  endif()
  
@@ -49,6 +49,7 @@ index 2f4d9df..11e99f1 100644
 +    add_executable(AlberWeb "${CMAKE_SOURCE_DIR}/../web/web_main.cpp")
 +    target_link_libraries(AlberWeb PRIVATE AlberCore)
 +    target_link_options(AlberWeb PRIVATE -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456 -sSTACK_SIZE=2097152 -sFORCE_FILESYSTEM=1
++        -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1
 +        "-sEXPORTED_FUNCTIONS=_main,_web_init,_web_load,_web_frame,_web_screen" "-sEXPORTED_RUNTIME_METHODS=FS,ccall,cwrap,HEAPU8,stringToNewUTF8,ENV" --profiling-funcs)
 +endif()
 +
@@ -128,10 +129,34 @@ index 5ada30e..12b1028 100644
  		}
  	} else {  // If we're sleeping for >= 0 ns
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
-index 659a1e1..7127c0c 100644
+index 659a1e1..5470194 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
 +++ b/src/core/renderer_gl/renderer_gl.cpp
-@@ -722,7 +722,7 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
+@@ -60,13 +60,17 @@ void RendererGL::initGraphicsContextInternal() {
+ 	gl.reset();
+ 
+ 	auto gl_resources = cmrc::RendererGL::get_filesystem();
+-	auto vertexShaderSource = gl_resources.open("opengl_vertex_shader.vert");
+-	auto fragmentShaderSource = gl_resources.open("opengl_fragment_shader.frag");
++	// The ubershader is desktop GLSL (#version 410 core) and is turned off on OpenGL ES, so do not even try to compile it there
++	// (a WebGL2 context throws on the invalid shader object instead of just logging an error)
++	if (!driverInfo.usingGLES) {
++		auto vertexShaderSource = gl_resources.open("opengl_vertex_shader.vert");
++		auto fragmentShaderSource = gl_resources.open("opengl_fragment_shader.frag");
+ 
+-	OpenGL::Shader vert({vertexShaderSource.begin(), vertexShaderSource.size()}, OpenGL::Vertex);
+-	OpenGL::Shader frag({fragmentShaderSource.begin(), fragmentShaderSource.size()}, OpenGL::Fragment);
+-	triangleProgram.create({vert, frag});
+-	initUbershader(triangleProgram);
++		OpenGL::Shader vert({vertexShaderSource.begin(), vertexShaderSource.size()}, OpenGL::Vertex);
++		OpenGL::Shader frag({fragmentShaderSource.begin(), fragmentShaderSource.size()}, OpenGL::Fragment);
++		triangleProgram.create({vert, frag});
++		initUbershader(triangleProgram);
++	}
+ 
+ 	compileDisplayShader();
+ 	// Create stream buffers for vertex, index and uniform buffers
+@@ -722,7 +726,7 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
  			return blankTexture;
  		}
  
@@ -156,6 +181,26 @@ index 5d6cb44..1afe66f 100644
  		mem.write32(messagePointer + 4, Result::FS::FileNotFound);
  	} else {
  		mem.write32(messagePointer + 4, Result::Success);
+diff --git a/src/host_shaders/opengl_es_display.frag b/src/host_shaders/opengl_es_display.frag
+index 600ebfc..72b83e9 100644
+--- a/src/host_shaders/opengl_es_display.frag
++++ b/src/host_shaders/opengl_es_display.frag
+@@ -1,4 +1,4 @@
+-#version 310 es
++#version 300 es
+ precision mediump float;
+ 
+ in vec2 UV;
+diff --git a/src/host_shaders/opengl_es_display.vert b/src/host_shaders/opengl_es_display.vert
+index 04fadfc..c232e61 100644
+--- a/src/host_shaders/opengl_es_display.vert
++++ b/src/host_shaders/opengl_es_display.vert
+@@ -1,4 +1,4 @@
+-#version 310 es
++#version 300 es
+ precision mediump float;
+ 
+ out vec2 UV;
 diff --git a/third_party/host_memory/host_memory.cpp b/third_party/host_memory/host_memory.cpp
 index 2aaa2f1..95a17d9 100644
 --- a/third_party/host_memory/host_memory.cpp
