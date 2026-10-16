@@ -9,6 +9,7 @@ static unsigned clz32(unsigned x) { unsigned n = 0; if (!x) return 32; while (!(
 #define clz32(x) ((unsigned)__builtin_clz(x))
 #endif
 typedef unsigned u32; typedef unsigned long long u64; typedef long long s64; typedef int s32;
+typedef uint8_t u8; typedef int8_t s8;
 #if defined(__thumb__)  /* Thumb-1 has no UMULL/SMULL: spell the widening multiply out so no libcall is needed */
 static u64 umul64(u32 a, u32 b) {
     u32 al = a & 0xffff, ah = a >> 16, bl = b & 0xffff, bh = b >> 16;
@@ -199,4 +200,105 @@ u32 t_sat(u32 a, u32 b, u32* m) {
     m[0] = (u32)s16; m[1] = (u32)s8; m[2] = u16; m[3] = u8; m[4] = (u32)qa; m[5] = (u32)qs;
     return (u32)s16 ^ ((u32)s8 << 5) ^ (u16 << 3) ^ (u8 << 11) ^ (u32)qa ^ (u32)qs;
 }
+
+#if defined(__arm__) && !defined(__thumb__)
+#define p_uadd8(a, b) __builtin_arm_uadd8(a, b)
+#define p_usub8(a, b) __builtin_arm_usub8(a, b)
+#define p_sadd8(a, b) __builtin_arm_sadd8(a, b)
+#define p_ssub8(a, b) __builtin_arm_ssub8(a, b)
+#define p_uadd16(a, b) __builtin_arm_uadd16(a, b)
+#define p_usub16(a, b) __builtin_arm_usub16(a, b)
+#define p_sadd16(a, b) __builtin_arm_sadd16(a, b)
+#define p_ssub16(a, b) __builtin_arm_ssub16(a, b)
+#define p_usada8(a, b, c) __builtin_arm_usada8(a, b, c)
+static inline u32 p_sel_after_uadd8(u32 a, u32 b, u32 x, u32 y) {
+    (void)__builtin_arm_uadd8(a, b);
+    return __builtin_arm_sel(x, y);
+}
+#else
+static inline u32 p_uadd8(u32 a, u32 b) {
+    u32 r = 0;
+    for (int i = 0; i < 4; i++) {
+        u8 da = (u8)(a >> (i * 8)), db = (u8)(b >> (i * 8));
+        r |= (u32)(u8)(da + db) << (i * 8);
+    }
+    return r;
+}
+static inline u32 p_usub8(u32 a, u32 b) {
+    u32 r = 0;
+    for (int i = 0; i < 4; i++) {
+        u8 da = (u8)(a >> (i * 8)), db = (u8)(b >> (i * 8));
+        r |= (u32)(u8)(da - db) << (i * 8);
+    }
+    return r;
+}
+static inline u32 p_sadd8(u32 a, u32 b) {
+    u32 r = 0;
+    for (int i = 0; i < 4; i++) {
+        s8 da = (s8)(a >> (i * 8)), db = (s8)(b >> (i * 8));
+        r |= (u32)(u8)(da + db) << (i * 8);
+    }
+    return r;
+}
+static inline u32 p_ssub8(u32 a, u32 b) {
+    u32 r = 0;
+    for (int i = 0; i < 4; i++) {
+        s8 da = (s8)(a >> (i * 8)), db = (s8)(b >> (i * 8));
+        r |= (u32)(u8)(da - db) << (i * 8);
+    }
+    return r;
+}
+static inline u32 p_uadd16(u32 a, u32 b) {
+    return ((u32)(uint16_t)((a & 0xffff) + (b & 0xffff))) |
+           ((u32)(uint16_t)((a >> 16) + (b >> 16)) << 16);
+}
+static inline u32 p_usub16(u32 a, u32 b) {
+    return ((u32)(uint16_t)((a & 0xffff) - (b & 0xffff))) |
+           ((u32)(uint16_t)((a >> 16) - (b >> 16)) << 16);
+}
+static inline u32 p_sadd16(u32 a, u32 b) {
+    return ((u32)(uint16_t)((int16_t)(a & 0xffff) + (int16_t)(b & 0xffff))) |
+           ((u32)(uint16_t)((int16_t)(a >> 16) + (int16_t)(b >> 16)) << 16);
+}
+static inline u32 p_ssub16(u32 a, u32 b) {
+    return ((u32)(uint16_t)((int16_t)(a & 0xffff) - (int16_t)(b & 0xffff))) |
+           ((u32)(uint16_t)((int16_t)(a >> 16) - (int16_t)(b >> 16)) << 16);
+}
+static inline u32 p_sel_after_uadd8(u32 a, u32 b, u32 x, u32 y) {
+    u32 r = 0;
+    for (int i = 0; i < 4; i++) {
+        u32 da = (a >> (i * 8)) & 0xff, db = (b >> (i * 8)) & 0xff;
+        u32 ge = (da + db >= 256);
+        u8 rx = (x >> (i * 8)) & 0xff, ry = (y >> (i * 8)) & 0xff;
+        r |= (u32)(ge ? rx : ry) << (i * 8);
+    }
+    return r;
+}
+static inline u32 p_usada8(u32 a, u32 b, u32 c) {
+    u32 sum = c;
+    for (int i = 0; i < 4; i++) {
+        u8 da = (a >> (i * 8)) & 0xff, db = (b >> (i * 8)) & 0xff;
+        sum += (da > db) ? (da - db) : (db - da);
+    }
+    return sum;
+}
+#endif
+
+u32 t_packed(u32 a, u32 b, u32* m) {
+    u32 ua8 = p_uadd8(a, b);
+    u32 us8 = p_usub8(a, b);
+    u32 sa8 = p_sadd8(a, b);
+    u32 ss8 = p_ssub8(a, b);
+    u32 ua16 = p_uadd16(a, b);
+    u32 us16 = p_usub16(a, b);
+    u32 sa16 = p_sadd16(a, b);
+    u32 ss16 = p_ssub16(a, b);
+    u32 sel = p_sel_after_uadd8(a, b, a ^ 0x12345678, b ^ 0x9abcdef0);
+    u32 sad = p_usada8(a, b, 42);
+    m[0] = ua8; m[1] = us8; m[2] = sa8; m[3] = ss8;
+    m[4] = ua16; m[5] = us16; m[6] = sa16; m[7] = ss16;
+    m[8] = sel; m[9] = sad;
+    return ua8 ^ us8 ^ sa8 ^ ss8 ^ ua16 ^ us16 ^ sa16 ^ ss16 ^ sel ^ sad;
+}
+
 

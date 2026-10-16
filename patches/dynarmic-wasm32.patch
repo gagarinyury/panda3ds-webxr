@@ -495,10 +495,10 @@ index 0000000..cfbc9df
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.cpp b/src/dynarmic/backend/wasm/emit_a32.cpp
 new file mode 100644
-index 0000000..e5035eb
+index 0000000..8701893
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.cpp
-@@ -0,0 +1,1270 @@
+@@ -0,0 +1,1513 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -891,6 +891,226 @@ index 0000000..e5035eb
 +        EmitNZpseudo(inst, res);
 +    }
 +
++    // ---------- packed SIMD operations (ARMv6) ----------
++    void EmitPackedAddSub8(IR::Inst* inst, bool sub, bool signed_ge) {
++        const u32 al = Tmp(I32); Ld(inst->GetArg(0)); c.LocalSet(al);
++        const u32 bl = Tmp(I32); Ld(inst->GetArg(1)); c.LocalSet(bl);
++
++        if (!sub) {
++            c.LocalGet(al); c.I32Const(0x7f7f7f7f); c.I32And();
++            c.LocalGet(bl); c.I32Const(0x7f7f7f7f); c.I32And();
++            c.I32Add();
++            c.LocalGet(al); c.LocalGet(bl); c.I32Xor();
++            c.I32Const(static_cast<s32>(0x80808080u)); c.I32And();
++            c.I32Xor();
++        } else {
++            c.LocalGet(al); c.I32Const(static_cast<s32>(0x80808080u)); c.I32Or();
++            c.LocalGet(bl); c.I32Const(0x7f7f7f7f); c.I32And();
++            c.I32Sub();
++            c.LocalGet(al); c.LocalGet(bl); c.I32Const(-1); c.I32Xor(); c.I32Xor();
++            c.I32Const(static_cast<s32>(0x80808080u)); c.I32And();
++            c.I32Xor();
++        }
++        const u32 res = Tmp(I32);
++        c.LocalSet(res);
++        Alias(inst, res);
++
++        if (auto* ge = P(inst, Opcode::GetGEFromOp)) {
++            if (!sub && !signed_ge) {
++                c.LocalGet(al); c.LocalGet(bl); c.I32And();
++                c.LocalGet(al); c.LocalGet(bl); c.I32Or();
++                c.LocalGet(res); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.I32Or();
++            } else if (!sub && signed_ge) {
++                c.LocalGet(al); c.I32Const(-1); c.I32Xor();
++                c.LocalGet(bl); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.LocalGet(al); c.LocalGet(bl); c.I32Xor();
++                c.LocalGet(res); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.I32Or();
++            } else if (sub && !signed_ge) {
++                const u32 not_b = Tmp(I32);
++                c.LocalGet(bl); c.I32Const(-1); c.I32Xor(); c.LocalSet(not_b);
++                c.LocalGet(al); c.LocalGet(not_b); c.I32And();
++                c.LocalGet(al); c.LocalGet(not_b); c.I32Or();
++                c.LocalGet(res); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.I32Or();
++            } else {
++                c.LocalGet(al); c.I32Const(-1); c.I32Xor(); c.LocalGet(bl); c.I32And();
++                c.LocalGet(al); c.LocalGet(bl); c.I32Xor(); c.I32Const(-1); c.I32Xor();
++                c.LocalGet(res); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.I32Or();
++            }
++            c.I32Const(static_cast<s32>(0x80808080u)); c.I32And();
++            const u32 gel = Tmp(I32);
++            c.LocalSet(gel);
++            c.LocalGet(gel); c.LocalGet(gel); c.I32Const(1); c.I32ShrU(); c.I32Or(); c.LocalSet(gel);
++            c.LocalGet(gel); c.LocalGet(gel); c.I32Const(2); c.I32ShrU(); c.I32Or(); c.LocalSet(gel);
++            c.LocalGet(gel); c.LocalGet(gel); c.I32Const(4); c.I32ShrU(); c.I32Or(); c.LocalSet(gel);
++            Alias(ge, gel);
++        }
++    }
++
++    void EmitPackedAddSub16(IR::Inst* inst, bool sub, bool signed_ge) {
++        const u32 al = Tmp(I32); Ld(inst->GetArg(0)); c.LocalSet(al);
++        const u32 bl = Tmp(I32); Ld(inst->GetArg(1)); c.LocalSet(bl);
++
++        if (!sub) {
++            c.LocalGet(al); c.I32Const(0x7fff7fff); c.I32And();
++            c.LocalGet(bl); c.I32Const(0x7fff7fff); c.I32And();
++            c.I32Add();
++            c.LocalGet(al); c.LocalGet(bl); c.I32Xor();
++            c.I32Const(static_cast<s32>(0x80008000u)); c.I32And();
++            c.I32Xor();
++        } else {
++            c.LocalGet(al); c.I32Const(static_cast<s32>(0x80008000u)); c.I32Or();
++            c.LocalGet(bl); c.I32Const(0x7fff7fff); c.I32And();
++            c.I32Sub();
++            c.LocalGet(al); c.LocalGet(bl); c.I32Const(-1); c.I32Xor(); c.I32Xor();
++            c.I32Const(static_cast<s32>(0x80008000u)); c.I32And();
++            c.I32Xor();
++        }
++        const u32 res = Tmp(I32);
++        c.LocalSet(res);
++        Alias(inst, res);
++
++        if (auto* ge = P(inst, Opcode::GetGEFromOp)) {
++            if (!sub && !signed_ge) {
++                c.LocalGet(al); c.LocalGet(bl); c.I32And();
++                c.LocalGet(al); c.LocalGet(bl); c.I32Or();
++                c.LocalGet(res); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.I32Or();
++            } else if (!sub && signed_ge) {
++                c.LocalGet(al); c.I32Const(-1); c.I32Xor();
++                c.LocalGet(bl); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.LocalGet(al); c.LocalGet(bl); c.I32Xor();
++                c.LocalGet(res); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.I32Or();
++            } else if (sub && !signed_ge) {
++                const u32 not_b = Tmp(I32);
++                c.LocalGet(bl); c.I32Const(-1); c.I32Xor(); c.LocalSet(not_b);
++                c.LocalGet(al); c.LocalGet(not_b); c.I32And();
++                c.LocalGet(al); c.LocalGet(not_b); c.I32Or();
++                c.LocalGet(res); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.I32Or();
++            } else {
++                c.LocalGet(al); c.I32Const(-1); c.I32Xor(); c.LocalGet(bl); c.I32And();
++                c.LocalGet(al); c.LocalGet(bl); c.I32Xor(); c.I32Const(-1); c.I32Xor();
++                c.LocalGet(res); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.I32Or();
++            }
++            c.I32Const(static_cast<s32>(0x80008000u)); c.I32And();
++            const u32 gel = Tmp(I32);
++            c.LocalSet(gel);
++            c.LocalGet(gel); c.LocalGet(gel); c.I32Const(1); c.I32ShrU(); c.I32Or(); c.LocalSet(gel);
++            c.LocalGet(gel); c.LocalGet(gel); c.I32Const(2); c.I32ShrU(); c.I32Or(); c.LocalSet(gel);
++            c.LocalGet(gel); c.LocalGet(gel); c.I32Const(4); c.I32ShrU(); c.I32Or(); c.LocalSet(gel);
++            c.LocalGet(gel); c.LocalGet(gel); c.I32Const(8); c.I32ShrU(); c.I32Or(); c.LocalSet(gel);
++            Alias(ge, gel);
++        }
++    }
++
++    void EmitPackedMixed16(IR::Inst* inst, bool add_top, bool signed_ge) {
++        const u32 al = Tmp(I32); Ld(inst->GetArg(0)); c.LocalSet(al);
++        const u32 bl = Tmp(I32); Ld(inst->GetArg(1));
++        c.I32Const(16); c.I32Rotr(); c.LocalSet(bl);
++
++        const u32 sum = Tmp(I32);
++        c.LocalGet(al); c.I32Const(0x7fff7fff); c.I32And();
++        c.LocalGet(bl); c.I32Const(0x7fff7fff); c.I32And();
++        c.I32Add();
++        c.LocalGet(al); c.LocalGet(bl); c.I32Xor();
++        c.I32Const(static_cast<s32>(0x80008000u)); c.I32And();
++        c.I32Xor();
++        c.LocalSet(sum);
++
++        const u32 diff = Tmp(I32);
++        c.LocalGet(al); c.I32Const(static_cast<s32>(0x80008000u)); c.I32Or();
++        c.LocalGet(bl); c.I32Const(0x7fff7fff); c.I32And();
++        c.I32Sub();
++        c.LocalGet(al); c.LocalGet(bl); c.I32Const(-1); c.I32Xor(); c.I32Xor();
++        c.I32Const(static_cast<s32>(0x80008000u)); c.I32And();
++        c.I32Xor();
++        c.LocalSet(diff);
++
++        const u32 top_val = add_top ? sum : diff;
++        const u32 bot_val = add_top ? diff : sum;
++        c.LocalGet(top_val); c.I32Const(static_cast<s32>(0xffff0000u)); c.I32And();
++        c.LocalGet(bot_val); c.I32Const(0x0000ffff); c.I32And();
++        c.I32Or();
++        const u32 res = Tmp(I32);
++        c.LocalSet(res);
++        Alias(inst, res);
++
++        if (auto* ge = P(inst, Opcode::GetGEFromOp)) {
++            const u32 ge_add = Tmp(I32);
++            if (!signed_ge) {
++                c.LocalGet(al); c.LocalGet(bl); c.I32And();
++                c.LocalGet(al); c.LocalGet(bl); c.I32Or();
++                c.LocalGet(sum); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.I32Or();
++            } else {
++                c.LocalGet(al); c.I32Const(-1); c.I32Xor();
++                c.LocalGet(bl); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.LocalGet(al); c.LocalGet(bl); c.I32Xor();
++                c.LocalGet(sum); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.I32Or();
++            }
++            c.I32Const(static_cast<s32>(0x80008000u)); c.I32And();
++            c.LocalSet(ge_add);
++
++            const u32 ge_sub = Tmp(I32);
++            if (!signed_ge) {
++                const u32 not_b = Tmp(I32);
++                c.LocalGet(bl); c.I32Const(-1); c.I32Xor(); c.LocalSet(not_b);
++                c.LocalGet(al); c.LocalGet(not_b); c.I32And();
++                c.LocalGet(al); c.LocalGet(not_b); c.I32Or();
++                c.LocalGet(diff); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.I32Or();
++            } else {
++                c.LocalGet(al); c.I32Const(-1); c.I32Xor(); c.LocalGet(bl); c.I32And();
++                c.LocalGet(al); c.LocalGet(bl); c.I32Xor(); c.I32Const(-1); c.I32Xor();
++                c.LocalGet(diff); c.I32Const(-1); c.I32Xor(); c.I32And();
++                c.I32Or();
++            }
++            c.I32Const(static_cast<s32>(0x80008000u)); c.I32And();
++            c.LocalSet(ge_sub);
++
++            const u32 top_ge = add_top ? ge_add : ge_sub;
++            const u32 bot_ge = add_top ? ge_sub : ge_add;
++            c.LocalGet(top_ge); c.I32Const(static_cast<s32>(0x80000000u)); c.I32And();
++            c.LocalGet(bot_ge); c.I32Const(0x00008000); c.I32And();
++            c.I32Or();
++            const u32 gel = Tmp(I32);
++            c.LocalSet(gel);
++            c.LocalGet(gel); c.LocalGet(gel); c.I32Const(1); c.I32ShrU(); c.I32Or(); c.LocalSet(gel);
++            c.LocalGet(gel); c.LocalGet(gel); c.I32Const(2); c.I32ShrU(); c.I32Or(); c.LocalSet(gel);
++            c.LocalGet(gel); c.LocalGet(gel); c.I32Const(4); c.I32ShrU(); c.I32Or(); c.LocalSet(gel);
++            c.LocalGet(gel); c.LocalGet(gel); c.I32Const(8); c.I32ShrU(); c.I32Or(); c.LocalSet(gel);
++            Alias(ge, gel);
++        }
++    }
++
++    void EmitPackedAbsDiffSum8(IR::Inst* inst) {
++        const u32 al = Tmp(I32); Ld(inst->GetArg(0)); c.LocalSet(al);
++        const u32 bl = Tmp(I32); Ld(inst->GetArg(1)); c.LocalSet(bl);
++        const u32 acc = Tmp(I32);
++        c.I32Const(0); c.LocalSet(acc);
++        for (int i = 0; i < 4; i++) {
++            const u32 da = Tmp(I32);
++            const u32 db = Tmp(I32);
++            c.LocalGet(al); if (i) { c.I32Const(i * 8); c.I32ShrU(); } c.I32Const(0xff); c.I32And(); c.LocalSet(da);
++            c.LocalGet(bl); if (i) { c.I32Const(i * 8); c.I32ShrU(); } c.I32Const(0xff); c.I32And(); c.LocalSet(db);
++            c.LocalGet(acc);
++            c.LocalGet(da); c.LocalGet(db); c.I32Sub();
++            c.LocalGet(db); c.LocalGet(da); c.I32Sub();
++            c.LocalGet(da); c.LocalGet(db); c.I32GeU();
++            c.Select();
++            c.I32Add();
++            c.LocalSet(acc);
++        }
++        Alias(inst, acc);
++    }
++
 +    // ---------- per-instruction ----------
 +    void Bin32(IR::Inst* inst, void (Code::*op)()) {
 +        Ld(inst->GetArg(0));
@@ -1236,6 +1456,29 @@ index 0000000..e5035eb
 +            Set(inst);
 +            return;
 +        }
++
++        // ----- packed operations (ARMv6 SIMD) -----
++        case Opcode::PackedAddU8: EmitPackedAddSub8(inst, false, false); return;
++        case Opcode::PackedAddS8: EmitPackedAddSub8(inst, false, true); return;
++        case Opcode::PackedSubU8: EmitPackedAddSub8(inst, true, false); return;
++        case Opcode::PackedSubS8: EmitPackedAddSub8(inst, true, true); return;
++        case Opcode::PackedAddU16: EmitPackedAddSub16(inst, false, false); return;
++        case Opcode::PackedAddS16: EmitPackedAddSub16(inst, false, true); return;
++        case Opcode::PackedSubU16: EmitPackedAddSub16(inst, true, false); return;
++        case Opcode::PackedSubS16: EmitPackedAddSub16(inst, true, true); return;
++        case Opcode::PackedAddSubU16: EmitPackedMixed16(inst, true, false); return;
++        case Opcode::PackedAddSubS16: EmitPackedMixed16(inst, true, true); return;
++        case Opcode::PackedSubAddU16: EmitPackedMixed16(inst, false, false); return;
++        case Opcode::PackedSubAddS16: EmitPackedMixed16(inst, false, true); return;
++        case Opcode::PackedSelect: {
++            const u32 ge = Tmp(I32); Ld(inst->GetArg(0)); c.LocalSet(ge);
++            Ld(inst->GetArg(2)); c.LocalGet(ge); c.I32And();
++            Ld(inst->GetArg(1)); c.LocalGet(ge); c.I32Const(-1); c.I32Xor(); c.I32And();
++            c.I32Or();
++            Set(inst);
++            return;
++        }
++        case Opcode::PackedAbsDiffSumU8: EmitPackedAbsDiffSum8(inst); return;
 +
 +        // ----- saturation -----
 +        case Opcode::SignedSaturatedAddWithFlag32: {
