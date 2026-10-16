@@ -4,11 +4,19 @@
 <title>Panda3DS on a WASM JIT</title>
 <style>
   body { margin: 0; background: #14161a; color: #cfd3da; font: 13px/1.4 ui-monospace, Menlo, monospace; }
-  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 16px; padding: 12px; max-width: 1700px; margin: 0 auto; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
   canvas { background: #000; image-rendering: pixelated; display: block; margin: 8px auto; }
   #top { width: 800px; max-width: 100%; aspect-ratio: 400/240; }
   #bottom { width: 640px; max-width: 80%; aspect-ratio: 320/240; }
-  #stats { text-align: center; color: #8be28b; min-height: 1.4em; }
+  #gl { width: 100%; height: auto; margin: 0 auto 8px; }
+  #stats { color: #8be28b; min-height: 1.4em; word-break: break-word; }
+  #diag { background: #101317; border: 1px solid #232932; border-radius: 8px; padding: 10px; position: sticky; top: 8px; }
+  #counters { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 6px 0; }
+  #counters span:nth-child(odd) { color: #8a93a0; }
+  #counters span:nth-child(even) { color: #e6edf5; text-align: right; }
+  #spark { width: 100%; height: 90px; margin: 6px 0; background: #0b0d10; image-rendering: auto; }
+  #diag small { color: #6b7480; }
   #pad { text-align: center; user-select: none; -webkit-user-select: none; touch-action: none; }
   #pad .row { display: flex; justify-content: center; gap: 6px; margin: 4px 0; }
   #pad b { min-width: 46px; padding: 12px 8px; background: #2a2f38; border-radius: 8px; color: #dfe6ee; font: 600 14px system-ui; }
@@ -16,7 +24,8 @@
   pre { background: #0d0f12; padding: 8px; max-height: 160px; overflow: auto; white-space: pre-wrap; }
 </style>
 <main>
-  <canvas id="gl" width="400" height="480" style="display:none; width: 800px; max-width: 95%; margin: 8px auto"></canvas>
+  <section id="stage">
+  <canvas id="gl" width="720" height="240" style="display:none"></canvas>
   <canvas id="top" width="400" height="240"></canvas>
   <canvas id="bottom" width="320" height="240"></canvas>
   <div id="pad" style="display:none">
@@ -24,7 +33,6 @@
     <div class="row"><span><b data-k="Up">↑</b></span></div>
     <div class="row"><b data-k="Left">←</b><b data-k="Down">↓</b><b data-k="Right">→</b><b data-k="Y">Y</b><b data-k="X">X</b><b data-k="B">B</b><b data-k="A">A</b></div>
   </div>
-  <div id="stats">loading…</div>
   <div id="rom-drop" style="text-align: center; margin: 8px 0; padding: 8px; background: #1c2026; border: 1px dashed #3a424e; border-radius: 8px;">
     <label style="cursor: pointer; color: #8be28b; font-weight: 600; padding: 4px 10px; background: #2a313d; border-radius: 4px;">
       📂 Open ROM (.3ds, .cxi, .cci, .3dsx)
@@ -32,7 +40,14 @@
     </label>
     <span style="color: #888; font-size: 11px; margin-left: 8px;">or drag & drop here</span>
   </div>
-  <pre id="log"></pre>
+  </section>
+  <aside id="diag">
+    <div id="stats">loading…</div>
+    <div id="counters"></div>
+    <canvas id="spark" width="720" height="180"></canvas>
+    <small>frame time (emulator), last 240 frames; bars: green ≤ 16.7 ms, orange ≤ 2×, red above; line = budget</small>
+    <pre id="log"></pre>
+  </aside>
 </main>
 <script>
 const params = new URLSearchParams(location.search);
@@ -42,6 +57,8 @@ const report = params.get('report') === '1';               // send a result to t
 const turbo = params.get('turbo') === '1';                 // run as fast as possible (benchmark) instead of real time
 const name = params.get('name') || 'run';
 const useGL = params.get('gl') === '1';                     // OpenGL ES renderer on a WebGL2 canvas instead of the Null renderer + 2D canvases
+const side = (params.get('layout') || (innerWidth >= 900 ? 'side' : 'stack')) === 'side';   // both screens next to each other (720x240) or one above the other (400x480)
+const GLW = side ? 720 : 400, GLH = side ? 240 : 480;
 const dbg = params.get('dbg') === '1';                      // post every frame (find where a crash happens)
 const envs = params.get('env') || '';                       // e.g. env=JIT_NOCHAIN:1,JIT_NOFASTMEM:1
 const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda;
@@ -63,7 +80,7 @@ var Module = {
   preRun: [() => {
     for (const kv of envs.split(',').filter(Boolean)) { const [k, v] = kv.split(':'); Module.ENV[k] = v || '1'; }
     // render with no GPU backend and no audio: only the presented framebuffers are shown
-    Module.FS.writeFile('/config.toml', `[GPU]\nRenderer = "${useGL ? 'opengl' : 'null'}"\nEnableShaderJIT = false\n[Audio]\nEnableAudio = false\nDSPEmulation = "Null"\n`);
+    Module.FS.writeFile('/config.toml', `[GPU]\nRenderer = "${useGL ? 'opengl' : 'null'}"\nScreenLayout = "${side ? 'SideBySide' : 'Default'}"\nTopScreenSize = ${side ? 0.5556 : 0.5}\nEnableShaderJIT = false\n[Audio]\nEnableAudio = false\nDSPEmulation = "Null"\n`);
   }],
   onRuntimeInitialized: () => start().catch((e) => { log('start failed: ' + e, true); finish(); }),
 };
@@ -144,10 +161,10 @@ document.querySelectorAll('#pad b').forEach((b) => {
   const up = () => press(b.dataset.k, false);
   b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up);
 });
-function touchAt(e, down) {   // GL canvas is 400x480; the bottom screen (320x240) sits centred under the top one: x 40..360, y 240..480
+function touchAt(e, down) {   // bottom screen (320x240) inside the GL canvas: side by side -> x 400..720, y 0..240; stacked -> x 40..360, y 240..480
   if (!Module._web_touch) return;
   const c = document.getElementById('gl'), r = c.getBoundingClientRect();
-  const x = (e.clientX - r.left) * 400 / r.width - 40, y = (e.clientY - r.top) * 480 / r.height - 240;
+  const x = (e.clientX - r.left) * GLW / r.width - (side ? 400 : 40), y = (e.clientY - r.top) * GLH / r.height - (side ? 0 : 240);
   if (down && x >= 0 && x < 320 && y >= 0 && y < 240) Module._web_touch(Math.floor(x), Math.floor(y), 1); else Module._web_touch(0, 0, 0);
 }
 {
@@ -232,8 +249,9 @@ async function loadRomUrl(url) {
 }
 
 async function start() {
-  if (useGL) { document.getElementById('gl').style.display = 'block'; document.getElementById('pad').style.display = 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
-  if (!Module._web_init(useGL ? 1 : 0, 400, 480)) { log('[FATAL] web_init failed', true); finish(); return; }
+  if (useGL) { const g = document.getElementById('gl'); g.width = GLW; g.height = GLH; g.style.display = 'block'; document.getElementById('pad').style.display = 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
+  if (!Module._web_init(useGL ? 1 : 0, GLW, GLH)) { log('[FATAL] web_init failed', true); finish(); return; }
+  initGpuTimer();   // after web_init: the emulator must be the one that creates the WebGL context (its attributes: no alpha, depth, stencil)
 
   // Drag-and-drop & file input bindings
   document.getElementById('rom-file')?.addEventListener('change', async (e) => {
@@ -260,10 +278,47 @@ async function start() {
   }
 }
 
+// ---- live diagnostics (right column) ----
+const frameMs = [], gpuMs = [];            // ring buffers: emulator time per frame, GPU time per frame (when the browser has EXT_disjoint_timer_query_webgl2)
+let glx = null, tq = null, pendingQ = [], diagF = 0, diagT = performance.now(), fpsNow = 0, drawsPerFrame = null;
+function initGpuTimer() {   // only when the page is opened on its own (my probe pages embed it in an iframe and use the same query slot)
+  if (!useGL || window !== window.top || params.get('gpu') === '0') return;
+  glx = document.getElementById('gl').getContext('webgl2'); tq = glx && glx.getExtension('EXT_disjoint_timer_query_webgl2');
+}
+function pollGpu() {
+  while (pendingQ.length && glx.getQueryParameter(pendingQ[0], glx.QUERY_RESULT_AVAILABLE)) {
+    const q = pendingQ.shift(), v = glx.getQueryParameter(q, glx.QUERY_RESULT) / 1e6; glx.deleteQuery(q);
+    if (!glx.getParameter(tq.GPU_DISJOINT_EXT)) { gpuMs.push(v); if (gpuMs.length > 240) gpuMs.shift(); }
+  }
+  while (pendingQ.length > 8) glx.deleteQuery(pendingQ.shift());
+}
+const fmt = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v)) ? '–' : v.toFixed(d);
+function renderDiag() {
+  const now = performance.now(), dt = (now - diagT) / 1000;
+  if (dt > 0) { fpsNow = (frames - diagF) / dt; diagF = frames; diagT = now; }
+  const m = mem(), last = frameMs.slice(-60), avg = last.length ? last.reduce((a, b) => a + b, 0) / last.length : 0;
+  const gpuRender = gpuMs.slice(-60).filter((x) => x > 0.05), gAvg = gpuRender.length ? gpuRender.reduce((a, b) => a + b, 0) / gpuRender.length : null;
+  const rows = [['frame', frames], ['speed (real)', fmt(fpsNow) + ' fps' + (fpsNow >= 58 ? '' : '  (target 59.8)')], ['emulator, avg 60 fr', fmt(avg) + ' ms'], ['emulator, worst', fmt(worst, 0) + ' ms'],
+    ['GPU / rendered frame', tq ? (gAvg === null ? '…' : fmt(gAvg) + ' ms') : 'n/a in this browser'], ['late (dropped)', late], ['JIT modules', m.blocks], ['JIT wasm code', m.jitKB + ' KB'], ['wasm memory', m.wasmMB + ' MB'],
+    ['layout', (side ? 'side by side' : 'stacked') + (useGL ? ', WebGL2' : ', no GPU')]];
+  document.getElementById('counters').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
+  const c = document.getElementById('spark'), g = c.getContext('2d'), W = c.width, H = c.height, N = 240, bw = W / N;
+  g.fillStyle = '#0b0d10'; g.fillRect(0, 0, W, H);
+  const top = Math.max(40, ...frameMs.slice(-N)), y = (v) => H - (Math.min(v, top) / top) * (H - 4) - 2;
+  frameMs.slice(-N).forEach((v, i) => { g.fillStyle = v <= FRAME_MS ? '#3fb950' : (v <= 2 * FRAME_MS ? '#e3a008' : '#f85149'); g.fillRect(i * bw, y(v), Math.max(1, bw - 1), H - y(v)); });
+  if (gpuMs.length) { g.strokeStyle = '#58a6ff'; g.lineWidth = 2; g.beginPath(); gpuMs.slice(-N).forEach((v, i) => { const px = i * bw, py = y(v); i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.stroke(); }
+  g.strokeStyle = '#8b949e'; g.setLineDash([6, 4]); g.lineWidth = 1; g.beginPath(); g.moveTo(0, y(FRAME_MS)); g.lineTo(W, y(FRAME_MS)); g.stroke(); g.setLineDash([]);
+  g.fillStyle = '#8b949e'; g.font = '16px ui-monospace, monospace'; g.fillText('16.7 ms', 6, y(FRAME_MS) - 4); g.fillText('max ' + top.toFixed(0) + ' ms' + (gpuMs.length ? '   blue = GPU' : ''), 6, 16);
+}
+setInterval(renderDiag, 250);
+
 function runFrame() {
   const a = performance.now();
+  let qo = null; if (tq) { pollGpu(); qo = glx.createQuery(); glx.beginQuery(tq.TIME_ELAPSED_EXT, qo); }
   const alive = Module._web_frame();
+  if (qo) { glx.endQuery(tq.TIME_ELAPSED_EXT); pendingQ.push(qo); }
   const ms = performance.now() - a;
+  frameMs.push(ms); if (frameMs.length > 240) frameMs.shift();
   frames++; sum += ms; if (ms > worst) worst = ms; if (ms > FRAME_MS) hitches++;
   if (dbg) post('frame', { n: frames, ms: +ms.toFixed(1), ...mem() });
   return alive;
@@ -302,10 +357,10 @@ function tick(now) {
 // GL mode: count non-black pixels in the canvas halves (top screen = upper 240 rows, bottom screen = lower 240 rows)
 function litGL() {
   const gl = document.getElementById('gl').getContext('webgl2');
-  const w = 400, h = 480, d = new Uint8Array(w * h * 4);
+  const w = GLW, h = GLH, d = new Uint8Array(w * h * 4);
   gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, d);
   let topLit = 0, bottomLit = 0;
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4; if (d[i] | d[i + 1] | d[i + 2]) { if (y >= 240) topLit++; else bottomLit++; } }   // GL rows run bottom to top
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4; if (d[i] | d[i + 1] | d[i + 2]) { if (side ? x < 400 : y >= 240) topLit++; else bottomLit++; } }   // GL rows run bottom to top
   return { topLit, bottomLit };
 }
 

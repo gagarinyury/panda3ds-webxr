@@ -1,0 +1,78 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GL cost experiments</title>
+<body style="background:#111;color:#8f8;font:13px ui-monospace,monospace;margin:8px">
+<pre id="o">starting…</pre>
+<iframe id="f" style="width:820px;height:1000px;border:0;background:#000"></iframe>
+<script>
+// A/B experiments on the cost of one frame, run from OUTSIDE the emulator page. After the guest reaches gameplay (start=<frame>), each experiment
+// temporarily breaks one part of the WebGL traffic for n frames (the picture gets wrong, only the timing matters) and the GPU time per rendered frame
+// is read with EXT_disjoint_timer_query_webgl2. Whatever makes the GPU time collapse is what costs.
+//   ?rom=/run/commercial/sm3dl.3ds&start=900&n=24&name=probe-exp-sm3dl&extra=<more query for index.html>
+const q = new URLSearchParams(location.search);
+const rom = q.get('rom'), startFrame = +q.get('start') || 900, nMeasure = +q.get('n') || 24, name = q.get('name') || 'probe-exp', extra = q.get('extra') || '';
+const o = document.getElementById('o'), f = document.getElementById('f');
+const say = (s) => { o.textContent += s + '\n'; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sum = (a) => a.reduce((x, y) => x + y, 0);
+f.src = `/web/index.html?rom=${rom}&gl=1&name=${name}-inner${extra}`;
+
+(async () => {
+  let w; const t0 = performance.now();
+  while (!((w = f.contentWindow) && w.Module && w.Module._web_frame && w.Module.jit)) { if (performance.now() - t0 > 120000) throw new Error('page did not start'); await sleep(250); }
+  const T0 = performance.now(); let fr = 0;
+  while ((fr = w.eval('typeof frames === "number" ? frames : 0')) < startFrame) { if (performance.now() - T0 > 600000) throw new Error('timeout at frame ' + fr); await sleep(500); }
+  say('at frame ' + fr + '; running experiments');
+  const canvas = w.document.getElementById('gl'), gl = canvas.getContext('webgl2');
+  const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  if (!ext) throw new Error('no EXT_disjoint_timer_query_webgl2 in this browser');
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  const P = w.WebGL2RenderingContext.prototype;
+  const O = {}; for (const k of Object.getOwnPropertyNames(P)) { let d; try { d = P[k]; } catch (e) { continue; } if (typeof d === 'function' && k !== 'constructor') O[k] = d; }   // pristine originals
+  const drawNames = Object.keys(O).filter((k) => k.startsWith('draw'));
+  let draws = 0;
+  for (const k of drawNames) P[k] = function (...a) { draws++; return O[k].apply(this, a); };   // counting wrappers stay installed for the whole run
+
+  const noop = (names, extraCount) => { const s = {}; for (const k of names) { s[k] = P[k]; P[k] = function () { if (extraCount && drawNames.includes(k)) draws++; }; } return () => { for (const k in s) P[k] = s[k]; }; };
+  const EXP = {
+    baseline: () => () => {},
+    'no draw calls': () => noop(drawNames, true),
+    'viewport 1x1 (no pixels)': () => { const s = P.viewport; P.viewport = function () { return O.viewport.call(this, 0, 0, 1, 1); }; return () => { P.viewport = s; }; },
+    'textures frozen': () => { const s = P.bindTexture, seen = new Map(); P.bindTexture = function (t, h) { if (!seen.has(t) && h) seen.set(t, h); return O.bindTexture.call(this, t, seen.get(t) || h); }; return () => { P.bindTexture = s; }; },
+    'blending off': () => { const s = P.enable; O.disable.call(gl, gl.BLEND); P.enable = function (c) { if (c === gl.BLEND) return; return O.enable.call(this, c); }; return () => { P.enable = s; }; },
+    'no framebuffer switches': () => noop(['bindFramebuffer', 'framebufferTexture2D']),
+    'no uniform buffer binds': () => noop(['bindBufferRange']),
+    'no vertex uploads': () => noop(['bufferSubData', 'bufferData']),
+    'no clears': () => noop(['clear', 'clearBufferfv', 'clearBufferfi', 'clearBufferiv', 'clearBufferuiv']),
+    'baseline (again)': () => () => {},
+  };
+
+  const results = [];
+  for (const [label, apply] of Object.entries(EXP)) {
+    const undo = apply();
+    const orig = w.Module._web_frame, recs = [], queries = []; let k = 0; const wall0 = performance.now();
+    w.Module._web_frame = function () {
+      if (k >= nMeasure) return orig();
+      k++; const d0 = draws; const qo = gl.createQuery(); gl.beginQuery(ext.TIME_ELAPSED_EXT, qo);
+      const t = performance.now(); const r = orig(); const ms = performance.now() - t; gl.endQuery(ext.TIME_ELAPSED_EXT);
+      recs.push({ ms, draws: draws - d0 }); queries.push(qo); return r;
+    };
+    while (k < nMeasure) await sleep(50);
+    const wall = performance.now() - wall0;
+    w.Module._web_frame = orig; undo();
+    await sleep(900);
+    const gpu = queries.map((qo) => (gl.getQueryParameter(qo, gl.QUERY_RESULT_AVAILABLE) ? gl.getQueryParameter(qo, gl.QUERY_RESULT) / 1e6 : null));
+    queries.forEach((qo) => gl.deleteQuery(qo));
+    const heavy = recs.map((r, i) => ({ ...r, gpu: gpu[i] })).filter((r) => r.draws >= 20);   // frames that actually render
+    const res = {
+      experiment: label, wallMsPerFrame: +(wall / nMeasure).toFixed(1), emuMsMean: +(sum(recs.map((r) => r.ms)) / nMeasure).toFixed(1),
+      renderFrames: heavy.length, drawsPerRenderFrame: heavy.length ? Math.round(sum(heavy.map((r) => r.draws)) / heavy.length) : 0,
+      gpuMsPerRenderFrame: heavy.filter((r) => r.gpu !== null).length ? +(sum(heavy.filter((r) => r.gpu !== null).map((r) => r.gpu)) / heavy.filter((r) => r.gpu !== null).length).toFixed(1) : null,
+    };
+    results.push(res); say(JSON.stringify(res));
+  }
+  const out = { rom, name, startedAtFrame: fr, userAgent: navigator.userAgent, gpuRenderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : null, nMeasure, results };
+  await fetch('/report?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify(out) });
+  say('REPORT SENT');
+})().catch(async (e) => { say('ERROR ' + e); await fetch('/report?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ error: String(e) }) }); });
+</script>
