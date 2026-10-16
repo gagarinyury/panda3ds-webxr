@@ -9,3 +9,5 @@ guest/out/
 run/*.3dsx
 tests/fp/out/
 tests/jit/out/
+guest-ctr/3ds-examples/
+run/shot-*

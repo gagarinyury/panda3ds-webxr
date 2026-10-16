@@ -47,6 +47,18 @@ index 2f4d9df..aa20e27 100644
  if(NOT BUILD_HYDRA_CORE AND NOT BUILD_LIBRETRO_CORE)
      add_executable(Alber)
  
+diff --git a/include/emulator.hpp b/include/emulator.hpp
+index b1191f6..5eb1dc7 100644
+--- a/include/emulator.hpp
++++ b/include/emulator.hpp
+@@ -117,6 +117,7 @@ class Emulator {
+ 
+ 	CPU& getCPU() { return cpu; }
+ 	Memory& getMemory() { return memory; }
++	GPU& getGPU() { return gpu; }
+ 	Kernel& getKernel() { return kernel; }
+ 	Scheduler& getScheduler() { return scheduler; }
+ 	Audio::DSPCore* getDSP() { return dsp.get(); }
 diff --git a/include/memory.hpp b/include/memory.hpp
 index d21e4be..e5a7fca 100644
 --- a/include/memory.hpp

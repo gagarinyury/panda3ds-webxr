@@ -36,7 +36,7 @@ index b234cd2..9ffbb3c 100644
          target_link_libraries(dynarmic PRIVATE rt)
 diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
 new file mode 100644
-index 0000000..204bcf4
+index 0000000..13727ca
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_interface.cpp
 @@ -0,0 +1,315 @@
@@ -182,7 +182,7 @@ index 0000000..204bcf4
 +            s.ticks_left = s.cycles_to_run;
 +        }
 +    }
-+    static void H_svc(u32 c, u32 imm) { auto* i = I(c); if (Trace()) std::fprintf(stderr, "[jit] svc %02x r0=%08x r1=%08x r2=%08x sp=%08x\n", imm, i->st.regs[0], i->st.regs[1], i->st.regs[2], i->st.regs[13]); WithTicks(i, [&] { i->conf.callbacks->CallSVC(imm); }); }
++    static void H_svc(u32 c, u32 imm) { auto* i = I(c); if (std::getenv("JIT_TRACE")) std::fprintf(stderr, "[jit] svc %02x r0=%08x r1=%08x r2=%08x sp=%08x\n", imm, i->st.regs[0], i->st.regs[1], i->st.regs[2], i->st.regs[13]); WithTicks(i, [&] { i->conf.callbacks->CallSVC(imm); }); }
 +    static void H_exc(u32 c, u32 pc, u32 ex) { auto* i = I(c); WithTicks(i, [&] { i->conf.callbacks->ExceptionRaised(pc, static_cast<Exception>(ex)); }); }
 +    static void H_interp(u32 c, u32 pc, u32 n) { auto* i = I(c); WithTicks(i, [&] { i->conf.callbacks->InterpreterFallback(pc, n); }); }
 +    static void H_isb(u32 c) { I(c)->conf.callbacks->InstructionSynchronizationBarrierRaised(); }
