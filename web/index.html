@@ -333,9 +333,9 @@ setInterval(renderDiag, 250);
 if (navigator.getBattery) navigator.getBattery().then((b) => { battery = b; }).catch(() => {});
 
 // fscript=A:2100,A:2660,B:3780: press a button (held for 6 frames) when the emulated frame counter reaches the given number - independent of machine speed
-const fsched = (params.get('fscript') || '').split(',').filter(Boolean).map((x) => { const [b, f] = x.split(':'); return [b, +f]; }).sort((p, q) => p[1] - q[1]), frel = [];
+const fsched = (params.get('fscript') || '').split(',').filter(Boolean).map((x) => { const [b, f, h] = x.split(':'); return [b, +f, +(h || 6)]; }).sort((p, q) => p[1] - q[1]), frel = [];
 function runScripted() {
-  while (fsched.length && frames >= fsched[0][1]) { const [b] = fsched.shift(); press(b, true); frel.push([frames + 6, b]); }
+  while (fsched.length && frames >= fsched[0][1]) { const [b, , hold] = fsched.shift(); press(b, true); frel.push([frames + hold, b]); frel.sort((p, q) => p[0] - q[0]); }
   while (frel.length && frames >= frel[0][0]) { press(frel.shift()[1], false); }
 }
 

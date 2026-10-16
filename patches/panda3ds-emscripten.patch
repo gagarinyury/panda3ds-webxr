@@ -135,12 +135,21 @@ index 27d6a43..43ca8fb 100644
  	u32 colourBufferLoc;                // Location in 3DS VRAM for the colour buffer
  	PICA::ColorFmt colourBufferFormat;  // Format of the colours stored in the colour buffer
 diff --git a/include/renderer_gl/gl_state.hpp b/include/renderer_gl/gl_state.hpp
-index d6cbcbc..2687862 100644
+index d6cbcbc..92e19f1 100644
 --- a/include/renderer_gl/gl_state.hpp
 +++ b/include/renderer_gl/gl_state.hpp
-@@ -191,10 +191,11 @@ struct GLStateManager {
+@@ -1,4 +1,5 @@
+ #pragma once
++#include <cstdlib>
+ #include <type_traits>
+ 
+ #include "helpers.hpp"
+@@ -190,11 +191,14 @@ struct GLStateManager {
+ 	void useProgram(const OpenGL::Program& program) { useProgram(program.handle()); }
  
  	void setColourMask(bool r, bool g, bool b, bool a) {
++		static const bool legacy = std::getenv("GL_LEGACY_COLOURMASK") != nullptr;  // A/B aid: the old behaviour (colour masks ignored)
++		if (legacy) return;
  		if (r != redMask || g != greenMask || b != blueMask || a != alphaMask) {
 -			r = redMask;
 -			g = greenMask;
