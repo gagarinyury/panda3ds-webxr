@@ -223,6 +223,19 @@ index 124647d..a94570e 100644
 +
  #endif  // CPU_DYNARMIC
 \ No newline at end of file
+diff --git a/src/core/PICA/shader_gen_glsl.cpp b/src/core/PICA/shader_gen_glsl.cpp
+index a9ad3a9..efc5bcd 100644
+--- a/src/core/PICA/shader_gen_glsl.cpp
++++ b/src/core/PICA/shader_gen_glsl.cpp
+@@ -408,6 +408,8 @@ void FragmentGenerator::getSource(std::string& shader, TexEnvConfig::Source sour
+ 		case TexEnvConfig::Source::PrimaryFragmentColor: shader += "primaryColor"; break;
+ 		case TexEnvConfig::Source::SecondaryFragmentColor: shader += "secondaryColor"; break;
+ 
++		case TexEnvConfig::Source::Texture3: shader += "vec4(1.0, 1.0, 1.0, 1.0)"; break;
++
+ 		default:
+ 			Helpers::warn("Unimplemented TEV source: %d", static_cast<int>(source));
+ 			shader += "vec4(1.0, 1.0, 1.0, 1.0)";
 diff --git a/src/core/fs/archive_ncch.cpp b/src/core/fs/archive_ncch.cpp
 index 5844bbd..e557813 100644
 --- a/src/core/fs/archive_ncch.cpp
