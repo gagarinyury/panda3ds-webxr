@@ -1,8 +1,8 @@
 diff --git a/src/dynarmic/CMakeLists.txt b/src/dynarmic/CMakeLists.txt
-index b234cd2..b0c251d 100644
+index b234cd2..51d508b 100644
 --- a/src/dynarmic/CMakeLists.txt
 +++ b/src/dynarmic/CMakeLists.txt
-@@ -340,6 +340,15 @@ if ("x86_64" IN_LIST ARCHITECTURE)
+@@ -340,6 +340,20 @@ if ("x86_64" IN_LIST ARCHITECTURE)
      endif()
  endif()
  
@@ -10,7 +10,12 @@ index b234cd2..b0c251d 100644
 +    if ("A32" IN_LIST DYNARMIC_FRONTENDS)
 +        target_architecture_specific_sources(dynarmic "wasm"
 +            backend/wasm/a32_interface.cpp
++            backend/wasm/a32_jitstate.cpp
++            backend/wasm/a32_jitstate.h
++            backend/wasm/emit_a32.cpp
++            backend/wasm/emit_a32.h
 +            backend/wasm/exclusive_monitor.cpp
++            backend/wasm/wasm_builder.h
 +        )
 +    endif()
 +endif()
@@ -18,7 +23,7 @@ index b234cd2..b0c251d 100644
  if ("arm64" IN_LIST ARCHITECTURE)
      target_link_libraries(dynarmic PRIVATE merry::oaknut)
  
-@@ -485,6 +494,8 @@ elseif (APPLE)
+@@ -485,6 +499,8 @@ elseif (APPLE)
              backend/exception_handler_macos_mig.c
          )
      endif()
@@ -29,59 +34,1267 @@ index b234cd2..b0c251d 100644
          target_link_libraries(dynarmic PRIVATE rt)
 diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
 new file mode 100644
-index 0000000..31fd43d
+index 0000000..2b328cc
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_interface.cpp
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,234 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
-+ * A32 Jit interface for the WebAssembly backend.
-+ * STUB: holds guest state only; Run() does not execute code yet.
++ * A32 Jit for WebAssembly: guest basic blocks are translated by Dynarmic's front end to IR, the IR is emitted as a small
++ * WASM module (emit_a32.cpp), and the module is instantiated through the JavaScript WebAssembly API so that the host
++ * engine (e.g. WebKit inside WKWebView) JIT-compiles it. Everything here runs inside an Emscripten module.
 + */
 +
++#include <cstdio>
 +#include <memory>
 +#include <string>
++#include <unordered_map>
 +#include <vector>
 +
++#include <emscripten.h>
++
++#include "dynarmic/backend/wasm/a32_jitstate.h"
++#include "dynarmic/backend/wasm/emit_a32.h"
++#include "dynarmic/frontend/A32/a32_location_descriptor.h"
++#include "dynarmic/frontend/A32/translate/a32_translate.h"
 +#include "dynarmic/interface/A32/a32.h"
 +#include "dynarmic/interface/A32/config.h"
++#include "dynarmic/interface/exclusive_monitor.h"
++#include "dynarmic/ir/basic_block.h"
++#include "dynarmic/ir/opt/passes.h"
++
++// ---------- JavaScript side ----------
++EM_JS_DEPS(dynarmic_wasm_deps, "$UTF8ToString,$getWasmTableEntry");
++
++EM_JS(void, jit_js_register_helper, (const char* name, int fn), {
++    if (!Module.jit) Module.jit = { blocks: [], helpers: {} };
++    Module.jit.helpers[UTF8ToString(name)] = getWasmTableEntry(fn);
++});
++
++EM_JS(int, jit_js_compile, (const uint8_t* p, int n), {
++    try {
++        const mod = new WebAssembly.Module(HEAPU8.slice(p, p + n));
++        const imports = { e: { m: wasmMemory } };
++        for (const imp of WebAssembly.Module.imports(mod)) {
++            if (imp.kind === 'function') {
++                const f = Module.jit.helpers[imp.name];
++                if (!f) throw new Error('missing helper ' + imp.name);
++                imports.e[imp.name] = f;
++            }
++        }
++        const inst = new WebAssembly.Instance(mod, imports);
++        Module.jit.blocks.push(inst.exports.b);
++        return Module.jit.blocks.length - 1;
++    } catch (e) {
++        console.error('[jit] module failed:', e && e.message ? e.message : e);
++        return -1;
++    }
++});
++
++EM_JS(int, jit_js_run, (int handle, int state), { return Module.jit.blocks[handle](state); });
++
++EM_JS(void, jit_js_clear, (), { if (Module.jit) Module.jit.blocks = []; });
 +
 +namespace Dynarmic::A32 {
 +
 +struct Jit::Impl {
-+    explicit Impl(UserConfig c) : conf(std::move(c)) {}
++    explicit Impl(UserConfig c) : conf(std::move(c)) {
++        static bool registered = false;
++        if (!registered) {
++            registered = true;
++#define REG(n, f) jit_js_register_helper(n, static_cast<int>(reinterpret_cast<uintptr_t>(&f)))
++            REG("r8", H_r8); REG("r16", H_r16); REG("r32", H_r32); REG("r64", H_r64);
++            REG("w8", H_w8); REG("w16", H_w16); REG("w32", H_w32); REG("w64", H_w64);
++            REG("xr8", H_xr8); REG("xr16", H_xr16); REG("xr32", H_xr32); REG("xr64", H_xr64);
++            REG("xw8", H_xw8); REG("xw16", H_xw16); REG("xw32", H_xw32); REG("xw64", H_xw64);
++            REG("clrex", H_clrex); REG("svc", H_svc); REG("exc", H_exc); REG("interp", H_interp); REG("isb", H_isb);
++            REG("getcpsr", H_getcpsr); REG("setcpsr", H_setcpsr); REG("getfpscr", H_getfpscr); REG("setfpscr", H_setfpscr);
++            REG("cpget1", H_cpget1); REG("cpcall", H_cpcall);
++#undef REG
++        }
++        st.ctx = static_cast<u32>(reinterpret_cast<uintptr_t>(this));
++    }
++
 +    UserConfig conf;
-+    std::array<std::uint32_t, 16> regs{};
-+    std::array<std::uint32_t, 64> ext_regs{};
-+    std::uint32_t cpsr = 0;
-+    std::uint32_t fpscr = 0;
-+    HaltReason halt{};
++    Backend::Wasm::A32JitState st;
++    std::unordered_map<u64, int> cache;  // location descriptor -> JS block handle
++    bool invalidate_pending = false;
++    std::string last_error;
++
++    static Impl* I(u32 ctx) { return reinterpret_cast<Impl*>(static_cast<uintptr_t>(ctx)); }
++
++    // ----- host functions called from generated code -----
++    static u32 H_r8(u32 c, u32 va) { return I(c)->conf.callbacks->MemoryRead8(va); }
++    static u32 H_r16(u32 c, u32 va) { return I(c)->conf.callbacks->MemoryRead16(va); }
++    static u32 H_r32(u32 c, u32 va) { return I(c)->conf.callbacks->MemoryRead32(va); }
++    static u64 H_r64(u32 c, u32 va) { return I(c)->conf.callbacks->MemoryRead64(va); }
++    static void H_w8(u32 c, u32 va, u32 v) { I(c)->conf.callbacks->MemoryWrite8(va, static_cast<u8>(v)); }
++    static void H_w16(u32 c, u32 va, u32 v) { I(c)->conf.callbacks->MemoryWrite16(va, static_cast<u16>(v)); }
++    static void H_w32(u32 c, u32 va, u32 v) { I(c)->conf.callbacks->MemoryWrite32(va, v); }
++    static void H_w64(u32 c, u32 va, u64 v) { I(c)->conf.callbacks->MemoryWrite64(va, v); }
++
++    template<typename T, typename RD>
++    static T ExclusiveRead(Impl* i, u32 va, RD rd) {
++        return i->conf.global_monitor->template ReadAndMark<T>(i->conf.processor_id, va, rd);
++    }
++    static u32 H_xr8(u32 c, u32 va) { auto* i = I(c); return ExclusiveRead<u8>(i, va, [&] { return i->conf.callbacks->MemoryRead8(va); }); }
++    static u32 H_xr16(u32 c, u32 va) { auto* i = I(c); return ExclusiveRead<u16>(i, va, [&] { return i->conf.callbacks->MemoryRead16(va); }); }
++    static u32 H_xr32(u32 c, u32 va) { auto* i = I(c); return ExclusiveRead<u32>(i, va, [&] { return i->conf.callbacks->MemoryRead32(va); }); }
++    static u64 H_xr64(u32 c, u32 va) { auto* i = I(c); return ExclusiveRead<u64>(i, va, [&] { return i->conf.callbacks->MemoryRead64(va); }); }
++    static u32 H_xw8(u32 c, u32 va, u32 v) { auto* i = I(c); return i->conf.global_monitor->DoExclusiveOperation<u8>(i->conf.processor_id, va, [&](u8 e) { return i->conf.callbacks->MemoryWriteExclusive8(va, static_cast<u8>(v), e); }) ? 0 : 1; }
++    static u32 H_xw16(u32 c, u32 va, u32 v) { auto* i = I(c); return i->conf.global_monitor->DoExclusiveOperation<u16>(i->conf.processor_id, va, [&](u16 e) { return i->conf.callbacks->MemoryWriteExclusive16(va, static_cast<u16>(v), e); }) ? 0 : 1; }
++    static u32 H_xw32(u32 c, u32 va, u32 v) { auto* i = I(c); return i->conf.global_monitor->DoExclusiveOperation<u32>(i->conf.processor_id, va, [&](u32 e) { return i->conf.callbacks->MemoryWriteExclusive32(va, v, e); }) ? 0 : 1; }
++    static u32 H_xw64(u32 c, u32 va, u64 v) { auto* i = I(c); return i->conf.global_monitor->DoExclusiveOperation<u64>(i->conf.processor_id, va, [&](u64 e) { return i->conf.callbacks->MemoryWriteExclusive64(va, v, e); }) ? 0 : 1; }
++    static void H_clrex(u32 c) { auto* i = I(c); if (i->conf.global_monitor) i->conf.global_monitor->ClearProcessor(i->conf.processor_id); }
++
++    // Callbacks that may run guest-visible code (SVC, exceptions) get exact tick accounting around them.
++    template<typename F>
++    static void WithTicks(Impl* i, F f) {
++        auto& s = i->st;
++        if (i->conf.enable_cycle_counting) i->conf.callbacks->AddTicks(s.cycles_to_run - s.ticks_left);
++        f();
++        if (i->conf.enable_cycle_counting) {
++            s.cycles_to_run = i->conf.callbacks->GetTicksRemaining();
++            s.ticks_left = s.cycles_to_run;
++        }
++    }
++    static void H_svc(u32 c, u32 imm) { auto* i = I(c); WithTicks(i, [&] { i->conf.callbacks->CallSVC(imm); }); }
++    static void H_exc(u32 c, u32 pc, u32 ex) { auto* i = I(c); WithTicks(i, [&] { i->conf.callbacks->ExceptionRaised(pc, static_cast<Exception>(ex)); }); }
++    static void H_interp(u32 c, u32 pc, u32 n) { auto* i = I(c); WithTicks(i, [&] { i->conf.callbacks->InterpreterFallback(pc, n); }); }
++    static void H_isb(u32 c) { I(c)->conf.callbacks->InstructionSynchronizationBarrierRaised(); }
++    static u32 H_getcpsr(u32 c) { return I(c)->st.Cpsr(); }
++    static void H_setcpsr(u32 c, u32 v) { I(c)->st.SetCpsr(v); }
++    static u32 H_getfpscr(u32 c) { return I(c)->st.Fpscr(); }
++    static void H_setfpscr(u32 c, u32 v) { I(c)->st.SetFpscr(v); }
++    static u32 H_cpget1(u32, u32 fn, u32 ua, u32 a0, u32 a1) {
++        return static_cast<u32>(reinterpret_cast<std::uint64_t (*)(void*, u32, u32)>(static_cast<uintptr_t>(fn))(reinterpret_cast<void*>(static_cast<uintptr_t>(ua)), a0, a1));
++    }
++    static void H_cpcall(u32, u32 fn, u32 ua, u32 a0, u32 a1) {
++        reinterpret_cast<std::uint64_t (*)(void*, u32, u32)>(static_cast<uintptr_t>(fn))(reinterpret_cast<void*>(static_cast<uintptr_t>(ua)), a0, a1);
++    }
++
++    // ----- translation -----
++    int GetBlock() {
++        const u64 key = st.GetLocationDescriptor().Value();
++        if (auto it = cache.find(key); it != cache.end()) return it->second;
++
++        const LocationDescriptor loc{IR::LocationDescriptor{key}};
++        IR::Block ir = Translate(loc, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
++        Optimization::A32GetSetElimination(ir, {});
++        Optimization::DeadCodeElimination(ir);
++        Optimization::ConstantPropagation(ir);
++        Optimization::DeadCodeElimination(ir);
++        Optimization::IdentityRemovalPass(ir);
++
++        auto res = Backend::Wasm::EmitA32Block(ir, conf);
++        if (!res.ok()) {
++            char buf[64];
++            std::snprintf(buf, sizeof buf, "block at 0x%08x: ", loc.PC());
++            last_error = std::string(buf) + res.error;
++            std::fprintf(stderr, "[jit] %s\n", last_error.c_str());
++            return -1;
++        }
++        const int h = jit_js_compile(res.bytes.data(), static_cast<int>(res.bytes.size()));
++        if (h < 0) {
++            last_error = "WebAssembly module rejected";
++            return -1;
++        }
++        cache[key] = h;
++        return h;
++    }
 +};
 +
 +Jit::Jit(UserConfig conf) : impl(std::make_unique<Impl>(std::move(conf))) {}
 +Jit::~Jit() = default;
 +
-+HaltReason Jit::Run() { return HaltReason::UserDefined8; }  // not implemented yet
-+HaltReason Jit::Step() { return HaltReason::Step; }
-+void Jit::ClearCache() {}
-+void Jit::InvalidateCacheRange(std::uint32_t, std::size_t) {}
-+void Jit::Reset() { impl->regs.fill(0); impl->ext_regs.fill(0); impl->cpsr = 0; impl->fpscr = 0; }
-+void Jit::HaltExecution(HaltReason hr) { impl->halt = impl->halt | hr; }
-+void Jit::ClearHalt(HaltReason hr) { impl->halt = impl->halt & ~hr; }
-+std::array<std::uint32_t, 16>& Jit::Regs() { return impl->regs; }
-+const std::array<std::uint32_t, 16>& Jit::Regs() const { return impl->regs; }
-+std::array<std::uint32_t, 64>& Jit::ExtRegs() { return impl->ext_regs; }
-+const std::array<std::uint32_t, 64>& Jit::ExtRegs() const { return impl->ext_regs; }
-+std::uint32_t Jit::Cpsr() const { return impl->cpsr; }
-+void Jit::SetCpsr(std::uint32_t value) { impl->cpsr = value; }
-+std::uint32_t Jit::Fpscr() const { return impl->fpscr; }
-+void Jit::SetFpscr(std::uint32_t value) { impl->fpscr = value; }
-+void Jit::ClearExclusiveState() {}
++HaltReason Jit::Run() {
++    is_executing = true;
++    auto& s = impl->st;
++    auto* cb = impl->conf.callbacks;
++    const bool counting = impl->conf.enable_cycle_counting;
++    const u64 ticks = counting ? cb->GetTicksRemaining() : (u64(1) << 62);
++    s.cycles_to_run = ticks;
++    s.ticks_left = ticks;
++
++    while (static_cast<s64>(s.ticks_left) > 0 && s.halt == 0) {
++        const int h = impl->GetBlock();
++        if (h < 0) {
++            s.halt |= static_cast<u32>(HaltReason::UserDefined8);
++            break;
++        }
++        jit_js_run(h, static_cast<int>(reinterpret_cast<uintptr_t>(&s)));
++        if (impl->invalidate_pending) {
++            impl->invalidate_pending = false;
++            impl->cache.clear();
++            jit_js_clear();
++            s.halt &= ~static_cast<u32>(HaltReason::CacheInvalidation);
++        }
++    }
++    if (counting) cb->AddTicks(s.cycles_to_run - s.ticks_left);
++    is_executing = false;
++    return static_cast<HaltReason>(s.halt);
++}
++
++HaltReason Jit::Step() { return HaltReason::Step; }  // not implemented
++
++void Jit::ClearCache() {
++    impl->invalidate_pending = true;
++    if (!is_executing) {
++        impl->invalidate_pending = false;
++        impl->cache.clear();
++        jit_js_clear();
++    } else {
++        impl->st.halt |= static_cast<u32>(HaltReason::CacheInvalidation);
++    }
++}
++
++void Jit::InvalidateCacheRange(std::uint32_t, std::size_t) { ClearCache(); }
++
++void Jit::Reset() {
++    const u32 ctx = impl->st.ctx;
++    impl->st = Backend::Wasm::A32JitState{};
++    impl->st.ctx = ctx;
++}
++
++void Jit::HaltExecution(HaltReason hr) { impl->st.halt |= static_cast<u32>(hr); }
++void Jit::ClearHalt(HaltReason hr) { impl->st.halt &= ~static_cast<u32>(hr); }
++std::array<std::uint32_t, 16>& Jit::Regs() { return impl->st.regs; }
++const std::array<std::uint32_t, 16>& Jit::Regs() const { return impl->st.regs; }
++std::array<std::uint32_t, 64>& Jit::ExtRegs() { return impl->st.ext_regs; }
++const std::array<std::uint32_t, 64>& Jit::ExtRegs() const { return impl->st.ext_regs; }
++std::uint32_t Jit::Cpsr() const { return impl->st.Cpsr(); }
++void Jit::SetCpsr(std::uint32_t value) { impl->st.SetCpsr(value); }
++std::uint32_t Jit::Fpscr() const { return impl->st.Fpscr(); }
++void Jit::SetFpscr(std::uint32_t value) { impl->st.SetFpscr(value); }
++void Jit::ClearExclusiveState() { impl->st.exclusive_state = 0; }
 +void Jit::DumpDisassembly() const {}
 +std::vector<std::string> Jit::Disassemble() const { return {}; }
 +
 +}  // namespace Dynarmic::A32
+diff --git a/src/dynarmic/backend/wasm/a32_jitstate.cpp b/src/dynarmic/backend/wasm/a32_jitstate.cpp
+new file mode 100644
+index 0000000..c924d99
+--- /dev/null
++++ b/src/dynarmic/backend/wasm/a32_jitstate.cpp
+@@ -0,0 +1,74 @@
++/* This file is part of the dynarmic project.
++ * Copyright (c) 2016 MerryMage
++ * SPDX-License-Identifier: 0BSD
++ */
++
++#include "dynarmic/backend/wasm/a32_jitstate.h"
++
++#include <mcl/bit/bit_field.hpp>
++#include <mcl/stdint.hpp>
++
++namespace Dynarmic::Backend::Wasm {
++
++u32 A32JitState::Cpsr() const {
++    u32 cpsr = 0;
++
++    // NZCV flags
++    cpsr |= cpsr_nzcv;
++    // Q flag
++    cpsr |= cpsr_q;
++    // GE flags
++    cpsr |= mcl::bit::get_bit<31>(cpsr_ge) ? 1 << 19 : 0;
++    cpsr |= mcl::bit::get_bit<23>(cpsr_ge) ? 1 << 18 : 0;
++    cpsr |= mcl::bit::get_bit<15>(cpsr_ge) ? 1 << 17 : 0;
++    cpsr |= mcl::bit::get_bit<7>(cpsr_ge) ? 1 << 16 : 0;
++    // E flag, T flag
++    cpsr |= mcl::bit::get_bit<1>(upper_location_descriptor) ? 1 << 9 : 0;
++    cpsr |= mcl::bit::get_bit<0>(upper_location_descriptor) ? 1 << 5 : 0;
++    // IT state
++    cpsr |= static_cast<u32>(upper_location_descriptor & 0b11111100'00000000);
++    cpsr |= static_cast<u32>(upper_location_descriptor & 0b00000011'00000000) << 17;
++    // Other flags
++    cpsr |= cpsr_jaifm;
++
++    return cpsr;
++}
++
++void A32JitState::SetCpsr(u32 cpsr) {
++    // NZCV flags
++    cpsr_nzcv = cpsr & 0xF0000000;
++    // Q flag
++    cpsr_q = cpsr & (1 << 27);
++    // GE flags
++    cpsr_ge = 0;
++    cpsr_ge |= mcl::bit::get_bit<19>(cpsr) ? 0xFF000000 : 0;
++    cpsr_ge |= mcl::bit::get_bit<18>(cpsr) ? 0x00FF0000 : 0;
++    cpsr_ge |= mcl::bit::get_bit<17>(cpsr) ? 0x0000FF00 : 0;
++    cpsr_ge |= mcl::bit::get_bit<16>(cpsr) ? 0x000000FF : 0;
++
++    upper_location_descriptor &= 0xFFFF0000;
++    // E flag, T flag
++    upper_location_descriptor |= mcl::bit::get_bit<9>(cpsr) ? 2 : 0;
++    upper_location_descriptor |= mcl::bit::get_bit<5>(cpsr) ? 1 : 0;
++    // IT state
++    upper_location_descriptor |= (cpsr >> 0) & 0b11111100'00000000;
++    upper_location_descriptor |= (cpsr >> 17) & 0b00000011'00000000;
++
++    // Other flags
++    cpsr_jaifm = cpsr & 0x010001DF;
++}
++
++constexpr u32 FPCR_MASK = A32::LocationDescriptor::FPSCR_MODE_MASK;
++constexpr u32 FPSR_MASK = 0x0800'009f;
++
++u32 A32JitState::Fpscr() const {
++    return (upper_location_descriptor & 0xffff'0000) | fpsr | fpsr_nzcv;
++}
++
++void A32JitState::SetFpscr(u32 fpscr) {
++    fpsr_nzcv = fpscr & 0xf000'0000;
++    fpsr = fpscr & FPSR_MASK;
++    upper_location_descriptor = (upper_location_descriptor & 0x0000'ffff) | (fpscr & FPCR_MASK);
++}
++
++}  // namespace Dynarmic::Backend::Wasm
+diff --git a/src/dynarmic/backend/wasm/a32_jitstate.h b/src/dynarmic/backend/wasm/a32_jitstate.h
+new file mode 100644
+index 0000000..cfbc9df
+--- /dev/null
++++ b/src/dynarmic/backend/wasm/a32_jitstate.h
+@@ -0,0 +1,52 @@
++/* This file is part of the panda3ds-wasm project.
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ * Layout and CPSR/FPSCR packing follow Dynarmic's arm64 backend (0BSD).
++ */
++#pragma once
++
++#include <array>
++#include <cstddef>
++
++#include <mcl/stdint.hpp>
++
++#include "dynarmic/frontend/A32/a32_location_descriptor.h"
++#include "dynarmic/ir/location_descriptor.h"
++
++namespace Dynarmic::Backend::Wasm {
++
++// Lives in WASM linear memory; generated blocks access it by byte offset (see offsetof uses in emit_a32.cpp).
++struct A32JitState {
++    u32 cpsr_nzcv = 0;
++    u32 cpsr_q = 0;
++    u32 cpsr_jaifm = 0;
++    u32 cpsr_ge = 0;
++
++    u32 fpsr = 0;
++    u32 fpsr_nzcv = 0;
++
++    std::array<u32, 16> regs{};
++
++    u32 upper_location_descriptor = 0;
++
++    alignas(16) std::array<u32, 64> ext_regs{};
++
++    u32 exclusive_state = 0;
++
++    // WebAssembly backend additions
++    u32 halt = 0;  ///< HaltReason bits; generated code returns to the dispatcher when non-zero at CheckHalt
++    u32 ctx = 0;   ///< Jit::Impl* passed to host helper functions
++    alignas(8) u64 ticks_left = 0;
++    u64 cycles_to_run = 0;
++
++    u32 Cpsr() const;
++    void SetCpsr(u32 cpsr);
++
++    u32 Fpscr() const;
++    void SetFpscr(u32 fpscr);
++
++    IR::LocationDescriptor GetLocationDescriptor() const {
++        return IR::LocationDescriptor{regs[15] | (static_cast<u64>(upper_location_descriptor) << 32)};
++    }
++};
++
++}  // namespace Dynarmic::Backend::Wasm
+diff --git a/src/dynarmic/backend/wasm/emit_a32.cpp b/src/dynarmic/backend/wasm/emit_a32.cpp
+new file mode 100644
+index 0000000..57de3ee
+--- /dev/null
++++ b/src/dynarmic/backend/wasm/emit_a32.cpp
+@@ -0,0 +1,828 @@
++/* This file is part of the panda3ds-wasm project.
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * IR -> WebAssembly translation for the A32 frontend.
++ * Semantics of the IR opcodes follow Dynarmic's other backends; unsupported opcodes make the block fail
++ * with an error naming the opcode (the caller reports it).
++ */
++
++#include "dynarmic/backend/wasm/emit_a32.h"
++
++#include <cstddef>
++#include <cstring>
++#include <map>
++#include <unordered_map>
++
++#include <boost/variant.hpp>
++#include <mcl/bit/bit_field.hpp>
++
++#include "dynarmic/backend/wasm/a32_jitstate.h"
++#include "dynarmic/backend/wasm/wasm_builder.h"
++#include "dynarmic/frontend/A32/a32_location_descriptor.h"
++#include "dynarmic/frontend/A32/a32_types.h"
++#include "dynarmic/interface/A32/coprocessor.h"
++#include "dynarmic/interface/halt_reason.h"
++#include "dynarmic/ir/microinstruction.h"
++#include "dynarmic/ir/opcodes.h"
++#include "dynarmic/ir/terminal.h"
++
++namespace Dynarmic::Backend::Wasm {
++
++using IR::Opcode;
++
++namespace {
++
++constexpr u32 kOffNZCV = offsetof(A32JitState, cpsr_nzcv);
++constexpr u32 kOffQ = offsetof(A32JitState, cpsr_q);
++constexpr u32 kOffGE = offsetof(A32JitState, cpsr_ge);
++constexpr u32 kOffFpsrNZCV = offsetof(A32JitState, fpsr_nzcv);
++constexpr u32 kOffRegs = offsetof(A32JitState, regs);
++constexpr u32 kOffUpper = offsetof(A32JitState, upper_location_descriptor);
++constexpr u32 kOffExt = offsetof(A32JitState, ext_regs);
++constexpr u32 kOffHalt = offsetof(A32JitState, halt);
++constexpr u32 kOffCtx = offsetof(A32JitState, ctx);
++constexpr u32 kOffTicks = offsetof(A32JitState, ticks_left);
++
++class Emitter {
++public:
++    Emitter(IR::Block& b, const A32::UserConfig& cfg) : block(b), conf(cfg) {}
++
++    EmitResult Run() {
++        EmitResult res;
++        Generate();
++        if (error.empty()) res.bytes = Assemble();
++        res.error = error;
++        return res;
++    }
++
++private:
++    IR::Block& block;
++    const A32::UserConfig& conf;
++    Code c;
++    std::vector<u8> extra_locals;  // types of locals after the single parameter (the state pointer)
++    std::unordered_map<const IR::Inst*, u32> local_of;
++    std::vector<std::string> import_order;
++    std::map<std::string, u32> import_index;
++    int check_bit_local = -1;
++    std::string error;  // first failure; emission stops once set
++
++    void Fail(const std::string& msg) { if (error.empty()) error = msg; }
++
++    // ---------- locals / values ----------
++    ValType WT(IR::Type t) {
++        if (t == IR::Type::U64) return I64;
++        if (t == IR::Type::U1 || t == IR::Type::U8 || t == IR::Type::U16 || t == IR::Type::U32 || t == IR::Type::NZCVFlags) return I32;
++        Fail("unsupported IR value type " + std::to_string(static_cast<int>(t)));
++        return I32;
++    }
++    u32 Tmp(ValType t) {
++        extra_locals.push_back(t);
++        return static_cast<u32>(extra_locals.size());  // +1 for the parameter, -1 for zero-based
++    }
++    // Pops the stack top into a fresh local that represents `inst`.
++    u32 Set(const IR::Inst* inst) {
++        const u32 l = Tmp(WT(inst->GetType()));
++        c.LocalSet(l);
++        local_of[inst] = l;
++        return l;
++    }
++    void Alias(const IR::Inst* inst, u32 local) { local_of[inst] = local; }
++    void Ld(const IR::Value& v) {
++        if (v.IsImmediate()) {
++            switch (v.GetType()) {
++            case IR::Type::U1: c.I32Const(v.GetU1() ? 1 : 0); break;
++            case IR::Type::U8: c.I32Const(v.GetU8()); break;
++            case IR::Type::U16: c.I32Const(v.GetU16()); break;
++            case IR::Type::U32: c.I32Const(static_cast<s32>(v.GetU32())); break;
++            case IR::Type::U64: c.I64Const(static_cast<s64>(v.GetU64())); break;
++            default: Fail("unsupported immediate type"); c.I32Const(0); break;
++            }
++            return;
++        }
++        auto it = local_of.find(v.GetInst());
++        if (it == local_of.end()) {
++            Fail("value used before definition (producer opcode " + IR::GetNameOf(v.GetInst()->GetOpcode()) + ")");
++            c.I32Const(0);
++            return;
++        }
++        c.LocalGet(it->second);
++    }
++    void LdL(u32 local) { c.LocalGet(local); }
++
++    // ---------- helpers ----------
++    u32 Import(const char* name) {
++        auto it = import_index.find(name);
++        if (it != import_index.end()) return it->second;
++        const u32 idx = static_cast<u32>(import_order.size());
++        import_order.push_back(name);
++        import_index[name] = idx;
++        return idx;
++    }
++    void PushCtx() {
++        c.LocalGet(0);
++        c.I32Load(kOffCtx);
++    }
++    void CallHelper(const char* name) { c.Call(Import(name)); }
++
++    // ---------- state ----------
++    void StateLoad32(u32 off) {
++        c.LocalGet(0);
++        c.I32Load(off);
++    }
++    void SubTicks(u64 n) {
++        if (!conf.enable_cycle_counting || n == 0) return;
++        c.LocalGet(0);
++        c.LocalGet(0);
++        c.I64Load(kOffTicks);
++        c.I64Const(static_cast<s64>(n));
++        c.I64Sub();
++        c.I64Store(kOffTicks);
++    }
++
++    // Leaves 0/1 on the stack for condition `cond` evaluated on the current CPSR flags.
++    void EmitCond(IR::Cond cond) {
++        auto flag = [&](int bit) {  // 0/1
++            StateLoad32(kOffNZCV);
++            c.I32Const(bit);
++            c.I32ShrU();
++            c.I32Const(1);
++            c.I32And();
++        };
++        switch (cond) {
++        case IR::Cond::EQ: flag(30); break;
++        case IR::Cond::NE: flag(30); c.I32Eqz(); break;
++        case IR::Cond::CS: flag(29); break;
++        case IR::Cond::CC: flag(29); c.I32Eqz(); break;
++        case IR::Cond::MI: flag(31); break;
++        case IR::Cond::PL: flag(31); c.I32Eqz(); break;
++        case IR::Cond::VS: flag(28); break;
++        case IR::Cond::VC: flag(28); c.I32Eqz(); break;
++        case IR::Cond::HI: flag(29); flag(30); c.I32Eqz(); c.I32And(); break;
++        case IR::Cond::LS: flag(29); c.I32Eqz(); flag(30); c.I32Or(); break;
++        case IR::Cond::GE: flag(31); flag(28); c.I32Eq(); break;
++        case IR::Cond::LT: flag(31); flag(28); c.I32Ne(); break;
++        case IR::Cond::GT: flag(30); c.I32Eqz(); flag(31); flag(28); c.I32Eq(); c.I32And(); break;
++        case IR::Cond::LE: flag(30); flag(31); flag(28); c.I32Ne(); c.I32Or(); break;
++        case IR::Cond::AL:
++        case IR::Cond::NV: c.I32Const(1); break;
++        default: Fail("bad condition"); c.I32Const(1); break;
++        }
++    }
++
++    // ---------- terminals ----------
++    static u32 UpperOf(IR::LocationDescriptor d) {
++        return static_cast<u32>(A32::LocationDescriptor{d}.SetSingleStepping(false).UniqueHash() >> 32);
++    }
++    void SetUpper(IR::LocationDescriptor new_loc, IR::LocationDescriptor old_loc) {
++        const u32 nu = UpperOf(new_loc);
++        if (nu == UpperOf(old_loc)) return;
++        c.LocalGet(0);
++        c.I32Const(static_cast<s32>(nu));
++        c.I32Store(kOffUpper);
++    }
++    void Ret(int code) {
++        c.I32Const(code);
++        c.Return();
++    }
++    void EmitTerm(const IR::Terminal& t, IR::LocationDescriptor initial) {
++        if (auto* p = boost::get<IR::Term::LinkBlock>(&t)) { EmitLink(p->next, initial); }
++        else if (auto* p2 = boost::get<IR::Term::LinkBlockFast>(&t)) { EmitLink(p2->next, initial); }
++        else if (boost::get<IR::Term::ReturnToDispatch>(&t) || boost::get<IR::Term::PopRSBHint>(&t) || boost::get<IR::Term::FastDispatchHint>(&t)) { Ret(0); }
++        else if (auto* i = boost::get<IR::Term::Interpret>(&t)) {
++            PushCtx();
++            c.I32Const(static_cast<s32>(A32::LocationDescriptor{i->next}.PC()));
++            c.I32Const(static_cast<s32>(i->num_instructions));
++            CallHelper("interp");
++            Ret(1);
++        } else if (auto* f = boost::get<IR::Term::If>(&t)) {
++            EmitCond(f->if_);
++            c.If();
++            EmitTerm(f->then_, initial);
++            c.Else();
++            EmitTerm(f->else_, initial);
++            c.End();
++        } else if (auto* cb = boost::get<IR::Term::CheckBit>(&t)) {
++            if (check_bit_local < 0) { Fail("CheckBit terminal without SetCheckBit"); return; }
++            c.LocalGet(static_cast<u32>(check_bit_local));
++            c.If();
++            EmitTerm(cb->then_, initial);
++            c.Else();
++            EmitTerm(cb->else_, initial);
++            c.End();
++        } else if (auto* ch = boost::get<IR::Term::CheckHalt>(&t)) {
++            StateLoad32(kOffHalt);
++            c.If();
++            Ret(1);
++            c.End();
++            EmitTerm(ch->else_, initial);
++        } else {
++            Fail("unsupported terminal");
++        }
++    }
++    void EmitLink(IR::LocationDescriptor next, IR::LocationDescriptor initial) {
++        SetUpper(next, initial);
++        c.LocalGet(0);
++        c.I32Const(static_cast<s32>(A32::LocationDescriptor{next}.PC()));
++        c.I32Store(kOffRegs + 4 * 15);
++        Ret(0);
++    }
++
++    // ---------- main ----------
++    void Generate() {
++        const A32::LocationDescriptor location{block.Location()};
++        const IR::LocationDescriptor initial = location.SetSingleStepping(false);
++
++        if (block.GetCondition() != IR::Cond::AL) {
++            EmitCond(block.GetCondition());
++            c.I32Eqz();
++            c.If();
++            SubTicks(block.ConditionFailedCycleCount());
++            EmitTerm(IR::Term::LinkBlock{block.ConditionFailedLocation()}, initial);
++            c.End();
++        }
++        SubTicks(block.CycleCount());
++
++        for (auto& inst : block) {
++            EmitInst(&inst);
++            if (!error.empty()) return;
++        }
++
++        EmitTerm(block.GetTerminal(), initial);
++        c.Unreachable();
++    }
++
++    IR::Inst* P(IR::Inst* inst, Opcode op) { return inst->GetAssociatedPseudoOperation(op); }
++
++    // N and Z in bits 31 and 30 for the 32-bit value in `local`.
++    void EmitNZ(u32 local) {
++        c.LocalGet(local);
++        c.I32Const(static_cast<s32>(0x80000000u));
++        c.I32And();
++        c.LocalGet(local);
++        c.I32Eqz();
++        c.I32Const(30);
++        c.I32Shl();
++        c.I32Or();
++    }
++
++    void EmitNZpseudo(IR::Inst*, u32) {}  // GetNZFromOp is emitted by the pseudo-instruction itself (see EmitInst)
++
++    // ---------- shifts ----------
++    // Emits res into a new local and, if requested, the carry. `which`: 0 LSL, 1 LSR, 2 ASR, 3 ROR.
++    void EmitShift32(IR::Inst* inst, int which) {
++        auto* carry_inst = P(inst, Opcode::GetCarryFromOp);
++        const IR::Value v = inst->GetArg(0), amt = inst->GetArg(1), cin = inst->GetArg(2);
++        const u32 res = Tmp(I32);
++        u32 car = 0;
++        if (carry_inst) car = Tmp(I32);
++
++        if (amt.IsImmediate()) {
++            const u32 n = amt.GetU8();
++            if (n == 0) {
++                Ld(v); c.LocalSet(res);
++                if (carry_inst) { Ld(cin); c.LocalSet(car); }
++            } else if (which == 0) {  // LSL
++                if (n < 32) {
++                    Ld(v); c.I32Const(n); c.I32Shl(); c.LocalSet(res);
++                    if (carry_inst) { Ld(v); c.I32Const(32 - n); c.I32ShrU(); c.I32Const(1); c.I32And(); c.LocalSet(car); }
++                } else {
++                    c.I32Const(0); c.LocalSet(res);
++                    if (carry_inst) { if (n == 32) { Ld(v); c.I32Const(1); c.I32And(); } else { c.I32Const(0); } c.LocalSet(car); }
++                }
++            } else if (which == 1) {  // LSR
++                if (n < 32) {
++                    Ld(v); c.I32Const(n); c.I32ShrU(); c.LocalSet(res);
++                    if (carry_inst) { Ld(v); c.I32Const(n - 1); c.I32ShrU(); c.I32Const(1); c.I32And(); c.LocalSet(car); }
++                } else {
++                    c.I32Const(0); c.LocalSet(res);
++                    if (carry_inst) { if (n == 32) { Ld(v); c.I32Const(31); c.I32ShrU(); } else { c.I32Const(0); } c.LocalSet(car); }
++                }
++            } else if (which == 2) {  // ASR
++                const u32 m = n < 32 ? n : 31;
++                Ld(v); c.I32Const(m); c.I32ShrS(); c.LocalSet(res);
++                if (carry_inst) { Ld(v); c.I32Const(n < 32 ? n - 1 : 31); c.I32ShrS(); c.I32Const(1); c.I32And(); c.LocalSet(car); }
++            } else {  // ROR
++                Ld(v); c.I32Const(n & 31); c.I32Rotr(); c.LocalSet(res);
++                if (carry_inst) { c.LocalGet(res); c.I32Const(31); c.I32ShrU(); c.LocalSet(car); }
++            }
++        } else {
++            // amount known only at run time
++            if (which == 0) {
++                Ld(v); Ld(amt); c.I32Shl(); c.I32Const(0); Ld(amt); c.I32Const(32); c.I32LtU(); c.Select(); c.LocalSet(res);
++            } else if (which == 1) {
++                Ld(v); Ld(amt); c.I32ShrU(); c.I32Const(0); Ld(amt); c.I32Const(32); c.I32LtU(); c.Select(); c.LocalSet(res);
++            } else if (which == 2) {
++                Ld(v); Ld(amt); c.I32Const(31); Ld(amt); c.I32Const(32); c.I32LtU(); c.Select(); c.I32ShrS(); c.LocalSet(res);
++            } else {
++                Ld(v); Ld(amt); c.I32Rotr(); c.LocalSet(res);
++            }
++            if (carry_inst) {
++                Ld(amt); c.I32Eqz();
++                c.If(I32);
++                Ld(cin);
++                c.Else();
++                if (which == 0) {
++                    Ld(amt); c.I32Const(32); c.I32LeU();
++                    c.If(I32); Ld(v); c.I32Const(32); Ld(amt); c.I32Sub(); c.I32ShrU(); c.I32Const(1); c.I32And(); c.Else(); c.I32Const(0); c.End();
++                } else if (which == 1) {
++                    Ld(amt); c.I32Const(32); c.I32LeU();
++                    c.If(I32); Ld(v); Ld(amt); c.I32Const(1); c.I32Sub(); c.I32ShrU(); c.I32Const(1); c.I32And(); c.Else(); c.I32Const(0); c.End();
++                } else if (which == 2) {
++                    Ld(v); Ld(amt); c.I32Const(1); c.I32Sub(); c.I32Const(31); Ld(amt); c.I32Const(32); c.I32LtU(); c.Select(); c.I32ShrS(); c.I32Const(1); c.I32And();
++                } else {
++                    c.LocalGet(res); c.I32Const(31); c.I32ShrU();
++                }
++                c.End();
++                c.LocalSet(car);
++            }
++        }
++        Alias(inst, res);
++        if (carry_inst) Alias(carry_inst, car);
++        EmitNZpseudo(inst, res);
++    }
++
++    // ---------- per-instruction ----------
++    void Bin32(IR::Inst* inst, void (Code::*op)()) {
++        Ld(inst->GetArg(0));
++        Ld(inst->GetArg(1));
++        (c.*op)();
++        const u32 r = Set(inst);
++        EmitNZpseudo(inst, r);
++    }
++
++    void EmitInst(IR::Inst* inst) {
++        const Opcode op = inst->GetOpcode();
++        switch (op) {
++        // ----- pseudo operations: produced together with their parent instruction -----
++        case Opcode::GetNZFromOp: {
++            const IR::Value src = inst->GetArg(0);
++            if (src.IsImmediate()) {  // constant-folded parent
++                const u32 v = src.GetType() == IR::Type::U64 ? static_cast<u32>(src.GetU64()) : src.GetU32();
++                c.I32Const(static_cast<s32>((v & 0x80000000u) | (v == 0 ? 0x40000000u : 0u)));
++                Set(inst);
++                return;
++            }
++            auto it = local_of.find(src.GetInst());
++            if (it == local_of.end()) { Fail("GetNZFromOp: parent not emitted"); return; }
++            EmitNZ(it->second);
++            Set(inst);
++            return;
++        }
++        case Opcode::PushRSB:  // return-stack-buffer hint, not needed here
++        case Opcode::GetCarryFromOp:
++        case Opcode::GetOverflowFromOp:
++        case Opcode::GetNZCVFromOp:
++        case Opcode::GetGEFromOp:
++        case Opcode::Void:
++        case Opcode::Breakpoint:
++        case Opcode::A32DataSynchronizationBarrier:
++        case Opcode::A32DataMemoryBarrier:
++            if (local_of.count(inst) == 0 && (op == Opcode::GetCarryFromOp || op == Opcode::GetOverflowFromOp || op == Opcode::GetNZCVFromOp || op == Opcode::GetNZFromOp || op == Opcode::GetGEFromOp)) {
++                // Only an error if somebody uses it, which Ld() reports; unused pseudo-ops are removed by DCE.
++            }
++            return;
++        case Opcode::A32InstructionSynchronizationBarrier:
++            if (conf.hook_isb) { PushCtx(); CallHelper("isb"); }
++            return;
++
++        // ----- A32 state -----
++        case Opcode::A32GetRegister:
++            StateLoad32(kOffRegs + 4 * static_cast<u32>(inst->GetArg(0).GetA32RegRef()));
++            Set(inst);
++            return;
++        case Opcode::A32SetRegister:
++            c.LocalGet(0);
++            Ld(inst->GetArg(1));
++            c.I32Store(kOffRegs + 4 * static_cast<u32>(inst->GetArg(0).GetA32RegRef()));
++            return;
++        case Opcode::A32GetExtendedRegister32: {
++            const auto reg = inst->GetArg(0).GetA32ExtRegRef();
++            c.LocalGet(0);
++            c.I32Load(kOffExt + 4 * static_cast<u32>(static_cast<size_t>(reg) - static_cast<size_t>(A32::ExtReg::S0)));
++            Set(inst);
++            return;
++        }
++        case Opcode::A32GetExtendedRegister64: {
++            const auto reg = inst->GetArg(0).GetA32ExtRegRef();
++            c.LocalGet(0);
++            c.I64Load(kOffExt + 8 * static_cast<u32>(static_cast<size_t>(reg) - static_cast<size_t>(A32::ExtReg::D0)));
++            Set(inst);
++            return;
++        }
++        case Opcode::A32SetExtendedRegister32: {
++            const auto reg = inst->GetArg(0).GetA32ExtRegRef();
++            c.LocalGet(0);
++            Ld(inst->GetArg(1));
++            c.I32Store(kOffExt + 4 * static_cast<u32>(static_cast<size_t>(reg) - static_cast<size_t>(A32::ExtReg::S0)));
++            return;
++        }
++        case Opcode::A32SetExtendedRegister64: {
++            const auto reg = inst->GetArg(0).GetA32ExtRegRef();
++            c.LocalGet(0);
++            Ld(inst->GetArg(1));
++            c.I64Store(kOffExt + 8 * static_cast<u32>(static_cast<size_t>(reg) - static_cast<size_t>(A32::ExtReg::D0)));
++            return;
++        }
++        case Opcode::A32GetCpsr: PushCtx(); CallHelper("getcpsr"); Set(inst); return;
++        case Opcode::A32SetCpsr: PushCtx(); Ld(inst->GetArg(0)); CallHelper("setcpsr"); return;
++        case Opcode::A32GetFpscr: PushCtx(); CallHelper("getfpscr"); Set(inst); return;
++        case Opcode::A32SetFpscr: PushCtx(); Ld(inst->GetArg(0)); CallHelper("setfpscr"); return;
++        case Opcode::A32GetFpscrNZCV: StateLoad32(kOffFpsrNZCV); Set(inst); return;
++        case Opcode::A32SetFpscrNZCV: c.LocalGet(0); Ld(inst->GetArg(0)); c.I32Store(kOffFpsrNZCV); return;
++        case Opcode::A32SetCpsrNZCV:
++        case Opcode::A32SetCpsrNZCVRaw:
++            c.LocalGet(0); Ld(inst->GetArg(0)); c.I32Store(kOffNZCV); return;
++        case Opcode::A32SetCpsrNZCVQ:
++            c.LocalGet(0); Ld(inst->GetArg(0)); c.I32Const(static_cast<s32>(0xf0000000u)); c.I32And(); c.I32Store(kOffNZCV);
++            c.LocalGet(0); Ld(inst->GetArg(0)); c.I32Const(0x08000000); c.I32And(); c.I32Store(kOffQ);
++            return;
++        case Opcode::A32SetCpsrNZ:
++            c.LocalGet(0);
++            StateLoad32(kOffNZCV); c.I32Const(0x30000000); c.I32And();
++            Ld(inst->GetArg(0)); c.I32Or();
++            c.I32Store(kOffNZCV);
++            return;
++        case Opcode::A32SetCpsrNZC:
++            c.LocalGet(0);
++            StateLoad32(kOffNZCV); c.I32Const(0x10000000); c.I32And();
++            // An immediate here is the "NZ not needed" marker from GetSetElimination: contributes nothing.
++            if (!inst->GetArg(0).IsImmediate()) { Ld(inst->GetArg(0)); c.I32Or(); }
++            Ld(inst->GetArg(1)); c.I32Const(29); c.I32Shl(); c.I32Or();
++            c.I32Store(kOffNZCV);
++            return;
++        case Opcode::A32GetCFlag:
++            StateLoad32(kOffNZCV); c.I32Const(29); c.I32ShrU(); c.I32Const(1); c.I32And(); Set(inst);
++            return;
++        case Opcode::A32OrQFlag:
++            c.LocalGet(0);
++            StateLoad32(kOffQ); Ld(inst->GetArg(0)); c.I32Const(27); c.I32Shl(); c.I32Or();
++            c.I32Store(kOffQ);
++            return;
++        case Opcode::A32GetGEFlags: StateLoad32(kOffGE); Set(inst); return;
++        case Opcode::A32SetGEFlags: c.LocalGet(0); Ld(inst->GetArg(0)); c.I32Store(kOffGE); return;
++        case Opcode::A32SetGEFlagsCompressed:
++            // ge = ((x >> 16) * 0x00204081) & 0x01010101; ge = (ge << 8) - ge
++            c.LocalGet(0);
++            Ld(inst->GetArg(0)); c.I32Const(16); c.I32ShrU(); c.I32Const(0x00204081); c.I32Mul(); c.I32Const(0x01010101); c.I32And();
++            c.I32Const(8); c.I32Shl();
++            Ld(inst->GetArg(0)); c.I32Const(16); c.I32ShrU(); c.I32Const(0x00204081); c.I32Mul(); c.I32Const(0x01010101); c.I32And();
++            c.I32Sub();
++            c.I32Store(kOffGE);
++            return;
++        case Opcode::A32SetCheckBit:
++            if (check_bit_local < 0) check_bit_local = static_cast<int>(Tmp(I32));
++            Ld(inst->GetArg(0));
++            c.LocalSet(static_cast<u32>(check_bit_local));
++            return;
++        case Opcode::A32BXWritePC: {
++            const u32 upper_without_t = UpperOf(block.EndLocation()) & 0xFFFFFFFE;
++            const IR::Value pc = inst->GetArg(0);
++            if (pc.IsImmediate()) {
++                const u32 new_pc = pc.GetU32();
++                const bool t = mcl::bit::get_bit<0>(new_pc);
++                c.LocalGet(0); c.I32Const(static_cast<s32>(new_pc & (t ? 0xFFFFFFFEu : 0xFFFFFFFCu))); c.I32Store(kOffRegs + 4 * 15);
++                c.LocalGet(0); c.I32Const(static_cast<s32>(upper_without_t | (t ? 1u : 0u))); c.I32Store(kOffUpper);
++            } else {
++                const u32 pcl = Tmp(I32);
++                Ld(pc); c.LocalSet(pcl);
++                // regs[15] = pc & ~(t ? 1 : 3)  ==  pc & (0xFFFFFFFC | (t << 1))
++                c.LocalGet(0);
++                c.LocalGet(pcl); c.I32Const(static_cast<s32>(0xFFFFFFFCu)); c.LocalGet(pcl); c.I32Const(1); c.I32And(); c.I32Const(1); c.I32Shl(); c.I32Or(); c.I32And();
++                c.I32Store(kOffRegs + 4 * 15);
++                c.LocalGet(0);
++                c.I32Const(static_cast<s32>(upper_without_t)); c.LocalGet(pcl); c.I32Const(1); c.I32And(); c.I32Or();
++                c.I32Store(kOffUpper);
++            }
++            return;
++        }
++        case Opcode::A32UpdateUpperLocationDescriptor:
++            for (auto& i : block) if (i.GetOpcode() == Opcode::A32BXWritePC) return;
++            {
++                const u32 nu = UpperOf(block.EndLocation());
++                if (nu != UpperOf(block.Location())) {
++                    c.LocalGet(0); c.I32Const(static_cast<s32>(nu)); c.I32Store(kOffUpper);
++                }
++            }
++            return;
++        case Opcode::A32CallSupervisor:
++            PushCtx(); c.I32Const(static_cast<s32>(inst->GetArg(0).GetU32())); CallHelper("svc");
++            return;
++        case Opcode::A32ExceptionRaised:
++            PushCtx(); c.I32Const(static_cast<s32>(inst->GetArg(0).GetU32())); c.I32Const(static_cast<s32>(inst->GetArg(1).GetU64())); CallHelper("exc");
++            return;
++        case Opcode::A32ClearExclusive: PushCtx(); CallHelper("clrex"); return;
++
++        // ----- memory -----
++        case Opcode::A32ReadMemory8: case Opcode::A32ReadMemory16: case Opcode::A32ReadMemory32: case Opcode::A32ReadMemory64:
++        case Opcode::A32ExclusiveReadMemory8: case Opcode::A32ExclusiveReadMemory16: case Opcode::A32ExclusiveReadMemory32: case Opcode::A32ExclusiveReadMemory64: {
++            static const char* names[] = {"r8", "r16", "r32", "r64", "xr8", "xr16", "xr32", "xr64"};
++            const int k = op == Opcode::A32ReadMemory8 ? 0 : op == Opcode::A32ReadMemory16 ? 1 : op == Opcode::A32ReadMemory32 ? 2 : op == Opcode::A32ReadMemory64 ? 3
++                        : op == Opcode::A32ExclusiveReadMemory8 ? 4 : op == Opcode::A32ExclusiveReadMemory16 ? 5 : op == Opcode::A32ExclusiveReadMemory32 ? 6 : 7;
++            PushCtx(); Ld(inst->GetArg(1)); CallHelper(names[k]);
++            if (k % 4 == 0) { c.I32Const(0xff); c.I32And(); }
++            if (k % 4 == 1) { c.I32Const(0xffff); c.I32And(); }
++            Set(inst);
++            return;
++        }
++        case Opcode::A32WriteMemory8: case Opcode::A32WriteMemory16: case Opcode::A32WriteMemory32: case Opcode::A32WriteMemory64: {
++            static const char* names[] = {"w8", "w16", "w32", "w64"};
++            const int k = op == Opcode::A32WriteMemory8 ? 0 : op == Opcode::A32WriteMemory16 ? 1 : op == Opcode::A32WriteMemory32 ? 2 : 3;
++            PushCtx(); Ld(inst->GetArg(1)); Ld(inst->GetArg(2)); CallHelper(names[k]);
++            return;
++        }
++        case Opcode::A32ExclusiveWriteMemory8: case Opcode::A32ExclusiveWriteMemory16: case Opcode::A32ExclusiveWriteMemory32: case Opcode::A32ExclusiveWriteMemory64: {
++            static const char* names[] = {"xw8", "xw16", "xw32", "xw64"};
++            const int k = op == Opcode::A32ExclusiveWriteMemory8 ? 0 : op == Opcode::A32ExclusiveWriteMemory16 ? 1 : op == Opcode::A32ExclusiveWriteMemory32 ? 2 : 3;
++            PushCtx(); Ld(inst->GetArg(1)); Ld(inst->GetArg(2)); CallHelper(names[k]); Set(inst);
++            return;
++        }
++
++        // ----- coprocessor (CP15 on the 3DS) -----
++        case Opcode::A32CoprocGetOneWord: case Opcode::A32CoprocGetTwoWords: case Opcode::A32CoprocSendOneWord:
++        case Opcode::A32CoprocSendTwoWords: case Opcode::A32CoprocInternalOperation:
++            EmitCoproc(inst);
++            return;
++
++        // ----- integer / bit operations -----
++        case Opcode::Identity: Ld(inst->GetArg(0)); Set(inst); return;
++        case Opcode::LeastSignificantWord: Ld(inst->GetArg(0)); c.I32WrapI64(); Set(inst); return;
++        case Opcode::LeastSignificantHalf: Ld(inst->GetArg(0)); c.I32Const(0xffff); c.I32And(); Set(inst); return;
++        case Opcode::LeastSignificantByte: Ld(inst->GetArg(0)); c.I32Const(0xff); c.I32And(); Set(inst); return;
++        case Opcode::MostSignificantWord: {
++            Ld(inst->GetArg(0));
++            const u32 v = Tmp(I64);
++            c.LocalSet(v);
++            if (auto* carry = P(inst, Opcode::GetCarryFromOp)) {
++                c.LocalGet(v); c.I64Const(31); c.I64ShrU(); c.I32WrapI64(); c.I32Const(1); c.I32And(); Set(carry);
++            }
++            c.LocalGet(v); c.I64Const(32); c.I64ShrU(); c.I32WrapI64(); Set(inst);
++            return;
++        }
++        case Opcode::GetCFlagFromNZCV: Ld(inst->GetArg(0)); c.I32Const(29); c.I32ShrU(); c.I32Const(1); c.I32And(); Set(inst); return;
++        case Opcode::MostSignificantBit: Ld(inst->GetArg(0)); c.I32Const(31); c.I32ShrU(); Set(inst); return;
++        case Opcode::IsZero32: Ld(inst->GetArg(0)); c.I32Eqz(); Set(inst); return;
++        case Opcode::IsZero64: Ld(inst->GetArg(0)); c.I64Eqz(); Set(inst); return;
++        case Opcode::TestBit: Ld(inst->GetArg(0)); Ld(inst->GetArg(1)); c.I64ExtendI32U(); c.I64ShrU(); c.I32WrapI64(); c.I32Const(1); c.I32And(); Set(inst); return;
++        case Opcode::ConditionalSelect32:
++            Ld(inst->GetArg(1)); Ld(inst->GetArg(2)); EmitCond(inst->GetArg(0).GetCond()); c.Select(); Set(inst);
++            return;
++        case Opcode::ConditionalSelect64:
++            Ld(inst->GetArg(1)); Ld(inst->GetArg(2)); EmitCond(inst->GetArg(0).GetCond()); c.Select(); Set(inst);
++            return;
++        case Opcode::Pack2x32To1x64:
++            Ld(inst->GetArg(0)); c.I64ExtendI32U(); Ld(inst->GetArg(1)); c.I64ExtendI32U(); c.I64Const(32); c.I64Shl(); c.I64Or(); Set(inst);
++            return;
++        case Opcode::LogicalShiftLeft32: EmitShift32(inst, 0); return;
++        case Opcode::LogicalShiftRight32: EmitShift32(inst, 1); return;
++        case Opcode::ArithmeticShiftRight32: EmitShift32(inst, 2); return;
++        case Opcode::RotateRight32: EmitShift32(inst, 3); return;
++        case Opcode::RotateRightExtended: {
++            auto* carry = P(inst, Opcode::GetCarryFromOp);
++            if (carry) { Ld(inst->GetArg(0)); c.I32Const(1); c.I32And(); Set(carry); }
++            Ld(inst->GetArg(1)); c.I32Const(31); c.I32Shl(); Ld(inst->GetArg(0)); c.I32Const(1); c.I32ShrU(); c.I32Or();
++            const u32 r = Set(inst);
++            EmitNZpseudo(inst, r);
++            return;
++        }
++        case Opcode::Add32: case Opcode::Sub32: {
++            const bool sub = op == Opcode::Sub32;
++            auto* carry = P(inst, Opcode::GetCarryFromOp);
++            auto* ov = P(inst, Opcode::GetOverflowFromOp);
++            auto* nzcv = P(inst, Opcode::GetNZCVFromOp);
++            const IR::Value a = inst->GetArg(0), b = inst->GetArg(1), cin = inst->GetArg(2);
++            const u32 sum = Tmp(I64), res = Tmp(I32);
++            Ld(a); c.I64ExtendI32U();
++            Ld(b); if (sub) { c.I32Const(-1); c.I32Xor(); } c.I64ExtendI32U(); c.I64Add();
++            Ld(cin); c.I64ExtendI32U(); c.I64Add();
++            c.LocalSet(sum);
++            c.LocalGet(sum); c.I32WrapI64(); c.LocalSet(res);
++            Alias(inst, res);
++            u32 cl = 0, ol = 0;
++            if (carry || nzcv) { cl = Tmp(I32); c.LocalGet(sum); c.I64Const(32); c.I64ShrU(); c.I32WrapI64(); c.LocalSet(cl); }
++            if (ov || nzcv) {
++                ol = Tmp(I32);
++                if (!sub) { Ld(a); c.LocalGet(res); c.I32Xor(); Ld(b); c.LocalGet(res); c.I32Xor(); c.I32And(); }
++                else { Ld(a); Ld(b); c.I32Xor(); Ld(a); c.LocalGet(res); c.I32Xor(); c.I32And(); }
++                c.I32Const(31); c.I32ShrU(); c.LocalSet(ol);
++            }
++            if (carry) Alias(carry, cl);
++            if (ov) Alias(ov, ol);
++            if (nzcv) {
++                EmitNZ(res);
++                c.LocalGet(cl); c.I32Const(29); c.I32Shl(); c.I32Or();
++                c.LocalGet(ol); c.I32Const(28); c.I32Shl(); c.I32Or();
++                Set(nzcv);
++            }
++            EmitNZpseudo(inst, res);
++            return;
++        }
++        case Opcode::Add64: case Opcode::Sub64: {
++            Ld(inst->GetArg(0)); Ld(inst->GetArg(1));
++            if (op == Opcode::Add64) { c.I64Add(); Ld(inst->GetArg(2)); c.I64ExtendI32U(); c.I64Add(); }
++            else { c.I64Sub(); Ld(inst->GetArg(2)); c.I64ExtendI32U(); c.I64Add(); c.I64Const(1); c.I64Sub(); }
++            Set(inst);
++            return;
++        }
++        case Opcode::Mul32: Bin32(inst, &Code::I32Mul); return;
++        case Opcode::Mul64: Ld(inst->GetArg(0)); Ld(inst->GetArg(1)); c.I64Mul(); Set(inst); return;
++        case Opcode::And32: Bin32(inst, &Code::I32And); return;
++        case Opcode::Eor32: Bin32(inst, &Code::I32Xor); return;
++        case Opcode::Or32: Bin32(inst, &Code::I32Or); return;
++        case Opcode::AndNot32:
++            Ld(inst->GetArg(0)); Ld(inst->GetArg(1)); c.I32Const(-1); c.I32Xor(); c.I32And();
++            { const u32 r = Set(inst); EmitNZpseudo(inst, r); }
++            return;
++        case Opcode::Not32:
++            Ld(inst->GetArg(0)); c.I32Const(-1); c.I32Xor();
++            { const u32 r = Set(inst); EmitNZpseudo(inst, r); }
++            return;
++        case Opcode::And64: Ld(inst->GetArg(0)); Ld(inst->GetArg(1)); c.I64And(); Set(inst); return;
++        case Opcode::Eor64: Ld(inst->GetArg(0)); Ld(inst->GetArg(1)); c.I64Xor(); Set(inst); return;
++        case Opcode::Or64: Ld(inst->GetArg(0)); Ld(inst->GetArg(1)); c.I64Or(); Set(inst); return;
++        case Opcode::SignExtendByteToWord: Ld(inst->GetArg(0)); c.I32Extend8S(); Set(inst); return;
++        case Opcode::SignExtendHalfToWord: Ld(inst->GetArg(0)); c.I32Extend16S(); Set(inst); return;
++        case Opcode::ZeroExtendByteToWord: case Opcode::ZeroExtendHalfToWord: Ld(inst->GetArg(0)); Set(inst); return;
++        case Opcode::SignExtendWordToLong: Ld(inst->GetArg(0)); c.I64ExtendI32S(); Set(inst); return;
++        case Opcode::ZeroExtendWordToLong: case Opcode::ZeroExtendByteToLong: case Opcode::ZeroExtendHalfToLong:
++            Ld(inst->GetArg(0)); c.I64ExtendI32U(); Set(inst); return;
++        case Opcode::CountLeadingZeros32: Ld(inst->GetArg(0)); c.I32Clz(); Set(inst); return;
++        case Opcode::ByteReverseWord: {
++            const u32 x = Tmp(I32);
++            Ld(inst->GetArg(0)); c.LocalSet(x);
++            c.LocalGet(x); c.I32Const(24); c.I32Shl();
++            c.LocalGet(x); c.I32Const(0xff00); c.I32And(); c.I32Const(8); c.I32Shl(); c.I32Or();
++            c.LocalGet(x); c.I32Const(8); c.I32ShrU(); c.I32Const(0xff00); c.I32And(); c.I32Or();
++            c.LocalGet(x); c.I32Const(24); c.I32ShrU(); c.I32Or();
++            Set(inst);
++            return;
++        }
++        case Opcode::ByteReverseHalf: {
++            const u32 x = Tmp(I32);
++            Ld(inst->GetArg(0)); c.LocalSet(x);
++            c.LocalGet(x); c.I32Const(0xff); c.I32And(); c.I32Const(8); c.I32Shl();
++            c.LocalGet(x); c.I32Const(8); c.I32ShrU(); c.I32Or();
++            Set(inst);
++            return;
++        }
++        case Opcode::ReplicateBit32:
++            c.I32Const(0); Ld(inst->GetArg(0)); Ld(inst->GetArg(1)); c.I32ShrU(); c.I32Const(1); c.I32And(); c.I32Sub(); Set(inst);
++            return;
++        case Opcode::UnsignedDiv32: case Opcode::SignedDiv32: {
++            const bool sg = op == Opcode::SignedDiv32;
++            const u32 b = Tmp(I32);
++            Ld(inst->GetArg(1)); c.LocalSet(b);
++            c.LocalGet(b); c.I32Eqz();
++            c.If(I32);
++            c.I32Const(0);
++            c.Else();
++            if (sg) {
++                // INT_MIN / -1 overflows in wasm (traps); ARM defines the result as INT_MIN
++                Ld(inst->GetArg(0)); c.I32Const(static_cast<s32>(0x80000000u)); c.I32Eq(); c.LocalGet(b); c.I32Const(-1); c.I32Eq(); c.I32And();
++                c.If(I32); c.I32Const(static_cast<s32>(0x80000000u)); c.Else(); Ld(inst->GetArg(0)); c.LocalGet(b); c.I32DivS(); c.End();
++            } else {
++                Ld(inst->GetArg(0)); c.LocalGet(b); c.I32DivU();
++            }
++            c.End();
++            Set(inst);
++            return;
++        }
++        default:
++            Fail("unsupported IR opcode " + IR::GetNameOf(op));
++            return;
++        }
++    }
++
++    void EmitCoproc(IR::Inst* inst);
++
++    // ---------- module assembly ----------
++    static ValType SigChar(char ch) { return ch == 'l' ? I64 : I32; }
++
++    Bytes Assemble() {
++        // type section: type 0 = block function (i32) -> i32; then one per distinct helper signature
++        std::vector<std::string> sigs;  // signature strings, index = type index - 1
++        auto type_of = [&](const std::string& s) -> u32 {
++            for (size_t i = 0; i < sigs.size(); i++) if (sigs[i] == s) return static_cast<u32>(i + 1);
++            sigs.push_back(s);
++            return static_cast<u32>(sigs.size());
++        };
++        std::vector<u32> import_types;
++        for (const auto& name : import_order) {
++            const char* sig = nullptr;
++            for (const auto& h : kHelpers) if (name == h.name) sig = h.sig;
++            if (!sig) { Fail("unknown helper " + name); return {}; }
++            import_types.push_back(type_of(sig));
++        }
++        Bytes types;
++        LebU(types, 1 + sigs.size());
++        Append(types, Bytes{0x60, 1, I32, 1, I32});
++        for (const auto& s : sigs) {
++            const size_t gt = s.find('>');
++            Bytes t{0x60};
++            LebU(t, gt);
++            for (size_t i = 0; i < gt; i++) t.push_back(SigChar(s[i]));
++            if (s[gt + 1] == 'v') t.push_back(0);
++            else { t.push_back(1); t.push_back(SigChar(s[gt + 1])); }
++            Append(types, t);
++        }
++
++        Bytes imports;
++        LebU(imports, 1 + import_order.size());
++        Append(imports, Name("e")); Append(imports, Name("m")); imports.push_back(0x02); imports.push_back(0x00); LebU(imports, 1);
++        for (size_t i = 0; i < import_order.size(); i++) {
++            Append(imports, Name("e")); Append(imports, Name(import_order[i].c_str()));
++            imports.push_back(0x00); LebU(imports, import_types[i]);
++        }
++
++        Bytes funcs{1, 0};
++        Bytes exports;
++        LebU(exports, 1);
++        Append(exports, Name("b")); exports.push_back(0x00); LebU(exports, import_order.size());
++
++        // code: local declarations (run-length) + body + end
++        Bytes body;
++        std::vector<std::pair<u32, u8>> groups;
++        for (u8 t : extra_locals) {
++            if (!groups.empty() && groups.back().second == t) groups.back().first++;
++            else groups.push_back({1, t});
++        }
++        LebU(body, groups.size());
++        for (auto& g : groups) { LebU(body, g.first); body.push_back(g.second); }
++        Append(body, c.b);
++        body.push_back(0x0b);
++        Bytes code;
++        LebU(code, 1);
++        LebU(code, body.size());
++        Append(code, body);
++
++        Bytes m{0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0};
++        Append(m, Section(1, types));
++        Append(m, Section(2, imports));
++        Append(m, Section(3, funcs));
++        Append(m, Section(7, exports));
++        Append(m, Section(10, code));
++        return m;
++    }
++};
++
++void Emitter::EmitCoproc(IR::Inst* inst) {
++    const auto info = inst->GetArg(0).GetCoprocInfo();
++    const size_t coproc_num = info[0];
++    const bool two = info[1] == 1;
++    const auto& cp = conf.coprocessors[coproc_num];
++    if (!cp) { Fail("coprocessor not registered"); return; }
++    const IR::Opcode op = inst->GetOpcode();
++    const auto opc1 = static_cast<unsigned>(info[2]);
++    const auto CRn = static_cast<A32::CoprocReg>(info[3]);
++    const auto CRm = static_cast<A32::CoprocReg>(info[4]);
++    const auto opc2 = static_cast<unsigned>(info[5]);
++
++    auto push_callback = [&](const A32::Coprocessor::Callback& cb) {
++        PushCtx();
++        c.I32Const(static_cast<s32>(reinterpret_cast<uintptr_t>(cb.function)));
++        c.I32Const(static_cast<s32>(cb.user_arg ? reinterpret_cast<uintptr_t>(*cb.user_arg) : 0));
++    };
++
++    switch (op) {
++    case Opcode::A32CoprocGetOneWord: {
++        const auto action = cp->CompileGetOneWord(two, opc1, CRn, CRm, opc2);
++        if (auto* ptr = std::get_if<u32*>(&action)) {
++            c.I32Const(static_cast<s32>(reinterpret_cast<uintptr_t>(*ptr)));
++            c.I32Load(0);
++            Set(inst);
++        } else if (auto* cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
++            push_callback(*cb);
++            c.I32Const(0); c.I32Const(0);
++            CallHelper("cpget1");
++            Set(inst);
++        } else {
++            Fail("coprocessor read not supported for this register");
++        }
++        return;
++    }
++    case Opcode::A32CoprocSendOneWord: {
++        const auto action = cp->CompileSendOneWord(two, opc1, CRn, CRm, opc2);
++        if (auto* ptr = std::get_if<u32*>(&action)) {
++            c.I32Const(static_cast<s32>(reinterpret_cast<uintptr_t>(*ptr)));
++            Ld(inst->GetArg(1));
++            c.I32Store(0);
++        } else if (auto* cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
++            push_callback(*cb);
++            Ld(inst->GetArg(1)); c.I32Const(0);
++            CallHelper("cpcall");
++        } else {
++            Fail("coprocessor write not supported for this register");
++        }
++        return;
++    }
++    default:
++        Fail("unsupported coprocessor operation " + IR::GetNameOf(op));
++    }
++}
++
++}  // namespace
++
++EmitResult EmitA32Block(IR::Block& block, const A32::UserConfig& conf) {
++    return Emitter(block, conf).Run();
++}
++
++}  // namespace Dynarmic::Backend::Wasm
+diff --git a/src/dynarmic/backend/wasm/emit_a32.h b/src/dynarmic/backend/wasm/emit_a32.h
+new file mode 100644
+index 0000000..7998efb
+--- /dev/null
++++ b/src/dynarmic/backend/wasm/emit_a32.h
+@@ -0,0 +1,45 @@
++/* This file is part of the panda3ds-wasm project.
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++#pragma once
++
++#include <string>
++#include <vector>
++
++#include <mcl/stdint.hpp>
++
++#include "dynarmic/interface/A32/config.h"
++#include "dynarmic/ir/basic_block.h"
++
++namespace Dynarmic::Backend::Wasm {
++
++// Host functions that generated blocks may import (module "e"). Signature: params '>' result;
++// i = i32, l = i64, v = none. The first parameter of every helper is the Jit::Impl* context.
++struct HelperDef {
++    const char* name;
++    const char* sig;
++};
++
++inline constexpr HelperDef kHelpers[] = {
++    {"r8", "ii>i"},   {"r16", "ii>i"},  {"r32", "ii>i"},  {"r64", "ii>l"},
++    {"w8", "iii>v"},  {"w16", "iii>v"}, {"w32", "iii>v"}, {"w64", "iil>v"},
++    {"xr8", "ii>i"},  {"xr16", "ii>i"}, {"xr32", "ii>i"}, {"xr64", "ii>l"},
++    {"xw8", "iii>i"}, {"xw16", "iii>i"}, {"xw32", "iii>i"}, {"xw64", "iil>i"},
++    {"clrex", "i>v"},
++    {"svc", "ii>v"},  {"exc", "iii>v"}, {"interp", "iii>v"}, {"isb", "i>v"},
++    {"getcpsr", "i>i"}, {"setcpsr", "ii>v"}, {"getfpscr", "i>i"}, {"setfpscr", "ii>v"},
++    {"cpget1", "iiiii>i"},  // ctx, callback fn, user_arg, arg0, arg1 -> u32
++    {"cpcall", "iiiii>v"},  // ctx, callback fn, user_arg, arg0, arg1 (result ignored)
++};
++
++struct EmitResult {
++    std::vector<u8> bytes;
++    std::string error;  // empty on success
++    bool ok() const { return error.empty(); }
++};
++
++// Translates one IR block to a WebAssembly module exporting `b(state: i32) -> i32`
++// (0 = continue with PC from state, 1 = stop/return to the caller).
++EmitResult EmitA32Block(IR::Block& block, const A32::UserConfig& conf);
++
++}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/exclusive_monitor.cpp b/src/dynarmic/backend/wasm/exclusive_monitor.cpp
 new file mode 100644
 index 0000000..c1651b4
@@ -154,6 +1367,118 @@ index 0000000..c1651b4
 +void SpinLock::Lock() { while (__atomic_exchange_n(&storage, 1, __ATOMIC_ACQUIRE) != 0) {} }
 +void SpinLock::Unlock() { __atomic_store_n(&storage, 0, __ATOMIC_RELEASE); }
 +}  // namespace Dynarmic
+diff --git a/src/dynarmic/backend/wasm/wasm_builder.h b/src/dynarmic/backend/wasm/wasm_builder.h
+new file mode 100644
+index 0000000..6840bc5
+--- /dev/null
++++ b/src/dynarmic/backend/wasm/wasm_builder.h
+@@ -0,0 +1,106 @@
++/* This file is part of the panda3ds-wasm project.
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ * Minimal WebAssembly binary writer (MVP + sign-extension ops).
++ */
++#pragma once
++
++#include <cstdint>
++#include <vector>
++
++#include <mcl/stdint.hpp>
++
++namespace Dynarmic::Backend::Wasm {
++
++using Bytes = std::vector<u8>;
++
++inline void LebU(Bytes& b, u64 v) {
++    do {
++        u8 byte = v & 0x7f;
++        v >>= 7;
++        if (v) byte |= 0x80;
++        b.push_back(byte);
++    } while (v);
++}
++
++inline void LebS(Bytes& b, s64 v) {
++    for (;;) {
++        const u8 byte = v & 0x7f;
++        v >>= 7;
++        if ((v == 0 && !(byte & 0x40)) || (v == -1 && (byte & 0x40))) {
++            b.push_back(byte);
++            return;
++        }
++        b.push_back(byte | 0x80);
++    }
++}
++
++inline void Append(Bytes& b, const Bytes& o) { b.insert(b.end(), o.begin(), o.end()); }
++
++inline Bytes Section(u8 id, const Bytes& payload) {
++    Bytes b{id};
++    LebU(b, payload.size());
++    Append(b, payload);
++    return b;
++}
++
++inline Bytes Name(const char* s) {
++    Bytes b;
++    size_t n = 0;
++    while (s[n]) n++;
++    LebU(b, n);
++    for (size_t i = 0; i < n; i++) b.push_back(static_cast<u8>(s[i]));
++    return b;
++}
++
++enum ValType : u8 { I32 = 0x7f, I64 = 0x7e };
++
++// Function body writer. Numeric opcode names follow the spec text format.
++struct Code {
++    Bytes b;
++
++    void Op(u8 o) { b.push_back(o); }
++    void I32Const(s32 v) { Op(0x41); LebS(b, v); }
++    void I64Const(s64 v) { Op(0x42); LebS(b, v); }
++    void LocalGet(u32 i) { Op(0x20); LebU(b, i); }
++    void LocalSet(u32 i) { Op(0x21); LebU(b, i); }
++    void LocalTee(u32 i) { Op(0x22); LebU(b, i); }
++    void Call(u32 f) { Op(0x10); LebU(b, f); }
++
++    void I32Load(u32 off) { Op(0x28); Op(2); LebU(b, off); }
++    void I64Load(u32 off) { Op(0x29); Op(3); LebU(b, off); }
++    void I32Load8U(u32 off) { Op(0x2d); Op(0); LebU(b, off); }
++    void I32Store(u32 off) { Op(0x36); Op(2); LebU(b, off); }
++    void I64Store(u32 off) { Op(0x37); Op(3); LebU(b, off); }
++
++    void If(u8 blocktype = 0x40) { Op(0x04); Op(blocktype); }
++    void Else() { Op(0x05); }
++    void End() { Op(0x0b); }
++    void Return() { Op(0x0f); }
++    void Unreachable() { Op(0x00); }
++    void Drop() { Op(0x1a); }
++    void Select() { Op(0x1b); }
++
++    // i32
++    void I32Eqz() { Op(0x45); }  void I32Eq() { Op(0x46); }  void I32Ne() { Op(0x47); }
++    void I32LtS() { Op(0x48); }  void I32LtU() { Op(0x49); } void I32GtS() { Op(0x4a); } void I32GtU() { Op(0x4b); }
++    void I32LeS() { Op(0x4c); }  void I32LeU() { Op(0x4d); } void I32GeS() { Op(0x4e); } void I32GeU() { Op(0x4f); }
++    void I32Clz() { Op(0x67); }
++    void I32Add() { Op(0x6a); }  void I32Sub() { Op(0x6b); } void I32Mul() { Op(0x6c); }
++    void I32DivS() { Op(0x6d); } void I32DivU() { Op(0x6e); }
++    void I32And() { Op(0x71); }  void I32Or() { Op(0x72); }  void I32Xor() { Op(0x73); }
++    void I32Shl() { Op(0x74); }  void I32ShrS() { Op(0x75); } void I32ShrU() { Op(0x76); }
++    void I32Rotr() { Op(0x78); }
++    // i64
++    void I64Eqz() { Op(0x50); }  void I64Eq() { Op(0x51); }  void I64Ne() { Op(0x52); }
++    void I64Add() { Op(0x7c); }  void I64Sub() { Op(0x7d); } void I64Mul() { Op(0x7e); }
++    void I64And() { Op(0x83); }  void I64Or() { Op(0x84); }  void I64Xor() { Op(0x85); }
++    void I64Shl() { Op(0x86); }  void I64ShrS() { Op(0x87); } void I64ShrU() { Op(0x88); }
++    // conversions
++    void I32WrapI64() { Op(0xa7); }
++    void I64ExtendI32S() { Op(0xac); }
++    void I64ExtendI32U() { Op(0xad); }
++    void I32Extend8S() { Op(0xc0); }
++    void I32Extend16S() { Op(0xc1); }
++};
++
++}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/common/fp/op/FPRecipExponent.cpp b/src/dynarmic/common/fp/op/FPRecipExponent.cpp
 index 171b94e..9ed8637 100644
 --- a/src/dynarmic/common/fp/op/FPRecipExponent.cpp
