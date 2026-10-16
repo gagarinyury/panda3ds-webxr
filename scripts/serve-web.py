@@ -7,7 +7,7 @@ OUT = os.path.join(ROOT, 'run', 'web-reports')
 os.makedirs(OUT, exist_ok=True)
 
 class H(http.server.SimpleHTTPRequestHandler):
-    extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, '.wasm': 'application/wasm', '.js': 'text/javascript', '.3dsx': 'application/octet-stream'}
+    extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, '.wasm': 'application/wasm', '.js': 'text/javascript', '.3dsx': 'application/octet-stream', '.3ds': 'application/octet-stream', '.cxi': 'application/octet-stream', '.cci': 'application/octet-stream'}
     def __init__(self, *a, **k): super().__init__(*a, directory=ROOT, **k)
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store'); super().end_headers()

@@ -49,7 +49,13 @@ const logEl = document.getElementById('log');
 const errors = [];
 const FRAME_MS = 1000 / 59.83;                              // 3DS refresh rate
 const post = (type, payload) => { if (native) native.postMessage(JSON.stringify({ type, name, ...payload })); };
-const log = (s, err) => { logEl.textContent += s + '\n'; if (err) { errors.push(s); post('error', { msg: s }); } };
+const log = (s, err) => {
+  const lines = logEl.textContent.split('\n');
+  if (lines.length > 50) logEl.textContent = lines.slice(-40).join('\n') + '\n';
+  logEl.textContent += s + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+  if (err) { errors.push(s); post('error', { msg: s }); }
+};
 var Module = {
   canvas: document.getElementById('gl'),
   print: (s) => { log(s, /\[FATAL\]/.test(s)); post('log', { msg: String(s).slice(0, 300) }); },
@@ -103,13 +109,32 @@ if (useGL && params.get('filter') === '1') installGLFilter();   // opt-in: measu
 
 // ---- input: keyboard, touch / mouse on the bottom screen, on-screen buttons ----
 const KEYS = { A: 1, B: 2, Select: 4, Start: 8, Right: 16, Left: 32, Up: 64, Down: 128, R: 256, L: 512, X: 1024, Y: 2048 };
-const KEYMAP = { KeyX: 'A', KeyZ: 'B', KeyS: 'X', KeyA: 'Y', KeyQ: 'L', KeyW: 'R', Enter: 'Start', ShiftRight: 'Select', Backspace: 'Select',
-                 ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' };
+const KEYMAP = {
+  KeyX: 'A', KeyA: 'A', Space: 'A',
+  KeyZ: 'B', KeyB: 'B',
+  KeyS: 'X',
+  KeyY: 'Y',
+  KeyQ: 'L', KeyW: 'R', KeyE: 'R',
+  Enter: 'Start', ShiftRight: 'Select', Backspace: 'Select',
+  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right'
+};
 const held = new Set();
+function updateCirclePad() {
+  if (!Module._web_circle) return;
+  let cx = 0, cy = 0;
+  if (held.has('Left')) cx -= 156;
+  if (held.has('Right')) cx += 156;
+  if (held.has('Up')) cy += 156;
+  if (held.has('Down')) cy -= 156;
+  Module._web_circle(cx, cy);
+}
 function press(name, down) {
   if (!Module._web_key) return;
   down ? held.add(name) : held.delete(name);
   Module._web_key(KEYS[name], down ? 1 : 0);
+  if (name === 'Up' || name === 'Down' || name === 'Left' || name === 'Right') {
+    updateCirclePad();
+  }
   document.querySelectorAll(`#pad b[data-k="${name}"]`).forEach((e) => e.classList.toggle('on', down));
 }
 addEventListener('keydown', (e) => { const n = KEYMAP[e.code]; if (n) { e.preventDefault(); if (!e.repeat) press(n, true); } });
@@ -129,7 +154,11 @@ function touchAt(e, down) {   // GL canvas is 400x480; the bottom screen (320x24
   const c = document.getElementById('gl'); let dragging = false;
   c.addEventListener('pointerdown', (e) => { dragging = true; c.setPointerCapture(e.pointerId); touchAt(e, true); });
   c.addEventListener('pointermove', (e) => { if (dragging) touchAt(e, true); });
-  const end = (e) => { dragging = false; touchAt(e, false); };
+  const end = (e) => {
+    dragging = false;
+    // Hold touch briefly so guest HID polling always captures the tap
+    setTimeout(() => touchAt(e, false), 50);
+  };
   c.addEventListener('pointerup', end); c.addEventListener('pointercancel', end);
   c.style.touchAction = 'none';
 }
@@ -247,8 +276,17 @@ function tick(now) {
     for (; ran < 4 && alive && !(maxFrames && frames >= maxFrames); ran++) alive = runFrame();
   } else {
     acc += Math.min(now - lastTick, 100); lastTick = now;     // fixed time step: the display may refresh at 60 or 120 Hz
-    while (acc >= FRAME_MS && ran < 3 && alive && !(maxFrames && frames >= maxFrames)) { alive = runFrame(); acc -= FRAME_MS; ran++; }
-    if (acc > 2 * FRAME_MS) { late += Math.floor(acc / FRAME_MS); acc = 0; }   // emulation fell behind: drop the lag
+    // Cap to at most 1 frame per animation frame to prevent freezing the browser event loop:
+    if (acc >= FRAME_MS && alive && !(maxFrames && frames >= maxFrames)) {
+      alive = runFrame();
+      acc -= FRAME_MS;
+      ran = 1;
+    }
+    // Drop lag debt immediately when falling behind:
+    if (acc > FRAME_MS) {
+      late += Math.floor(acc / FRAME_MS);
+      acc = 0;
+    }
   }
   if (ran) draw();
   if (now - lastBeat > 1000) {
