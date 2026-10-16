@@ -53,7 +53,8 @@ f.src = `/web/index.html?rom=${rom}&gl=1&name=${name}-inner${extra}`;
   };
 
   const results = [];
-  for (const [label, apply] of Object.entries(EXP)) {
+  const only = q.get('only');   // only=baseline: run just the baseline experiments (quick A/B of one change)
+  for (const [label, apply] of Object.entries(EXP).filter(([l]) => !only || l.startsWith(only))) {
     bytesUbo = bytesVtx = bytesIdx = uploads = 0; const undo = apply();
     const orig = w.Module._web_frame, recs = [], queries = []; let k = 0; const wall0 = performance.now();
     w.Module._web_frame = function () {

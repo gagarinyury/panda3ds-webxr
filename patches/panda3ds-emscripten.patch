@@ -1059,12 +1059,6 @@ index b7a4060..33d5e7b 100644
 -#endif
  }
 \ No newline at end of file
-diff --git a/third_party/dynarmic b/third_party/dynarmic
---- a/third_party/dynarmic
-+++ b/third_party/dynarmic
-@@ -1 +1 @@
--Subproject commit e77b1ba0b7da7cbe93021b01a663acfe7c4dd516
-+Subproject commit e77b1ba0b7da7cbe93021b01a663acfe7c4dd516-dirty
 diff --git a/third_party/host_memory/host_memory.cpp b/third_party/host_memory/host_memory.cpp
 index 2aaa2f1..95a17d9 100644
 --- a/third_party/host_memory/host_memory.cpp
