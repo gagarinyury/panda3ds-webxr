@@ -495,10 +495,10 @@ index 0000000..cfbc9df
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.cpp b/src/dynarmic/backend/wasm/emit_a32.cpp
 new file mode 100644
-index 0000000..04d919c
+index 0000000..e5035eb
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.cpp
-@@ -0,0 +1,1146 @@
+@@ -0,0 +1,1270 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -1236,6 +1236,130 @@ index 0000000..04d919c
 +            Set(inst);
 +            return;
 +        }
++
++        // ----- saturation -----
++        case Opcode::SignedSaturatedAddWithFlag32: {
++            const u32 al = Tmp(I32); Ld(inst->GetArg(0)); c.LocalSet(al);
++            const u32 bl = Tmp(I32); Ld(inst->GetArg(1)); c.LocalSet(bl);
++            const u32 sum = Tmp(I32);
++            c.LocalGet(al); c.LocalGet(bl); c.I32Add(); c.LocalSet(sum);
++            const u32 ovl = Tmp(I32);
++            c.LocalGet(sum); c.LocalGet(al); c.I32Xor();
++            c.LocalGet(sum); c.LocalGet(bl); c.I32Xor();
++            c.I32And(); c.I32Const(31); c.I32ShrU(); c.LocalSet(ovl);
++
++            // saturated value: (sum >> 31) ^ 0x80000000 (INT_MAX if sum < 0, INT_MIN if sum >= 0)
++            c.LocalGet(sum); c.I32Const(31); c.I32ShrS(); c.I32Const(static_cast<s32>(0x80000000u)); c.I32Xor();
++            c.LocalGet(sum);
++            c.LocalGet(ovl);
++            c.Select();
++            const u32 res = Tmp(I32);
++            c.LocalSet(res);
++            Alias(inst, res);
++            if (auto* ov = P(inst, Opcode::GetOverflowFromOp)) {
++                Alias(ov, ovl);
++            }
++            return;
++        }
++        case Opcode::SignedSaturatedSubWithFlag32: {
++            const u32 al = Tmp(I32); Ld(inst->GetArg(0)); c.LocalSet(al);
++            const u32 bl = Tmp(I32); Ld(inst->GetArg(1)); c.LocalSet(bl);
++            const u32 diff = Tmp(I32);
++            c.LocalGet(al); c.LocalGet(bl); c.I32Sub(); c.LocalSet(diff);
++            const u32 ovl = Tmp(I32);
++            c.LocalGet(al); c.LocalGet(bl); c.I32Xor();
++            c.LocalGet(al); c.LocalGet(diff); c.I32Xor();
++            c.I32And(); c.I32Const(31); c.I32ShrU(); c.LocalSet(ovl);
++
++            // saturated value: (diff >> 31) ^ 0x80000000
++            c.LocalGet(diff); c.I32Const(31); c.I32ShrS(); c.I32Const(static_cast<s32>(0x80000000u)); c.I32Xor();
++            c.LocalGet(diff);
++            c.LocalGet(ovl);
++            c.Select();
++            const u32 res = Tmp(I32);
++            c.LocalSet(res);
++            Alias(inst, res);
++            if (auto* ov = P(inst, Opcode::GetOverflowFromOp)) {
++                Alias(ov, ovl);
++            }
++            return;
++        }
++        case Opcode::SignedSaturation: {
++            const size_t N = inst->GetArg(1).GetU8();
++            const u32 vl = Tmp(I32);
++            Ld(inst->GetArg(0));
++            c.LocalSet(vl);
++            if (N == 32) {
++                Alias(inst, vl);
++                if (auto* ov = P(inst, Opcode::GetOverflowFromOp)) {
++                    const u32 ovl = Tmp(I32);
++                    c.I32Const(0);
++                    c.LocalSet(ovl);
++                    Alias(ov, ovl);
++                }
++                return;
++            }
++            const u32 max_val = (1u << (N - 1)) - 1;
++            const s32 min_val = static_cast<s32>(~u32{0} << (N - 1));
++
++            c.I32Const(static_cast<s32>(max_val));
++            c.I32Const(min_val);
++            c.LocalGet(vl);
++            c.LocalGet(vl);
++            c.I32Const(min_val);
++            c.I32LtS();
++            c.Select();
++            c.LocalGet(vl);
++            c.I32Const(static_cast<s32>(max_val));
++            c.I32GtS();
++            c.Select();
++            const u32 res = Tmp(I32);
++            c.LocalSet(res);
++            Alias(inst, res);
++
++            if (auto* ov = P(inst, Opcode::GetOverflowFromOp)) {
++                const u32 ovl = Tmp(I32);
++                c.LocalGet(res);
++                c.LocalGet(vl);
++                c.I32Ne();
++                c.LocalSet(ovl);
++                Alias(ov, ovl);
++            }
++            return;
++        }
++        case Opcode::UnsignedSaturation: {
++            const size_t N = inst->GetArg(1).GetU8();
++            const u32 saturated_value = (1u << N) - 1;
++            const u32 vl = Tmp(I32);
++            Ld(inst->GetArg(0));
++            c.LocalSet(vl);
++
++            c.I32Const(0);
++            c.I32Const(static_cast<s32>(saturated_value));
++            c.LocalGet(vl);
++            c.LocalGet(vl);
++            c.I32Const(static_cast<s32>(saturated_value));
++            c.I32GtS();
++            c.Select();
++            c.LocalGet(vl);
++            c.I32Const(0);
++            c.I32LtS();
++            c.Select();
++            const u32 res = Tmp(I32);
++            c.LocalSet(res);
++            Alias(inst, res);
++
++            if (auto* ov = P(inst, Opcode::GetOverflowFromOp)) {
++                const u32 ovl = Tmp(I32);
++                c.LocalGet(vl);
++                c.I32Const(static_cast<s32>(saturated_value));
++                c.I32GtU();
++                c.LocalSet(ovl);
++                Alias(ov, ovl);
++            }
++            return;
++        }
++
 +        // ----- VFP scalar floating point (bit-exact soft-float helpers; FPCR is known per block) -----
 +        case Opcode::FPAdd32: if (FastFp32(inst, 0)) return; goto fp_generic;
 +        case Opcode::FPSub32: if (FastFp32(inst, 1)) return; goto fp_generic;

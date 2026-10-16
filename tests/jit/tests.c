@@ -165,3 +165,38 @@ u32 t_cond(u32 a, u32 b, u32* m) {  /* predicated instructions, min/max/abs/clam
     m[0] = (u32)mn; m[1] = (u32)mx; m[2] = (u32)ab; m[3] = (u32)cl; m[4] = umin; m[5] = umax; m[6] = sel;
     return (u32)mn ^ (u32)mx ^ (u32)ab ^ (u32)cl ^ umin ^ umax ^ sel;
 }
+
+#if defined(__arm__) && !defined(__thumb__)
+#define sat_ssat16(x) __builtin_arm_ssat(x, 16)
+#define sat_ssat8(x)  __builtin_arm_ssat(x, 8)
+#define sat_usat16(x) __builtin_arm_usat(x, 16)
+#define sat_usat8(x)  __builtin_arm_usat(x, 8)
+#define sat_qadd(a, b) __builtin_arm_qadd(a, b)
+#define sat_qsub(a, b) __builtin_arm_qsub(a, b)
+#else
+static inline s32 sat_ssat16(s32 x) { return x > 32767 ? 32767 : (x < -32768 ? -32768 : x); }
+static inline s32 sat_ssat8(s32 x) { return x > 127 ? 127 : (x < -128 ? -128 : x); }
+static inline u32 sat_usat16(s32 x) { return x < 0 ? 0 : (x > 65535 ? 65535 : (u32)x); }
+static inline u32 sat_usat8(s32 x) { return x < 0 ? 0 : (x > 255 ? 255 : (u32)x); }
+static inline s32 sat_qadd(s32 a, s32 b) {
+    s64 s = (s64)a + b;
+    return s > 0x7fffffff ? 0x7fffffff : (s < -0x80000000LL ? -0x80000000LL : (s32)s);
+}
+static inline s32 sat_qsub(s32 a, s32 b) {
+    s64 s = (s64)a - b;
+    return s > 0x7fffffff ? 0x7fffffff : (s < -0x80000000LL ? -0x80000000LL : (s32)s);
+}
+#endif
+
+u32 t_sat(u32 a, u32 b, u32* m) {
+    s32 sa = (s32)a, sb = (s32)b;
+    s32 s16 = sat_ssat16(sa);
+    s32 s8 = sat_ssat8(sb);
+    u32 u16 = sat_usat16(sa);
+    u32 u8 = sat_usat8(sb);
+    s32 qa = sat_qadd(sa, sb);
+    s32 qs = sat_qsub(sa, sb);
+    m[0] = (u32)s16; m[1] = (u32)s8; m[2] = u16; m[3] = u8; m[4] = (u32)qa; m[5] = (u32)qs;
+    return (u32)s16 ^ ((u32)s8 << 5) ^ (u16 << 3) ^ (u8 << 11) ^ (u32)qa ^ (u32)qs;
+}
+
