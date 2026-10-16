@@ -33,7 +33,7 @@ const FRAME_MS = 1000 / 59.83;                              // 3DS refresh rate
 const post = (type, payload) => { if (native) native.postMessage(JSON.stringify({ type, name, ...payload })); };
 const log = (s, err) => { logEl.textContent += s + '\n'; if (err) { errors.push(s); post('error', { msg: s }); } };
 var Module = {
-  print: (s) => { log(s); post('log', { msg: String(s).slice(0, 300) }); },
+  print: (s) => { log(s, /\[FATAL\]/.test(s)); post('log', { msg: String(s).slice(0, 300) }); },
   printErr: (s) => { log(s, /error|fatal|abort|unsupported|failed/i.test(s)); post('log', { msg: '[err] ' + String(s).slice(0, 300) }); },
   preRun: [() => {
     for (const kv of envs.split(',').filter(Boolean)) { const [k, v] = kv.split(':'); Module.ENV[k] = v || '1'; }
@@ -63,8 +63,8 @@ async function start() {
   if (!resp.ok) throw new Error('cannot fetch ' + rom + ': HTTP ' + resp.status);
   Module.FS.writeFile('/rom.3dsx', new Uint8Array(await resp.arrayBuffer()));
   // libctru's ndspInit() loads sdmc:/3ds/dspfirm.cdc (the console's DSP firmware, which we cannot ship). The HLE/Null DSP cores never parse it,
-  // they only need the file to exist, so a zero-filled placeholder is enough. Panda3DS keeps per-game data in /<rom name>/ -> here /rom/.
-  if (params.get('dsp') !== '0') { Module.FS.mkdirTree('/rom/SDMC/3ds'); Module.FS.writeFile('/rom/SDMC/3ds/dspfirm.cdc', new Uint8Array(262144)); }
+  // they only need the file to exist, so a zero-filled placeholder is enough. Panda3DS keeps per-game data in <SDL pref path>/<rom name>/ -> here /libsdl/Alber/rom/ (read from FS_DEBUG output on the iPhone).
+  if (params.get('dsp') !== '0') { Module.FS.mkdirTree('/libsdl/Alber/rom/SDMC/3ds'); Module.FS.writeFile('/libsdl/Alber/rom/SDMC/3ds/dspfirm.cdc', new Uint8Array(262144)); }
   const ok = Module.ccall('web_load', 'number', ['string'], ['/rom.3dsx']);
   log('web_load ' + rom + ' -> ' + ok);
   post('loaded', { rom, ok, ...mem(), ua: navigator.userAgent });

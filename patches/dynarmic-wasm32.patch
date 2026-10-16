@@ -36,10 +36,10 @@ index b234cd2..9ffbb3c 100644
          target_link_libraries(dynarmic PRIVATE rt)
 diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
 new file mode 100644
-index 0000000..7a85537
+index 0000000..6fc15d3
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_interface.cpp
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,352 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -111,6 +111,12 @@ index 0000000..7a85537
 +// Drops all compiled blocks: a fresh table (old blocks keep a reference to the old one but are never entered again).
 +EM_JS(void, jit_js_clear, (int id), { Module.jit.impls[id].table = new WebAssembly.Table({ element: 'anyfunc', initial: 256 }); });
 +
++// Breadcrumb for hang diagnosis: the message reaches the native app even if the page then spins forever.
++EM_JS(void, jit_js_crumb, (int kind, int pc, int x), {
++    const n = typeof window !== 'undefined' && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda;
++    if (n) n.postMessage(JSON.stringify({ type: 'crumb', k: kind, pc: pc >>> 0, x: x >>> 0 }));
++});
++
 +namespace Dynarmic::A32 {
 +
 +struct Jit::Impl {
@@ -148,15 +154,19 @@ index 0000000..7a85537
 +    static Impl* I(u32 ctx) { return reinterpret_cast<Impl*>(static_cast<uintptr_t>(ctx)); }
 +
 +    // ----- host functions called from generated code -----
++    static u32 Crumbs() { static const u32 n = std::getenv("JIT_CRUMB") ? static_cast<u32>(std::atoi(std::getenv("JIT_CRUMB"))) : 0; return n; }
++    u32 crumb_n = 0;
++    static inline bool hc_on = false;   // helper crumbs: switched on once JIT_CRUMBH blocks have been compiled (so the log is not flooded from the start)
++    static void HC(u32 kind, u32 va, u32 c) { if (hc_on) jit_js_crumb(10 + kind, va, I(c)->st.regs[15]); }
 +    static bool Trace() { static const bool t = std::getenv("JIT_TRACE") != nullptr && std::getenv("JIT_TRACE")[0] == '2'; return t; }
-+    static u32 H_r8(u32 c, u32 va) { if (Trace()) std::fprintf(stderr, "[jit] r8  %08x pc=%08x\n", va, I(c)->st.regs[15]); return I(c)->conf.callbacks->MemoryRead8(va); }
-+    static u32 H_r16(u32 c, u32 va) { if (Trace()) std::fprintf(stderr, "[jit] r16 %08x\n", va); return I(c)->conf.callbacks->MemoryRead16(va); }
-+    static u32 H_r32(u32 c, u32 va) { if (Trace()) std::fprintf(stderr, "[jit] r32 %08x\n", va); return I(c)->conf.callbacks->MemoryRead32(va); }
-+    static u64 H_r64(u32 c, u32 va) { return I(c)->conf.callbacks->MemoryRead64(va); }
-+    static void H_w8(u32 c, u32 va, u32 v) { I(c)->conf.callbacks->MemoryWrite8(va, static_cast<u8>(v)); }
-+    static void H_w16(u32 c, u32 va, u32 v) { I(c)->conf.callbacks->MemoryWrite16(va, static_cast<u16>(v)); }
-+    static void H_w32(u32 c, u32 va, u32 v) { I(c)->conf.callbacks->MemoryWrite32(va, v); }
-+    static void H_w64(u32 c, u32 va, u64 v) { I(c)->conf.callbacks->MemoryWrite64(va, v); }
++    static u32 H_r8(u32 c, u32 va) { HC(0, va, c); if (Trace()) std::fprintf(stderr, "[jit] r8  %08x pc=%08x\n", va, I(c)->st.regs[15]); return I(c)->conf.callbacks->MemoryRead8(va); }
++    static u32 H_r16(u32 c, u32 va) { HC(1, va, c); if (Trace()) std::fprintf(stderr, "[jit] r16 %08x\n", va); return I(c)->conf.callbacks->MemoryRead16(va); }
++    static u32 H_r32(u32 c, u32 va) { HC(2, va, c); if (Trace()) std::fprintf(stderr, "[jit] r32 %08x\n", va); return I(c)->conf.callbacks->MemoryRead32(va); }
++    static u64 H_r64(u32 c, u32 va) { HC(3, va, c); return I(c)->conf.callbacks->MemoryRead64(va); }
++    static void H_w8(u32 c, u32 va, u32 v) { HC(4, va, c); I(c)->conf.callbacks->MemoryWrite8(va, static_cast<u8>(v)); }
++    static void H_w16(u32 c, u32 va, u32 v) { HC(5, va, c); I(c)->conf.callbacks->MemoryWrite16(va, static_cast<u16>(v)); }
++    static void H_w32(u32 c, u32 va, u32 v) { HC(6, va, c); I(c)->conf.callbacks->MemoryWrite32(va, v); }
++    static void H_w64(u32 c, u32 va, u64 v) { HC(7, va, c); I(c)->conf.callbacks->MemoryWrite64(va, v); }
 +
 +    template<typename T, typename RD>
 +    static T ExclusiveRead(Impl* i, u32 va, RD rd) {
@@ -183,7 +193,7 @@ index 0000000..7a85537
 +            s.ticks_left = s.cycles_to_run;
 +        }
 +    }
-+    static void H_svc(u32 c, u32 imm) { auto* i = I(c); if (std::getenv("JIT_TRACE")) std::fprintf(stderr, "[jit] svc %02x r0=%08x r1=%08x r2=%08x sp=%08x\n", imm, i->st.regs[0], i->st.regs[1], i->st.regs[2], i->st.regs[13]); WithTicks(i, [&] { i->conf.callbacks->CallSVC(imm); }); }
++    static void H_svc(u32 c, u32 imm) { auto* i = I(c); if (Crumbs() != 0) jit_js_crumb(3, i->st.regs[15], imm); if (std::getenv("JIT_TRACE")) std::fprintf(stderr, "[jit] svc %02x r0=%08x r1=%08x r2=%08x sp=%08x\n", imm, i->st.regs[0], i->st.regs[1], i->st.regs[2], i->st.regs[13]); WithTicks(i, [&] { i->conf.callbacks->CallSVC(imm); }); }
 +    static void H_exc(u32 c, u32 pc, u32 ex) { auto* i = I(c); WithTicks(i, [&] { i->conf.callbacks->ExceptionRaised(pc, static_cast<Exception>(ex)); }); }
 +    static void H_interp(u32 c, u32 pc, u32 n) { auto* i = I(c); WithTicks(i, [&] { i->conf.callbacks->InterpreterFallback(pc, n); }); }
 +    static void H_isb(u32 c) { I(c)->conf.callbacks->InstructionSynchronizationBarrierRaised(); }
@@ -202,8 +212,10 @@ index 0000000..7a85537
 +    template<typename F>
 +    static auto Fp(u32 c, u32 fpcr, F f) {
 +        auto* i = I(c);
++        if (hc_on) jit_js_crumb(20, i->st.regs[15], fpcr);   // 20 = entering a soft-float helper
 +        FP::FPSR sr{i->st.fpsr};
 +        auto r = f(FP::FPCR{fpcr}, sr);
++        if (hc_on) jit_js_crumb(21, i->st.regs[15], fpcr);   // 21 = left it
 +        i->st.fpsr = sr.Value();
 +        return r;
 +    }
@@ -252,7 +264,9 @@ index 0000000..7a85537
 +        const LocationDescriptor loc{IR::LocationDescriptor{key}};
 +        static const bool trace = std::getenv("JIT_TRACE") != nullptr;
 +        if (trace) std::fprintf(stderr, "[jit] translate pc=%08x thumb=%d fpscr=%08x\n", loc.PC(), loc.TFlag() ? 1 : 0, loc.FPSCR().Value());
++        if (Crumbs() != 0) jit_js_crumb(6, loc.PC(), 0);   // 6 = about to translate
 +        IR::Block ir = Translate(loc, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
++        if (Crumbs() != 0) jit_js_crumb(7, loc.PC(), 0);   // 7 = translated, optimizing
 +        Optimization::A32GetSetElimination(ir, {});
 +        Optimization::DeadCodeElimination(ir);
 +        Optimization::ConstantPropagation(ir);
@@ -270,8 +284,10 @@ index 0000000..7a85537
 +        opt.chain = !no_chain;
 +        opt.chain_tail = chain_tail;
 +        opt.fast_fp = !slow_fp;
++        if (const char* m = std::getenv("JIT_FPMASK")) opt.fast_fp_mask = static_cast<u32>(std::strtoul(m, nullptr, 0));   // bit per kind: 1 add, 2 sub, 4 mul, 8 div, 16 sqrt, 32 cmp
 +        UserConfig emit_conf = conf;
 +        if (no_fastmem) { emit_conf.wasm_read_table = nullptr; emit_conf.wasm_write_table = nullptr; }
++        if (Crumbs() != 0) jit_js_crumb(8, loc.PC(), 0);   // 8 = optimized, emitting wasm
 +        auto res = Backend::Wasm::EmitA32Block(ir, emit_conf, opt);
 +        if (!res.ok()) {
 +            char buf[64];
@@ -281,10 +297,18 @@ index 0000000..7a85537
 +            return -1;
 +        }
 +        const u32 slot = next_slot++;
++        { static const u32 hc_after = std::getenv("JIT_CRUMBH") ? static_cast<u32>(std::atoi(std::getenv("JIT_CRUMBH"))) : 0xFFFFFFFFu; if (slot >= hc_after) hc_on = true; }
++        if (Crumbs() != 0) jit_js_crumb(1, loc.PC(), slot);   // 1 = compiled a block
++        if (const char* d = std::getenv("JIT_DUMP"); d && static_cast<u32>(std::strtoul(d, nullptr, 16)) == loc.PC()) {   // JIT_DUMP=<guest pc, hex>: write that block's module to jit-dump-<slot>.wasm
++            char fn[64]; std::snprintf(fn, sizeof fn, "jit-dump-%u.wasm", slot);
++            if (FILE* f = std::fopen(fn, "wb")) { std::fwrite(res.bytes.data(), 1, res.bytes.size(), f); std::fclose(f); }
++            std::fprintf(stderr, "[jit] dumped slot %u pc=%08x (%zu bytes) to %s\n", slot, loc.PC(), res.bytes.size(), fn);
++        }
 +        if (jit_js_compile(js_id, static_cast<int>(slot), res.bytes.data(), static_cast<int>(res.bytes.size())) < 0) {
 +            last_error = "WebAssembly module rejected";
 +            return -1;
 +        }
++        if (Crumbs() != 0) jit_js_crumb(4, loc.PC(), slot);   // 4 = compile finished
 +        cache[key] = slot;
 +        InstallLink(key, slot);
 +        return static_cast<int>(slot);
@@ -312,12 +336,15 @@ index 0000000..7a85537
 +    s.chain_depth = 0;
 +
 +    while (static_cast<s64>(s.ticks_left) > 0 && s.halt == 0) {
++        const u32 slots_before = impl->next_slot;
 +        const int h = impl->GetBlock();
++        if (Impl::Crumbs() != 0 && impl->next_slot != slots_before && h >= 0) jit_js_crumb(5, s.regs[15], static_cast<u32>(h));   // 5 = about to run a freshly compiled block
 +        if (h < 0) {
 +            s.halt |= static_cast<u32>(HaltReason::UserDefined8);
 +            break;
 +        }
 +        s.chain_depth = 0;
++        if (const u32 ce = Impl::hc_on ? 1u : Impl::Crumbs(); ce != 0 && (++impl->crumb_n % ce) == 0) jit_js_crumb(2, s.regs[15], impl->crumb_n);   // 2 = dispatch
 +        jit_js_run(impl->js_id, h, static_cast<int>(reinterpret_cast<uintptr_t>(&s)));
 +        if (impl->invalidate_pending) {
 +            impl->invalidate_pending = false;
@@ -506,10 +533,10 @@ index 0000000..95cbcd9
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.cpp b/src/dynarmic/backend/wasm/emit_a32.cpp
 new file mode 100644
-index 0000000..7150167
+index 0000000..7197326
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.cpp
-@@ -0,0 +1,1528 @@
+@@ -0,0 +1,1549 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -523,7 +550,9 @@ index 0000000..7150167
 +#include <cstddef>
 +#include <cstring>
 +#include <map>
++#include <cstdlib>
 +#include <unordered_map>
++#include <unordered_set>
 +
 +#include <boost/variant.hpp>
 +#include <mcl/bit/bit_field.hpp>
@@ -590,18 +619,36 @@ index 0000000..7150167
 +        Fail("unsupported IR value type " + std::to_string(static_cast<int>(t)));
 +        return I32;
 +    }
-+    u32 Tmp(ValType t) {
++    // Scratch locals are recycled between IR instructions (a handler's temporaries are dead once it returns), which keeps big blocks
++    // from ending up with hundreds of locals. Locals that represent an IR value (Set / Alias) or are shared across instructions are
++    // never recycled.
++    std::vector<u32> free_locals[256];   // indexed by ValType byte
++    std::vector<u32> scratch_log;        // temporaries handed out while emitting the current instruction
++    std::unordered_set<u32> pinned;
++    u32 FreshLocal(ValType t) {
 +        extra_locals.push_back(t);
 +        return static_cast<u32>(extra_locals.size());  // +1 for the parameter, -1 for zero-based
 +    }
++    u32 Tmp(ValType t) {
++        u32 l;
++        if (!recycle_off && !free_locals[t].empty()) { l = free_locals[t].back(); free_locals[t].pop_back(); }
++        else l = FreshLocal(t);
++        scratch_log.push_back(l);
++        return l;
++    }
++    void RecycleScratch() {
++        for (u32 l : scratch_log) if (!pinned.count(l)) free_locals[extra_locals[l - 1]].push_back(l);
++        scratch_log.clear();
++    }
++    const bool recycle_off = std::getenv("JIT_NORECYCLE") != nullptr;
 +    // Pops the stack top into a fresh local that represents `inst`.
 +    u32 Set(const IR::Inst* inst) {
-+        const u32 l = Tmp(WT(inst->GetType()));
++        const u32 l = FreshLocal(WT(inst->GetType()));
 +        c.LocalSet(l);
 +        local_of[inst] = l;
 +        return l;
 +    }
-+    void Alias(const IR::Inst* inst, u32 local) { local_of[inst] = local; }
++    void Alias(const IR::Inst* inst, u32 local) { local_of[inst] = local; pinned.insert(local); }
 +    void Ld(const IR::Value& v) {
 +        if (v.IsImmediate()) {
 +            switch (v.GetType()) {
@@ -819,6 +866,7 @@ index 0000000..7150167
 +
 +        for (auto& inst : block) {
 +            EmitInst(&inst);
++            RecycleScratch();
 +            if (!error.empty()) return;
 +        }
 +
@@ -1266,7 +1314,7 @@ index 0000000..7150167
 +            c.I32Store(kOffGE);
 +            return;
 +        case Opcode::A32SetCheckBit:
-+            if (check_bit_local < 0) check_bit_local = static_cast<int>(Tmp(I32));
++            if (check_bit_local < 0) check_bit_local = static_cast<int>(FreshLocal(I32));
 +            Ld(inst->GetArg(0));
 +            c.LocalSet(static_cast<u32>(check_bit_local));
 +            return;
@@ -1784,7 +1832,7 @@ index 0000000..7150167
 +
 +    // kind: 0 add, 1 sub, 2 mul, 3 div, 4 sqrt
 +    bool FastFp32(IR::Inst* inst, int kind) {
-+        if (!opt.fast_fp) return false;
++        if (!opt.fast_fp || !((opt.fast_fp_mask >> kind) & 1)) return false;
 +        const u32 fpcr = Fpcr();
 +        const int rm = (fpcr >> 22) & 3;
 +        const bool fz = (fpcr >> 24) & 1;
@@ -1879,7 +1927,7 @@ index 0000000..7150167
 +
 +    // VCMP: with no NaN involved the result is a plain ordered comparison of the (flushed) operands.
 +    bool FastCompare32(IR::Inst* inst) {
-+        if (!opt.fast_fp) return false;
++        if (!opt.fast_fp || !((opt.fast_fp_mask >> 5) & 1)) return false;
 +        const u32 fpcr = Fpcr();
 +        const bool fz = (fpcr >> 24) & 1;
 +        const u32 ra = Tmp(I32), rb = Tmp(I32);
@@ -2040,10 +2088,10 @@ index 0000000..7150167
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.h b/src/dynarmic/backend/wasm/emit_a32.h
 new file mode 100644
-index 0000000..d1f6550
+index 0000000..988a0df
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.h
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,67 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + */
@@ -2099,6 +2147,7 @@ index 0000000..d1f6550
 +    bool chain = false;
 +    bool chain_tail = false;  ///< true: wasm tail calls (return_call_indirect); false: nested call_indirect with a depth limit
 +    u32 chain_depth_limit = 160;
++    u32 fast_fp_mask = 0x3f;   ///< which inline VFP ops are enabled (bit per kind: add, sub, mul, div, sqrt, cmp) - for bisecting engine problems
 +    bool fast_fp = false;   ///< inline VFP for round-to-nearest / round-to-zero modes (exception flags are not accumulated on this path)
 +};
 +struct LinkEntry {

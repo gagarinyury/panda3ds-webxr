@@ -19,3 +19,4 @@ run/*/
 ios/Site/
 ios/*.xcodeproj/
 ios/build/
+web/block-*.wasm

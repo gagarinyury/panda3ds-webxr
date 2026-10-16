@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>wasm block test</title>
+<body style="background:#111;color:#8f8;font:13px ui-monospace,monospace"><pre id="o">starting…</pre>
+<script>
+// Runs one dumped JIT block (?f=block-122820.wasm) in isolation with stub helpers, to see whether WebKit itself hangs on it (compile or first call).
+const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda;
+const post = (type, o) => { if (native) native.postMessage(JSON.stringify({ type, ...o })); };
+const params = new URLSearchParams(location.search);
+const file = params.get('f') || 'block-122820.wasm', reps = +params.get('reps') || 3, rv = (+params.get('rv') || 0) | 0, every = +params.get('every') || 1;
+const out = document.getElementById('o');
+const log = (s) => { out.textContent += '\n' + s; post('log', { name: 'blocktest', msg: s }); };
+(async () => {
+  const bytes = new Uint8Array(await (await fetch(file)).arrayBuffer());
+  log('loaded ' + file + ' ' + bytes.length + ' bytes');
+  const mem = new WebAssembly.Memory({ initial: 2400 });   // the page table the block reads sits at 149749808
+  const table = new WebAssembly.Table({ element: 'anyfunc', initial: 256 });
+  let r32 = 0, w32 = 0;
+  const imports = { e: { m: mem, t: table, r32: (c, a) => { r32++; return rv; }, w32: (c, a, v) => { w32++; } } };
+  post('blocktest_step', { step: 'compile' });
+  const mod = new WebAssembly.Module(bytes);
+  for (const i of WebAssembly.Module.imports(mod)) if (i.kind === 'function' && !imports.e[i.name]) imports.e[i.name] = () => rv;   // any other helper: stub returning 0
+  log('compiled; imports=' + WebAssembly.Module.imports(mod).map((i) => i.name).join(','));
+  const inst = new WebAssembly.Instance(mod, imports);
+  log('instantiated');
+  for (let i = 0; i < reps; i++) {
+    if (i % every === 0) post('blocktest_step', { step: 'call', i });
+    let res; try { res = inst.exports.b(4096); } catch (e) { res = 'trap: ' + e.message; }
+    if (i < 3 || i % every === 0) log('call ' + i + ' -> ' + res + ' r32=' + r32 + ' w32=' + w32);
+  }
+  post('done', { name: 'blocktest', frames: 0, fps: 0, avgMs: 0, worstMs: 0, late: 0, hitches: 0, blocks: 1, jitKB: 0, wasmMB: 0, topLit: 0, bottomLit: 0, errors: [] });
+})().catch((e) => { log('error ' + e); post('error', { msg: String(e) }); });
+</script>
