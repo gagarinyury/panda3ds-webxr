@@ -34,22 +34,19 @@ f.src = `/web/index.html?rom=${rom}&gl=1&name=${name}-inner${extra}`;
   for (const k of drawNames) P[k] = function (...a) { draws++; return O[k].apply(this, a); };   // counting wrappers stay installed for the whole run
 
   const noop = (names, extraCount) => { const s = {}; for (const k of names) { s[k] = P[k]; P[k] = function () { if (extraCount && drawNames.includes(k)) draws++; }; } return () => { for (const k in s) P[k] = s[k]; }; };
+  // upload byte counters (what the guest-side renderer pushes to the GPU per frame)
+  let bytesUbo = 0, bytesVtx = 0, bytesIdx = 0, uploads = 0;
+  const bsd = O.bufferSubData;
+  P.bufferSubData = function (t, off, d) { uploads++; const n = arguments.length >= 5 ? arguments[4] : d.byteLength; /* Emscripten passes (target, off, HEAPU8, srcOffset, length): the real size is the 5th argument */ if (t === 35345) bytesUbo += n; else if (t === 34962) bytesVtx += n; else if (t === 34963) bytesIdx += n; return bsd.apply(this, arguments); };
+  const skipTarget = (target) => { const prev = P.bufferSubData; P.bufferSubData = function (t, off, d) { if (t === target) { uploads++; return; } return prev.apply(this, arguments); }; return () => { P.bufferSubData = prev; }; };
   const EXP = {
     baseline: () => () => {},
-    'no draw calls': () => noop(drawNames, true),
-    'viewport 1x1 (no pixels)': () => { const s = P.viewport; P.viewport = function () { return O.viewport.call(this, 0, 0, 1, 1); }; return () => { P.viewport = s; }; },
-    'textures frozen': () => { const s = P.bindTexture, seen = new Map(); P.bindTexture = function (t, h) { if (!seen.has(t) && h) seen.set(t, h); return O.bindTexture.call(this, t, seen.get(t) || h); }; return () => { P.bindTexture = s; }; },
-    'blending off': () => { const s = P.enable; O.disable.call(gl, gl.BLEND); P.enable = function (c) { if (c === gl.BLEND) return; return O.enable.call(this, c); }; return () => { P.enable = s; }; },
-    'no framebuffer switches': () => noop(['bindFramebuffer', 'framebufferTexture2D']),
-    'no uniform buffer binds': () => noop(['bindBufferRange']),
-    'no vertex uploads': () => noop(['bufferSubData', 'bufferData']),
-    'no clears': () => noop(['clear', 'clearBufferfv', 'clearBufferfi', 'clearBufferiv', 'clearBufferuiv']),
     'baseline (again)': () => () => {},
   };
 
   const results = [];
   for (const [label, apply] of Object.entries(EXP)) {
-    const undo = apply();
+    bytesUbo = bytesVtx = bytesIdx = uploads = 0; const undo = apply();
     const orig = w.Module._web_frame, recs = [], queries = []; let k = 0; const wall0 = performance.now();
     w.Module._web_frame = function () {
       if (k >= nMeasure) return orig();
@@ -65,7 +62,7 @@ f.src = `/web/index.html?rom=${rom}&gl=1&name=${name}-inner${extra}`;
     queries.forEach((qo) => gl.deleteQuery(qo));
     const heavy = recs.map((r, i) => ({ ...r, gpu: gpu[i] })).filter((r) => r.draws >= 20);   // frames that actually render
     const res = {
-      experiment: label, wallMsPerFrame: +(wall / nMeasure).toFixed(1), emuMsMean: +(sum(recs.map((r) => r.ms)) / nMeasure).toFixed(1),
+      experiment: label, uboKBperFrame: +(bytesUbo / 1024 / nMeasure).toFixed(0), vertexKBperFrame: +(bytesVtx / 1024 / nMeasure).toFixed(0), indexKBperFrame: +(bytesIdx / 1024 / nMeasure).toFixed(0), uploadsPerFrame: +(uploads / nMeasure).toFixed(0), wallMsPerFrame: +(wall / nMeasure).toFixed(1), emuMsMean: +(sum(recs.map((r) => r.ms)) / nMeasure).toFixed(1),
       renderFrames: heavy.length, drawsPerRenderFrame: heavy.length ? Math.round(sum(heavy.map((r) => r.draws)) / heavy.length) : 0,
       gpuMsPerRenderFrame: heavy.filter((r) => r.gpu !== null).length ? +(sum(heavy.filter((r) => r.gpu !== null).map((r) => r.gpu)) / heavy.filter((r) => r.gpu !== null).length).toFixed(1) : null,
     };

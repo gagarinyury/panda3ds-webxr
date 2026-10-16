@@ -357,10 +357,10 @@ index 5ada30e..12b1028 100644
  		}
  	} else {  // If we're sleeping for >= 0 ns
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
-index 659a1e1..cd12852 100644
+index 659a1e1..afb5df1 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
 +++ b/src/core/renderer_gl/renderer_gl.cpp
-@@ -58,15 +58,20 @@ void RendererGL::reset() {
+@@ -58,22 +58,30 @@ void RendererGL::reset() {
  
  void RendererGL::initGraphicsContextInternal() {
  	gl.reset();
@@ -387,7 +387,21 @@ index 659a1e1..cd12852 100644
  
  	compileDisplayShader();
  	// Create stream buffers for vertex, index and uniform buffers
-@@ -422,6 +427,9 @@ void RendererGL::updateFogLUT() {
+-	static constexpr usize hwIndexBufferSize = 2_MB;
+-	static constexpr usize hwVertexBufferSize = 16_MB;
+-	static constexpr usize hwShaderUniformUBOSize = 4_MB;
+-	static constexpr usize shadergenFragmentUBOSize = 4_MB;
++	// Sizes matter on WebGL2/ANGLE-Metal: a write into a buffer that the GPU still uses costs about as much as copying the whole buffer
++	// (measured on Super Mario 3D Land: 16 MB vertex ring = ~0.4 ms per draw although only ~300 bytes are written per draw), so keep the rings small.
++	// A ring only has to hold the draws between two wraps (orphaning on wrap is cheap).
++	static constexpr usize hwIndexBufferSize = 256_KB;
++	static constexpr usize hwVertexBufferSize = 1_MB;
++	static constexpr usize hwShaderUniformUBOSize = 256_KB;
++	static constexpr usize shadergenFragmentUBOSize = 256_KB;
+ 
+ 	hwIndexBuffer = StreamBuffer::Create(GL_ELEMENT_ARRAY_BUFFER, hwIndexBufferSize);
+ 	hwVertexBuffer = StreamBuffer::Create(GL_ARRAY_BUFFER, hwVertexBufferSize);
+@@ -422,6 +430,9 @@ void RendererGL::updateFogLUT() {
  }
  
  void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> vertices) {
@@ -397,7 +411,7 @@ index 659a1e1..cd12852 100644
  	// The fourth type is meant to be "Geometry primitive". TODO: Find out what that is
  	static constexpr std::array<OpenGL::Primitives, 4> primTypes = {
  		OpenGL::Triangle,
-@@ -722,7 +730,7 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
+@@ -722,7 +733,7 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
  			return blankTexture;
  		}
  
@@ -406,7 +420,7 @@ index 659a1e1..cd12852 100644
  		Texture& newTex = textureCache.add(tex);
  		newTex.decodeTexture(textureData);
  
-@@ -1018,16 +1026,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -1018,16 +1029,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  		}
  	}
  
@@ -620,10 +634,10 @@ index 04fadfc..c232e61 100644
  
  out vec2 UV;
 diff --git a/third_party/duckstation/gl/stream_buffer.cpp b/third_party/duckstation/gl/stream_buffer.cpp
-index b7a4060..52cbda4 100644
+index b7a4060..33d5e7b 100644
 --- a/third_party/duckstation/gl/stream_buffer.cpp
 +++ b/third_party/duckstation/gl/stream_buffer.cpp
-@@ -23,22 +23,36 @@ void OpenGLStreamBuffer::SetDebugName(std::string_view name) {
+@@ -23,22 +23,49 @@ void OpenGLStreamBuffer::SetDebugName(std::string_view name) {
  }
  
  namespace {
@@ -635,6 +649,19 @@ index b7a4060..52cbda4 100644
  
 -		MappingResult Map(u32 alignment, u32 min_size) override { return MappingResult{static_cast<void*>(m_cpu_buffer), 0, 0, m_size / alignment}; }
 +		MappingResult Map(u32 alignment, u32 min_size) override {
++			if (min_size > m_size) {
++				// One request is bigger than the whole ring (the rings are kept small on purpose: on WebGL2/ANGLE-Metal a write costs about as much as
++				// copying the entire buffer). Grow once, with headroom, instead of writing past the end of the CPU copy.
++				const u32 new_size = Common::alignUp(min_size * 2, 64 * 1024);
++				u8* new_cpu = static_cast<u8*>(Common::alignedMalloc(new_size, 32));
++				if (!new_cpu) Panic("Failed to grow CPU storage for GL buffer");
++				Common::alignedFree(m_cpu_buffer);
++				m_cpu_buffer = new_cpu;
++				m_size = new_size;
++				m_position = 0;
++				glBindBuffer(m_target, m_buffer_id);
++				glBufferData(m_target, m_size, nullptr, GL_STREAM_DRAW);
++			}
 +			u32 offset = m_position > 0 ? Common::alignUp(m_position, alignment) : 0;
 +			if (offset + min_size > m_size) {
 +				// Wrap around: orphan the buffer to let previous in-flight GPU reads finish without stalling
@@ -666,7 +693,7 @@ index b7a4060..52cbda4 100644
  
  		static std::unique_ptr<OpenGLStreamBuffer> Create(GLenum target, u32 size) {
  			glGetError();
-@@ -65,6 +79,8 @@ namespace {
+@@ -65,6 +92,8 @@ namespace {
  		}
  
  		u8* m_cpu_buffer;
@@ -675,7 +702,7 @@ index b7a4060..52cbda4 100644
  	};
  
  	// Uses BufferData() to orphan the buffer after every update. Used on Mali where BufferSubData forces a sync.
-@@ -273,16 +289,5 @@ std::unique_ptr<OpenGLStreamBuffer> OpenGLStreamBuffer::Create(GLenum target, u3
+@@ -273,16 +302,5 @@ std::unique_ptr<OpenGLStreamBuffer> OpenGLStreamBuffer::Create(GLenum target, u3
  		if (buf) return buf;
  	}
  
@@ -693,12 +720,6 @@ index b7a4060..52cbda4 100644
 -#endif
  }
 \ No newline at end of file
-diff --git a/third_party/dynarmic b/third_party/dynarmic
---- a/third_party/dynarmic
-+++ b/third_party/dynarmic
-@@ -1 +1 @@
--Subproject commit e77b1ba0b7da7cbe93021b01a663acfe7c4dd516
-+Subproject commit e77b1ba0b7da7cbe93021b01a663acfe7c4dd516-dirty
 diff --git a/third_party/host_memory/host_memory.cpp b/third_party/host_memory/host_memory.cpp
 index 2aaa2f1..95a17d9 100644
 --- a/third_party/host_memory/host_memory.cpp
@@ -718,45 +739,3 @@ index 2aaa2f1..95a17d9 100644
  		try {
  			// Fastmem is disabled, just throw bad alloc and use the VirtualBuffer fallback.
  			if (!enableFastmem) {
-diff --git a/third_party/opengl/opengl.hpp b/third_party/opengl/opengl.hpp
-index 607815f..3c81a55 100644
---- a/third_party/opengl/opengl.hpp
-+++ b/third_party/opengl/opengl.hpp
-@@ -602,22 +602,36 @@ namespace OpenGL {
- 	static void disableScissor() { glDisable(GL_SCISSOR_TEST); }
- 	static void enableBlend() { glEnable(GL_BLEND); }
- 	static void disableBlend() { glDisable(GL_BLEND); }
-+#ifndef __EMSCRIPTEN__
- 	static void enableLogicOp() { glEnable(GL_COLOR_LOGIC_OP); }
- 	static void disableLogicOp() { glDisable(GL_COLOR_LOGIC_OP); }
-+#else
-+	static void enableLogicOp() {}
-+	static void disableLogicOp() {}
-+#endif
- 	static void enableDepth() { glEnable(GL_DEPTH_TEST); }
- 	static void disableDepth() { glDisable(GL_DEPTH_TEST); }
- 	static void enableStencil() { glEnable(GL_STENCIL_TEST); }
- 	static void disableStencil() { glDisable(GL_STENCIL_TEST); }
- 
-+#ifndef __EMSCRIPTEN__
- 	static void enableClipPlane(GLuint index) { glEnable(GL_CLIP_DISTANCE0 + index); }
- 	static void disableClipPlane(GLuint index) { glDisable(GL_CLIP_DISTANCE0 + index); }
-+#else
-+	static void enableClipPlane(GLuint) {}
-+	static void disableClipPlane(GLuint) {}
-+#endif
- 
- 	static void setDepthFunc(DepthFunc func) { glDepthFunc(static_cast<GLenum>(func)); }
- 	static void setColourMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) { glColorMask(r, g, b, a); }
- 	static void setDepthMask(GLboolean mask) { glDepthMask(mask); }
- 
- 	// TODO: Add a proper enum for this
--	static void setLogicOp(GLenum op) { glLogicOp(op); }
-+	static void setLogicOp(GLenum op) {
-+#ifndef __EMSCRIPTEN__
-+		glLogicOp(op);
-+#endif
-+	}
- 
-     enum Primitives {
-         Triangle = GL_TRIANGLES,
