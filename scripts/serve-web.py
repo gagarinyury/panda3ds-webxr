@@ -14,6 +14,9 @@ class H(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get('Content-Length', 0)); body = self.rfile.read(n)
         name = self.path.split('name=')[-1].split('&')[0]
+        if self.path.startswith('/live'):
+            with open(os.path.join(OUT, 'live-' + name + '.jsonl'), 'ab') as f: f.write(body + b'\n')
+            self.send_response(204); self.end_headers(); return
         if self.path.startswith('/report-png'): open(os.path.join(OUT, name + '.png'), 'wb').write(body)
         else: open(os.path.join(OUT, name + '.json'), 'wb').write(body); print('REPORT', name, body[:300].decode(errors='replace'), flush=True)
         self.send_response(200); self.end_headers(); self.wfile.write(b'ok')

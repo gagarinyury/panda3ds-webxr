@@ -70,7 +70,32 @@ const native = window.webkit && window.webkit.messageHandlers && window.webkit.m
 const logEl = document.getElementById('log');
 const errors = [];
 const FRAME_MS = 1000 / 59.83;                              // 3DS refresh rate
-const post = (type, payload) => { if (native) native.postMessage(JSON.stringify({ type, name, ...payload })); };
+const liveOn = !native0() && params.get('live') !== '0' && location.hostname === '127.0.0.1';   // dev server: the page reports its panel to /live once a second so the developer sees what the person at the screen sees
+if (liveOn && window.WebGL2RenderingContext) {   // dev only: report WebGL calls that block the page for more than 25 ms (shader link/first-use, big allocations)
+  const P = WebGL2RenderingContext.prototype;
+  for (const k of ['linkProgram', 'compileShader', 'useProgram', 'drawElements', 'drawArrays', 'drawRangeElements', 'texImage2D', 'texStorage2D', 'bufferData', 'getProgramParameter', 'getShaderParameter', 'validateProgram']) {
+    const orig = P[k]; if (!orig) continue;
+    P[k] = function (...a) { const t = performance.now(); const r = orig.apply(this, a); const d = performance.now() - t; if (d > 25) post('log', { msg: '[gl] slow ' + k + ' ' + d.toFixed(0) + ' ms at frame ' + (typeof frames === 'number' ? frames : '?') }); return r; };
+  }
+}
+if (liveOn) {   // dev only: a fixed CPU benchmark (compare browsers) and the time per emulated frame spent inside WebGL calls, sent to /live
+  setTimeout(() => { const t = performance.now(); let x = 0; for (let i = 0; i < 2e7; i++) x += i % 7; post('log', { msg: '[gl] bench js 2e7 loop ' + (performance.now() - t).toFixed(0) + ' ms (x=' + x + ') ua=' + navigator.userAgent.slice(-40) }); }, 3000);
+  if (window.WebGL2RenderingContext) {
+    const P = WebGL2RenderingContext.prototype, acc = { ms: 0, n: 0 }, per = {};
+    for (const k of Object.getOwnPropertyNames(P)) {
+      let d; try { d = P[k]; } catch (e) { continue; } if (typeof d !== 'function' || k === 'constructor' || /^get|^is|^create|^delete/.test(k)) continue;
+      const orig = d; P[k] = function (...a) { const t = performance.now(); const r = orig.apply(this, a); const dt = performance.now() - t; acc.ms += dt; acc.n++; const o = per[k] || (per[k] = { n: 0, ms: 0 }); o.n++; o.ms += dt; return r; };
+    }
+    let lastF = 0;
+    setInterval(() => { const f = typeof frames === 'number' ? frames : 0, df = f - lastF; if (df < 20) return; lastF = f; const top = Object.entries(per).sort((a, b) => b[1].ms - a[1].ms).slice(0, 4).map(([k, v]) => k + ' ' + (v.ms / df).toFixed(1) + 'ms x' + Math.round(v.n / df)).join(', ');
+      post('log', { msg: '[gl] frame ' + f + ': GL calls ' + (acc.ms / df).toFixed(1) + ' ms/frame, ' + Math.round(acc.n / df) + ' calls/frame; top: ' + top }); acc.ms = 0; acc.n = 0; for (const k in per) delete per[k]; }, 4000);
+  }
+}
+function native0() { return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda); }
+const post = (type, payload) => {
+  if (native) native.postMessage(JSON.stringify({ type, name, ...payload }));
+  else if (liveOn && (type === 'tick' || (type === 'log' && /\[jit\]|\[gl\]|FATAL|panic/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
+};
 const log = (s, err) => {
   const lines = logEl.textContent.split('\n');
   if (lines.length > 50) logEl.textContent = lines.slice(-40).join('\n') + '\n';

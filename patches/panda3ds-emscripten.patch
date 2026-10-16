@@ -9,7 +9,7 @@ index 2cd57e6..802dd96 100644
 -	url = https://github.com/azahar-emu/dynarmic.git
 +	url = https://github.com/gagarinyury/dynarmic.git
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2f4d9df..97217c4 100644
+index 2f4d9df..e7148bc 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -177,7 +177,10 @@ if(ENABLE_DISCORD_RPC AND NOT ANDROID)
@@ -59,7 +59,7 @@ index 2f4d9df..97217c4 100644
 +    add_executable(AlberWeb "${CMAKE_SOURCE_DIR}/../web/web_main.cpp")
 +    target_link_libraries(AlberWeb PRIVATE AlberCore)
 +    target_link_options(AlberWeb PRIVATE -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456 -sMAXIMUM_MEMORY=2147483648 -sSTACK_SIZE=2097152 -sFORCE_FILESYSTEM=1
-+        -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1 -lidbfs.js
++        -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sGL_TRACK_ERRORS=0 -lidbfs.js
 +        "-sEXPORTED_FUNCTIONS=_main,_web_init,_web_load,_web_frame,_web_screen,_web_key,_web_touch,_web_circle" "-sEXPORTED_RUNTIME_METHODS=FS,ccall,cwrap,HEAPU8,stringToNewUTF8,ENV" --profiling-funcs)
 +endif()
 +
@@ -983,10 +983,18 @@ index 04fadfc..c232e61 100644
  
  out vec2 UV;
 diff --git a/third_party/duckstation/gl/stream_buffer.cpp b/third_party/duckstation/gl/stream_buffer.cpp
-index b7a4060..33d5e7b 100644
+index b7a4060..a6cf773 100644
 --- a/third_party/duckstation/gl/stream_buffer.cpp
 +++ b/third_party/duckstation/gl/stream_buffer.cpp
-@@ -23,22 +23,49 @@ void OpenGLStreamBuffer::SetDebugName(std::string_view name) {
+@@ -1,6 +1,7 @@
+ // SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+ // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+ 
++#include <cstdlib>
+ #include "gl/stream_buffer.h"
+ 
+ #include <array>
+@@ -23,22 +24,49 @@ void OpenGLStreamBuffer::SetDebugName(std::string_view name) {
  }
  
  namespace {
@@ -1042,7 +1050,7 @@ index b7a4060..33d5e7b 100644
  
  		static std::unique_ptr<OpenGLStreamBuffer> Create(GLenum target, u32 size) {
  			glGetError();
-@@ -65,6 +92,8 @@ namespace {
+@@ -65,6 +93,8 @@ namespace {
  		}
  
  		u8* m_cpu_buffer;
@@ -1051,7 +1059,26 @@ index b7a4060..33d5e7b 100644
  	};
  
  	// Uses BufferData() to orphan the buffer after every update. Used on Mali where BufferSubData forces a sync.
-@@ -273,16 +302,5 @@ std::unique_ptr<OpenGLStreamBuffer> OpenGLStreamBuffer::Create(GLenum target, u3
+@@ -72,7 +102,17 @@ namespace {
+ 	  public:
+ 		~BufferDataStreamBuffer() override { Common::alignedFree(m_cpu_buffer); }
+ 
+-		MappingResult Map(u32 alignment, u32 min_size) override { return MappingResult{static_cast<void*>(m_cpu_buffer), 0, 0, m_size / alignment}; }
++		MappingResult Map(u32 alignment, u32 min_size) override {
++			if (min_size > m_size) {  // one request is bigger than the CPU copy: grow it
++				const u32 new_size = Common::alignUp(min_size * 2, 64 * 1024);
++				u8* new_cpu = static_cast<u8*>(Common::alignedMalloc(new_size, 32));
++				if (!new_cpu) Panic("Failed to grow CPU storage for GL buffer");
++				Common::alignedFree(m_cpu_buffer);
++				m_cpu_buffer = new_cpu;
++				m_size = new_size;
++			}
++			return MappingResult{static_cast<void*>(m_cpu_buffer), 0, 0, m_size / alignment};
++		}
+ 
+ 		u32 Unmap(u32 used_size) override {
+ 			if (used_size == 0) return 0;
+@@ -273,16 +313,14 @@ std::unique_ptr<OpenGLStreamBuffer> OpenGLStreamBuffer::Create(GLenum target, u3
  		if (buf) return buf;
  	}
  
@@ -1063,10 +1090,18 @@ index b7a4060..33d5e7b 100644
 -		return BufferDataStreamBuffer::Create(target, size);
 -	}
 -
- 	return BufferSubDataStreamBuffer::Create(target, size);
--#else
+-	return BufferSubDataStreamBuffer::Create(target, size);
++	// WebGL2 / ANGLE-Metal: a glBufferSubData into a ring buffer the GPU is still reading makes ANGLE copy the whole buffer, ~30-40 us per call (500+ calls a frame: 15-25 ms,
++	// measured in a visible Chromium window; invisible in headless Chrome, where the GPU is idle). Orphaning with glBufferData(size, data) per use costs ~1 us.
++	// Env GL_STREAM_SUBDATA=1 restores the ring for comparison; GL_STREAM_BUFFERDATA=1 forces the orphaning path on other platforms.
++#ifdef __EMSCRIPTEN__
++	static const bool useBufferData = std::getenv("GL_STREAM_SUBDATA") == nullptr;
+ #else
 -	return BufferDataStreamBuffer::Create(target, size);
--#endif
++	static const bool useBufferData = std::getenv("GL_STREAM_BUFFERDATA") != nullptr;
+ #endif
++	if (useBufferData) return BufferDataStreamBuffer::Create(target, size);
++	return BufferSubDataStreamBuffer::Create(target, size);
  }
 \ No newline at end of file
 diff --git a/third_party/host_memory/host_memory.cpp b/third_party/host_memory/host_memory.cpp
