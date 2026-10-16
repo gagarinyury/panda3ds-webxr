@@ -22,3 +22,8 @@ ios/build/
 web/block-*.wasm
 run/homebrew/
 /config.toml
+run/mk7*
+run/*.3ds
+run/*.cia
+run/*.cxi
+config.toml

@@ -21,12 +21,22 @@ Not affiliated with Nintendo or Apple. No game data, firmware or keys are includ
 | A homebrew `.3dsx` runs through the real Panda3DS core with the WASM JIT (headless, Node) | ✅ [`guest/hello.c`](guest/hello.c): prints via `svcOutputDebugString`, 2 M-iteration hash loop and a VFP computation; both results equal the native reference bit for bit (`scripts/test-hello.sh`) |
 | A real **libctru** homebrew (devkitPro `3ds-examples/graphics/printing/hello-world`, built with the official devkitARM image) runs to its main loop and draws its text | ✅ [`assets/ctr-hello-world-top.png`](assets/ctr-hello-world-top.png) is the emulated top screen (`scripts/test-ctr-hello.sh`) |
 | **In a real browser**: `web/index.html` drives the core from `requestAnimationFrame` and paints both screens on canvases. Verified in **Safari 27.0.1 (WebKit)** and Comet (Chromium 154) | ✅ libctru hello-world: 120 frames, avg 1.16 ms/frame in Safari, same 520 lit pixels as Node. 8 more examples (opus/vorbis decoding, box2d, sockets, threads, input…) run in Safari with pixel counts identical to Node |
-| `WKWebView` on an iPhone | — (the same WebKit engine as Safari, not yet measured on the device) |
-| 3D rendering (PICA → WebGL2) | — (the browser build uses the Null renderer: only presented framebuffers are shown) |
+| `WKWebView` on an iPhone | ✅ iPhone Air, iOS 27.0.1: the app in [`ios/`](ios) (WKWebView, `panda://` scheme) runs the same page; homebrew examples and commercial-game tests below |
+| 3D rendering (PICA → WebGL2) | ✅ Panda3DS's OpenGL ES renderer on WebGL2: 20/20 `graphics/gpu` examples draw on iPhone and in Comet (a few look suspicious and are not verified against native Panda) |
 
 <p align="center"><img src="assets/ctr-hello-world-top.png" width="400" alt="Emulated 3DS top screen: Hello World!"></p>
 
 The only place Panda3DS touches Dynarmic is `Dynarmic::A32::Jit` (see `src/core/CPU/cpu_dynarmic.cpp`), so the new backend plugs in behind the same interface and Panda3DS itself stays almost untouched.
+
+## Current state (Oct 2026)
+
+Verified by running it (not by reading the code):
+
+- **Homebrew:** on the iPhone 53 of the 58 devkitPro examples ran at the last full device run (5 stop on a Panda `[FATAL]`); Doom (PrBoom+ 3DS with Freedoom) runs; Minicraft, GameYob and others start.
+- **A commercial game** (Super Mario 3D Land, an own dump that is not included): boots, menus ~60 fps, 3D scenes 25–40 fps on a Mac (Comet/Chrome) and on the iPhone. About 50–60 thousand JIT modules / 33 MB of generated WASM, 256 MB guest memory + the 512 MB image streamed into MEMFS.
+- **Rendering fixes found with it:** Panda's `GLStateManager::setColourMask` assigned the arguments to the wrong side (no mask was ever applied), WebGL2 has no logic ops (NOOP/CLEAR are emulated), clip planes, depth/stencil write bits, a stream-buffer size that cost 14 → 59 fps in menus on ANGLE/Metal.
+- **Not done:** audio (the DSP firmware is a zero stub), analog stick, full save states (game saves persist in IndexedDB with `persist=1`), exact frame pacing: the browser delivers frames unevenly (`requestAnimationFrame` 8–20 Hz under load), see `docs/`.
+- **Where the time goes** (Mario, 3D scene, MacBook): emulator ~6 ms, GPU ~4–9 ms, yet ~25 ms per frame: the rest is the main thread waiting inside WebGL calls (buffer uploads, state calls). Tested and ruled out: texture cache misses, lighting-table uploads, 8-bit indices.
 
 ## Speed (Node 25 / V8, guest MIPS, higher is better)
 
@@ -68,10 +78,11 @@ All 58 devkitPro examples: mean 16.9 → 2.3 ms/frame, worst 24.2 → 5.6 ms/fra
 
 ```sh
 git clone https://github.com/emscripten-core/emsdk.git && ./emsdk/emsdk install latest && ./emsdk/emsdk activate latest
-git clone --recurse-submodules https://github.com/wheremyfoodat/Panda3DS.git
-git -C Panda3DS apply ../patches/panda3ds-emscripten.patch
-git -C Panda3DS/third_party/dynarmic apply ../../../patches/dynarmic-wasm32.patch
+# the forks carry all changes (branches wasm / wasm32):
+git clone --recurse-submodules -b wasm https://github.com/gagarinyury/Panda3DS.git
+# or, from upstream: git clone --recurse-submodules https://github.com/wheremyfoodat/Panda3DS.git, then
+#   git -C Panda3DS apply ../patches/panda3ds-emscripten.patch && git -C Panda3DS/third_party/dynarmic apply ../../../patches/dynarmic-wasm32.patch
 source emsdk/emsdk_env.sh && scripts/build-core.sh && cmake --build build-core
 ```
 
-The patches were made against Panda3DS `92e53d2` and Dynarmic `e77b1ba`.
+Forks: [Panda3DS `wasm`](https://github.com/gagarinyury/Panda3DS/tree/wasm), [dynarmic `wasm32`](https://github.com/gagarinyury/dynarmic/tree/wasm32). The patches were made against Panda3DS `92e53d2` and Dynarmic `e77b1ba` (`scripts/regen-patches.sh`).
