@@ -5,7 +5,7 @@ Needs scripts/serve-web.py running on 8777. Closes the Safari window after each 
 import json, os, subprocess, sys, time, statistics as S
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, 'run', 'web-reports')
-BASE = 'rom=/run/commercial/sm3dl.3ds&gl=1'
+BASE = 'rom=/run/commercial/sm3dl.3ds&gl=1' + ('&' + os.environ['ROUTE'] if os.environ.get('ROUTE') else '')   # ROUTE: e.g. ff=9800&fscript=A:900,A:1200 (presses A by frame number; fast-forwards to frame ff)
 SECS = float(os.environ.get('SECS', 55))
 for arg in sys.argv[1:]:
     name, q = arg.split('=', 1)
@@ -19,10 +19,10 @@ for arg in sys.argv[1:]:
     rows = []
     try: rows = [json.loads(l) for l in open(path) if l.strip()]
     except Exception: pass
-    t = [r for r in rows if r.get('type') == 'tick' and r.get('frames', 0) > 600]
-    if t:
-        f = lambda k: round(S.mean(r[k] for r in t if r.get(k) is not None), 1)
-        print(f"{name:14s} n={len(t):3d} speed {f('speed'):5} loop {f('loopHz'):5} paint {f('paintHz') if t[0].get('paintHz') is not None else '-':>5} tick {f('tickMs') if t[0].get('tickMs') is not None else '-':>5} emu {f('emuMs'):5}", flush=True)
-    else:
-        logs = [r.get('msg') for r in rows if r.get('type') == 'log'][-8:]
-        print(f'{name:14s} no ticks after frame 600; logs: {logs}', flush=True)
+    t = [r for r in rows if r.get('type') == 'tick' and r.get('frames', 0) > 600 and r.get('ticksFr') is not None]
+    def fmt(g):
+        if not g: return 'none'
+        f = lambda k: round(S.mean(r[k] for r in g if r.get(k) is not None), 1)
+        return f"n={len(g):3d} speed {f('speed'):5} loop {f('loopHz'):5} tick {f('tickMs'):5} emu {f('emuMs'):5} ticks/fr {round(S.mean(r['ticksFr'] for r in g)/1000)}k"
+    light = [r for r in t if r['ticksFr'] < 400000]; heavy = [r for r in t if r['ticksFr'] >= 400000 and r['speed'] < 80]
+    print(f"{name:12s} light: {fmt(light)}\n{'':12s} heavy: {fmt(heavy)}", flush=True)

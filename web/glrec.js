@@ -12,11 +12,13 @@
   const bound = { tex: [], unit: 0, buf: {}, fbo: {}, rb: null };
   let rec = null, done = false, referenced = null, draws = 0;
   const SKIP = /^(get|is|checkFramebufferStatus)/, KEEP_GET = /^getUniformLocation$/;
-  const bytesFor = (w, h) => Math.max(16, w * h * 16);   // generous: the data is thrown away at replay
+  const CH = { 0x1908: 4, 0x1907: 3, 0x8227: 2, 0x1903: 1, 0x1902: 1, 0x84F9: 1, 0x1906: 1, 0x1909: 1, 0x190A: 2, 0x8D94: 4, 0x8D98: 3, 0x8228: 1 };   // RGBA RGB RG RED DEPTH_COMPONENT DEPTH_STENCIL ALPHA LUMINANCE LUMINANCE_ALPHA RGBA_INTEGER ...
+  const TS = { 0x1401: 1, 0x1400: 1, 0x1403: 2, 0x1402: 2, 0x1405: 4, 0x1404: 4, 0x1406: 4, 0x140B: 2 }, PACKED = { 0x8033: 2, 0x8034: 2, 0x8363: 2, 0x84FA: 4, 0x8368: 4, 0x8C3E: 4, 0x8DAD: 8, 0x8D61: 4 };
+  const texBytes = (name, a) => { const sub = name === 'texSubImage2D', w = a[sub ? 4 : 3] | 0, h = a[sub ? 5 : 4] | 0, fmt = a[6], type = a[7]; const bpp = PACKED[type] || (CH[fmt] || 4) * (TS[type] || 1); return Math.max(16, w * h * bpp); };   // texImage2D(t,l,ifmt,w,h,b,fmt,type,..) / texSubImage2D(t,l,x,y,w,h,fmt,type,..)
   const enc = (name, a, i, args) => {
     if (a === null || a === undefined || typeof a === 'number' || typeof a === 'boolean' || typeof a === 'string') return a;
     if (ArrayBuffer.isView(a)) {
-      if (/^(texImage|texSubImage|readPixels|compressedTex)/.test(name)) return { z: bytesFor(args[3] || 64, args[4] || 64) };   // content irrelevant
+      if (/^(texImage|texSubImage|readPixels|compressedTex)/.test(name)) return { z: /^tex/.test(name) ? texBytes(name, args) : 4096 };   // the content is irrelevant, only the size is kept
       let bytes;
       if (a.byteLength > (8 << 20)) {   // Emscripten passes the whole heap plus (srcOffset, length) for buffer uploads
         const es = a.BYTES_PER_ELEMENT, off = args[3] | 0, len = args[4];   // bufferData(target, view, usage, srcOffset, length) / bufferSubData(target, dstOffset, view, srcOffset, length)

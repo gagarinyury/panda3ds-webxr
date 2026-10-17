@@ -87,3 +87,12 @@ Native Panda3DS (`cmake -S Panda3DS -B build-native -DCMAKE_BUILD_TYPE=Release -
 - Block link table 16 k -> 64 k entries on the phone, W1-1: returns to the dispatcher 9178 -> 3431 per frame, guest ms 7.0 -> 6.5-6.8, speed 44 -> 42.6, loop 22 -> 21.4 Hz: **the dispatcher is not what costs the time**.
 - Fast-forward (`ff=<frame>`) works but the phone only gains ~1.4x over real time; one run of it was killed by iOS (WebContent terminated at frame ~3950, 63.9 k JIT modules).
 - Audio: the "slow down below the middle of the buffer" regulator (pitch drop) was tried and removed on the user's feedback; back to +/-1.5 %.
+
+### preserveDrawingBuffer off by default (17 Oct, night) - the first thing that moved the heavy scene in WebKit
+
+Real Safari on the Mac, one automatic route (`ff=9800` + `A` every 300 frames, `scripts/safari-ab.py` with `ROUTE=...`), heavy 3D scene (~800-1000 k guest ticks per frame, the W1 world map / level), loop rate of the page:
+- default (canvas copied on every present): 13.1, 16.1 Hz; no draws at all: 39.9 Hz (so the draws and what comes with them are the cost); old ring buffer 6.1; pool 10.6.
+- `GL_NOPRESERVE` (no copy of the drawing buffer): 19.5, 46.3, 31.2 Hz (emulator time per frame 7.1 / 4.6 / 5.1 ms against 10.4 / 7.2).
+- In a light scene it makes no difference (49 Hz either way; phone, demo scene: 53.4 vs 53.5), which is why the first phone test said "no effect".
+- Now the default: `preserveDrawingBuffer` is only set with env `GL_PRESERVE` (the page adds it for `shots=`, `glrec` and desktop `report=1` test runs, or `preserve=1`). On the phone, `report=1` runs no longer have a readable canvas at the end (lit-pixel counts read as 0).
+- An earlier replay of a recorded frame in Safari (944 draws) gave 5 Hz only because the recorder over-estimated texture upload sizes (27 MB of zeros per frame); fixed (`texBytes`), the result was discarded.

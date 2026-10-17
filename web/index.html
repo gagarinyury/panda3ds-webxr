@@ -99,7 +99,10 @@ const GLW = side ? 720 : 400, GLH = side ? 240 : 480;
 const useTimer = (params.get('pace') || (innerWidth >= 900 ? 'timer' : 'raf')) === 'timer';   // emulation clock from a timer (independent of how often the browser repaints) on desktop; rAF on phones
 const scale = parseFloat(params.get('scale') || '1.5');                // on-page size of the screens relative to the 3DS native size
 const dbg = params.get('dbg') === '1';                      // post every frame (find where a crash happens)
-const envs = params.get('env') || '';                       // e.g. env=JIT_NOCHAIN:1,JIT_NOFASTMEM:1
+// The WebGL canvas does NOT preserve its drawing buffer by default any more (in WebKit the copy made on every present halves the loop rate in heavy scenes: Safari, W1 world map,
+// 13-16 Hz with it, 19-46 Hz without). It is kept (GL_PRESERVE) only where something reads the picture back: shots=, glrec, and report runs in a desktop browser (tests).
+const needPreserve = params.get('preserve') === '1' || (params.get('shots') || '0') !== '0' || !!params.get('glrec') || (params.get('report') === '1' && !window.webkit);
+const envs = (params.get('env') || '') + (needPreserve ? ',GL_PRESERVE:1' : '');   // e.g. env=JIT_NOCHAIN:1,JIT_NOFASTMEM:1
 const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda;
 const logEl = document.getElementById('log');
 const errors = [];
