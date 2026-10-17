@@ -588,7 +588,7 @@ index 092f94a..86100b0 100644
  			while (sampleBuffer.size() + frame.size() * 2 > sampleBuffer.Capacity()) {
  				std::this_thread::sleep_for(std::chrono::milliseconds{1});
 diff --git a/src/core/audio/miniaudio_device.cpp b/src/core/audio/miniaudio_device.cpp
-index 8e2a1e7..22242f3 100644
+index 8e2a1e7..af8c4e9 100644
 --- a/src/core/audio/miniaudio_device.cpp
 +++ b/src/core/audio/miniaudio_device.cpp
 @@ -1,6 +1,8 @@
@@ -600,7 +600,7 @@ index 8e2a1e7..22242f3 100644
  #include <cmath>
  #include <cstring>
  #include <limits>
-@@ -103,8 +105,50 @@ void MiniAudioDevice::init(Samples& samples, bool safe) {
+@@ -103,8 +105,53 @@ void MiniAudioDevice::init(Samples& samples, bool safe) {
  		}
  
  		s16* output = reinterpret_cast<ma_int16*>(out);
@@ -614,7 +614,10 @@ index 8e2a1e7..22242f3 100644
 +			static u64 calls = 0, starvedTotal = 0;
 +			const double target = double(self->samples->Capacity()) / 2.0 * 0.5;   // in frames: half of the buffer
 +			const double fill = double(self->samples->size()) / 2.0;
-+			const double ratio = 1.0 + std::clamp((fill - target) / target, -1.0, 1.0) * 0.015;
++			// Above the middle of the buffer: +1.5 % at most (the emulator is a little faster than real time). Below it: follow the emulator down to 55 % of the
++			// nominal speed, so a phone that runs the game at 35-42 fps plays slowed-down sound (lower pitch) instead of repeating the last sample, which is the buzzing.
++			const double x = std::clamp((fill - target) / target, -1.0, 1.0);
++			const double ratio = x >= 0.0 ? 1.0 + x * 0.015 : 1.0 + x * 0.45;
 +			float volume = self->audioSettings.getVolume();
 +			if (volume > 1.0f) volume = 0.6f + 20.0f * std::log10(volume);
 +			else if (self->audioSettings.volumeCurve == AudioDeviceConfig::VolumeCurve::Cubic) volume = volume * volume * volume;
@@ -857,7 +860,7 @@ index 5ada30e..12b1028 100644
  		}
  	} else {  // If we're sleeping for >= 0 ns
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
-index 659a1e1..3a44cb1 100644
+index 659a1e1..42d2446 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
 +++ b/src/core/renderer_gl/renderer_gl.cpp
 @@ -1,5 +1,12 @@
@@ -1006,7 +1009,7 @@ index 659a1e1..3a44cb1 100644
  	glActiveTexture(GL_TEXTURE0);
  }
  
-@@ -422,6 +481,32 @@ void RendererGL::updateFogLUT() {
+@@ -422,6 +481,51 @@ void RendererGL::updateFogLUT() {
  }
  
  void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> vertices) {
@@ -1014,6 +1017,25 @@ index 659a1e1..3a44cb1 100644
 +	if (skipDraws) return;
 +	// A game may draw before it has configured the framebuffer (size 0, or uninitialised memory in a non-zeroed heap): skip such draws
 +	if (fbSize[0] == 0 || fbSize[1] == 0 || fbSize[0] > 4096 || fbSize[1] > 4096) return;
++
++	// Measuring aid (env GL_SKIP_BOTTOM_DRAWS=1): do not draw into a lower-screen sized colour buffer (240x320) at all
++	static const bool skipBottomDraws = std::getenv("GL_SKIP_BOTTOM_DRAWS") != nullptr;
++	if (skipBottomDraws && fbSize[0] == 240 && fbSize[1] == 320) return;
++
++	// Debug aid (env GL_DRAW_STATS=1): which colour buffers (address, size) the draws go to; prints every 600 draws
++	static const bool dbgDraws = std::getenv("GL_DRAW_STATS") != nullptr;
++	if (dbgDraws) {
++		static std::map<std::string, int> seenBufs;
++		static int nDraws = 0;
++		char key[120];
++		std::snprintf(key, sizeof key, "loc=%08x fb=%ux%u verts=%s", colourBufferLoc, unsigned(fbSize[0]), unsigned(fbSize[1]), vertices.size() <= 6 ? "<=6" : (vertices.size() <= 60 ? "<=60" : ">60"));
++		seenBufs[key]++;
++		if (++nDraws % 600 == 0) {
++			for (auto& [k, v] : seenBufs) std::printf("[drawbuf] %4d x %s\n", v, k.c_str());
++			std::printf("[drawbuf] ---\n");
++			seenBufs.clear();
++		}
++	}
 +
 +	// Debug aid (env GL_DEBUG_STATE=1): print the most frequent combinations of the output-merger registers every 3000 draws
 +	static const bool dbgState = std::getenv("GL_DEBUG_STATE") != nullptr;
@@ -1039,7 +1061,7 @@ index 659a1e1..3a44cb1 100644
  	// The fourth type is meant to be "Geometry primitive". TODO: Find out what that is
  	static constexpr std::array<OpenGL::Primitives, 4> primTypes = {
  		OpenGL::Triangle,
-@@ -449,12 +534,14 @@ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> v
+@@ -449,12 +553,14 @@ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> v
  	poop->fbo.bind(OpenGL::DrawAndReadFramebuffer);
  
  	const u32 depthControl = regs[PICA::InternalRegs::DepthAndColorMask];
@@ -1056,7 +1078,7 @@ index 659a1e1..3a44cb1 100644
  
  	static constexpr std::array<GLenum, 8> depthModes = {
  		GL_NEVER, GL_ALWAYS, GL_EQUAL, GL_NOTEQUAL, GL_LESS, GL_LEQUAL, GL_GREATER, GL_GEQUAL,
-@@ -563,7 +650,8 @@ void RendererGL::display() {
+@@ -563,7 +669,8 @@ void RendererGL::display() {
  	const u32 bottomScreenAddr = externalRegs[bottomActiveFb == 0 ? Framebuffer1AFirstAddr : Framebuffer1ASecondAddr];
  	auto bottomScreen = colourBufferCache.findFromAddress(bottomScreenAddr);
  
@@ -1066,7 +1088,7 @@ index 659a1e1..3a44cb1 100644
  		bottomScreen->get().texture.bind();
  		OpenGL::setViewport(40, 0, 320, 240);
  		OpenGL::draw(OpenGL::TriangleStrip, 4);
-@@ -722,7 +810,12 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
+@@ -722,7 +829,12 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
  			return blankTexture;
  		}
  
@@ -1080,7 +1102,7 @@ index 659a1e1..3a44cb1 100644
  		Texture& newTex = textureCache.add(tex);
  		newTex.decodeTexture(textureData);
  
-@@ -938,6 +1031,7 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -938,6 +1050,7 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  
  	// Upload uniform data to our shader's UBO
  	PICA::FragmentUniforms uniforms;
@@ -1088,7 +1110,7 @@ index 659a1e1..3a44cb1 100644
  	uniforms.alphaReference = Helpers::getBits<8, 8>(regs[InternalRegs::AlphaTestConfig]);
  
  	// Set up the texenv buffer color
-@@ -955,6 +1049,9 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -955,6 +1068,9 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  		uniforms.clipCoords[1] = f24::fromRaw(regs[PICA::InternalRegs::ClipData1] & 0xffffff).toFloat32();
  		uniforms.clipCoords[2] = f24::fromRaw(regs[PICA::InternalRegs::ClipData2] & 0xffffff).toFloat32();
  		uniforms.clipCoords[3] = f24::fromRaw(regs[PICA::InternalRegs::ClipData3] & 0xffffff).toFloat32();
@@ -1098,7 +1120,7 @@ index 659a1e1..3a44cb1 100644
  	}
  
  	// Set up the constant color for the 6 TEV stages
-@@ -1018,16 +1115,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -1018,16 +1134,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  		}
  	}
  
@@ -1130,7 +1152,7 @@ index 659a1e1..3a44cb1 100644
  
  	if (usingAcceleratedShader) {
  		glBindBufferRange(
-@@ -1248,17 +1351,27 @@ void RendererGL::accelerateVertexUpload(ShaderUnit& shaderUnit, PICA::DrawAccele
+@@ -1248,17 +1370,27 @@ void RendererGL::accelerateVertexUpload(ShaderUnit& shaderUnit, PICA::DrawAccele
  
  	// Update index buffer if necessary
  	if (accel->indexed) {
