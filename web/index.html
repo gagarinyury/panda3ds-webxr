@@ -266,9 +266,14 @@ function applyLayout() {   // player skin: re-lay the screens out whenever the w
   const land = innerWidth > innerHeight * 1.25, touchy = de.classList.contains('coarse');
   if (window.Module && Module._web_layout && Module._web_layout_rect) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2); let cw, ch, layout, pct, mode;
-    if (touchy && land) { mode = 'ovl'; cw = innerWidth; ch = innerHeight; layout = 2; pct = window.__sizes && window.__sizes.top ? window.__sizes.top / 100 : Math.min(0.72, Math.max(0.5, 400 * (ch / 240) / cw)); }       // big top screen on the left, small bottom screen right, controls float over them
-    else if (land) { mode = 'flank'; cw = 400; ch = 480; layout = 0; pct = 0.5; }                                                                             // desktop: the CSS grid sizes the canvas; native 400x480, screens one above the other
-    else { mode = 'port'; const c = document.getElementById('ctl'), cs = c && getComputedStyle(c).display !== 'none' ? c.offsetHeight + 24 : 8; cw = innerWidth - 8; ch = Math.max(cw * 0.9, innerHeight - cs - 16); layout = 0; pct = window.__sizes && window.__sizes.top ? window.__sizes.top / 100 : 0.5; }   // one screen above the other, controls below
+    const side2 = () => { cw = innerWidth; ch = innerHeight; layout = land ? 2 : 0; pct = window.__sizes && window.__sizes.top ? window.__sizes.top / 100 : (land ? Math.min(0.72, Math.max(0.5, 400 * (ch / 240) / cw)) : 0.5); mode = 'ovl'; };
+    if (touchy && land) side2();                                                                                                                              // big top screen on the left, small bottom screen right, controls float over them
+    else if (land && innerWidth >= 700) { mode = 'flank'; cw = 400; ch = 480; layout = 0; pct = 0.5; }                                                         // desktop: the CSS grid sizes the canvas; native 400x480, screens one above the other
+    else {   // portrait, or a window too narrow for side columns: screens on top, controls below; if there is not enough room for both, the controls float over the picture
+      const shown = !de.classList.contains('noctl'), ub = document.querySelector('#ctl .abxy b'), u = (ub && parseFloat(getComputedStyle(ub).height)) || 46, cs = shown ? u * 7.1 + 44 : 8, avail = innerHeight - cs - 8;
+      if (shown && avail < 200) side2();
+      else { mode = 'port'; ch = Math.max(140, avail); cw = Math.min(innerWidth - 8, Math.round(ch * 400 / 480)); layout = 0; pct = window.__sizes && window.__sizes.top ? window.__sizes.top / 100 : 0.5; }
+    }
     de.classList.toggle('ovl', mode === 'ovl');
     if (mode === 'flank') { g.style.removeProperty('width'); g.style.removeProperty('height'); } else { g.style.setProperty('width', Math.round(cw) + 'px', 'important'); g.style.setProperty('height', Math.round(ch) + 'px', 'important'); }
     const W = mode === 'flank' ? 400 : Math.round(cw * dpr), H = mode === 'flank' ? 480 : Math.round(ch * dpr), key = mode + W + 'x' + H + ':' + pct.toFixed(3);
