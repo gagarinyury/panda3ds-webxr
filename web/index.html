@@ -43,6 +43,7 @@
   /* ---- player skin: the default for a visitor (no test parameters); dev=1 gives the diagnostic layout, dev=0 forces the player skin ---- */
   html.player body { background: #0d0f13; color: #e8ebf0; font: 15px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif; min-height: 100dvh; }
   html.player main { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100dvh; padding: 12px; box-sizing: border-box; gap: 0; }
+  html.player.started main { justify-content: flex-start; }
   html.player #stage { width: 100%; display: flex; flex-direction: column; align-items: center; }
   html.player #gl { margin: 0 auto; border-radius: 10px; box-shadow: 0 8px 40px rgba(0,0,0,.6); width: min(calc(100vw - 24px), calc((100dvh - 24px) * var(--w, 400) / var(--h, 480)), calc(var(--w, 400) * 3px)) !important; height: auto !important; }
   html.player #diag, html.player #pad, html.player #romtiny { display: none !important; }
@@ -70,12 +71,10 @@
   #pill i.mid { background: #e3a008; } #pill i.low { background: #f85149; }
   #pill u { text-decoration: none; opacity: .7; font-weight: 500; padding: 0 2px; }
   html.player.noctl #ctl { display: none !important; } html.player.noctl { --ctlh: 0px !important; }
-  html.player.started.ctl { --ctlh: 262px; }
   /* on-screen controller (player skin): circle pad, D-pad, ABXY, shoulders, Start/Select; every button shows the keyboard key that does the same */
   #ctl { display: none; width: min(100%, 760px); margin: 14px auto 0; padding: 0 4px; box-sizing: border-box; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: end; user-select: none; -webkit-user-select: none; touch-action: none; }
   html.player.started #ctl { display: grid; }
   html.player.started { --ctlh: 262px; }
-  @media (max-height: 640px) and (orientation: landscape) { html.player.started:not(.ctl) #ctl { display: none; } html.player.started:not(.ctl) { --ctlh: 0px; } html.player.started.ctl #ctl { display: grid; } }
   #ctl .col { display: flex; flex-direction: column; gap: 10px; }
   #ctl .left { align-items: flex-start; } #ctl .right { align-items: flex-end; } #ctl .mid { align-items: center; justify-content: flex-end; flex-direction: row; gap: 10px; padding-bottom: 8px; }
   #ctl b { position: relative; display: flex; align-items: center; justify-content: center; min-width: 46px; height: 46px; padding: 0 10px; box-sizing: border-box; border-radius: 12px; background: #232832; color: #e8ebf0; font: 700 16px system-ui; box-shadow: inset 0 -3px 0 rgba(0,0,0,.35); cursor: pointer; }
@@ -91,6 +90,17 @@
   #ctl .row2 { display: flex; gap: 14px; align-items: flex-end; }
   #ctl small.cap { font: 600 9.5px ui-monospace, Menlo, monospace; color: #7d8695; }
   html.player #gl { width: min(calc(100vw - 24px), calc((100dvh - 24px - var(--ctlh, 0px)) * var(--w, 400) / var(--h, 480)), calc(var(--w, 400) * 3px)) !important; }
+  /* landscape window: the two screens stacked in the middle, controls on both sides */
+  @media (min-aspect-ratio: 13/10) and (min-width: 760px) {
+    html.player.started { --ctlh: 0px; }
+    html.player.started main { justify-content: center; padding: 12px; }
+    html.player.started #stage { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: 1fr auto; align-items: center; justify-items: center; width: 100%; height: calc(100dvh - 24px); column-gap: 16px; }
+    html.player.started #gl { grid-column: 2; grid-row: 1 / span 2; width: min(calc(100vw - 580px), calc((100dvh - 24px) * var(--w, 400) / var(--h, 480))) !important; }
+    html.player.started #ctl { display: contents; }
+    html.player.started #ctl .left { grid-column: 1; grid-row: 1 / span 2; align-self: center; justify-self: end; }
+    html.player.started #ctl .right { grid-column: 3; grid-row: 1; align-self: end; justify-self: start; }
+    html.player.started #ctl .mid { grid-column: 3; grid-row: 2; justify-self: start; padding: 14px 0 0; }
+  }
 </style>
 <label id="romtiny" style="display:none">📂<input type="file" id="rom-file2" accept=".3ds,.cxi,.cci,.3dsx,.elf" style="display:none"></label>
 <div id="pill"><i></i><span id="pilltxt">starting</span><u id="ctlbtn" title="Show or hide the on-screen buttons">🎮</u><u id="infobtn" title="Show or hide details">ⓘ</u></div>
@@ -168,7 +178,7 @@ const ffTo = parseInt(params.get('ff') || '0');                // ff=6000: run f
 const fast = () => turbo || (ffTo > 0 && frames < ffTo);                 // run as fast as possible (benchmark) instead of real time
 const name = params.get('name') || 'run';
 const useGL = params.has('gl') ? params.get('gl') === '1' : !dev;                     // OpenGL ES renderer on a WebGL2 canvas instead of the Null renderer + 2D canvases
-const side = (params.get('layout') || (dev ? (innerWidth >= 900 ? 'side' : 'stack') : (innerWidth > innerHeight * 1.25 ? 'side' : 'stack'))) === 'side';   // both screens next to each other (720x240) or one above the other (400x480)
+const side = (params.get('layout') || (dev ? (innerWidth >= 900 ? 'side' : 'stack') : 'stack')) === 'side';   // both screens next to each other (720x240) or one above the other (400x480)
 const GLW = side ? 720 : 400, GLH = side ? 240 : 480;
 if (!dev) { document.documentElement.style.setProperty('--w', GLW); document.documentElement.style.setProperty('--h', GLH); }
 const useTimer = (params.get('pace') || (innerWidth >= 900 ? 'timer' : 'raf')) === 'timer';   // emulation clock from a timer (independent of how often the browser repaints) on desktop; rAF on phones
@@ -750,7 +760,7 @@ setInterval(renderDiag, 250);
 {   // player skin: one small status pill (fps, or the loading message) that opens the detailed panel
   const pill = document.getElementById('pill'), txt = document.getElementById('pilltxt'), dot = pill.querySelector('i');
   document.getElementById('infobtn').addEventListener('click', () => document.documentElement.classList.toggle('info'));
-  document.getElementById('ctlbtn').addEventListener('click', () => { const h = document.documentElement.classList, shown = getComputedStyle(document.getElementById('ctl')).display !== 'none'; if (shown) { h.remove('ctl'); h.add('noctl'); } else { h.add('ctl'); h.remove('noctl'); } });
+  document.getElementById('ctlbtn').addEventListener('click', () => document.documentElement.classList.toggle('noctl'));
   setInterval(() => {
     if (frames < 40) { const m = (document.getElementById('stats').textContent || '').replace(/^\s+/, ''); txt.textContent = m ? (m.length > 38 ? m.slice(0, 36) + '…' : m) : 'starting'; dot.className = 'mid'; return; }
     txt.textContent = Math.round(fpsNow) + ' fps'; dot.className = fpsNow >= 55 ? '' : fpsNow >= 40 ? 'mid' : 'low';
