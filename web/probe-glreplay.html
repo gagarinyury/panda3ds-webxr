@@ -107,6 +107,18 @@ function growBallast(total) {   // distinct tiny modules, each instantiated, kep
     ballastKeep.push(new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00, 0x0a, ...leb(code.length), ...code])), {}));
   }
 }
+const batchKeep = [];   // K block-functions per module/instance (the idea: one Module+Instance per batch of guest blocks); allExports = every block exported, else one dispatcher export
+function growBatched(total, K, allExports) {
+  const leb = (v) => { const o = []; do { let b = v & 0x7f; v >>>= 7; if (v) b |= 0x80; o.push(b); } while (v); return o; };
+  const sec = (id, body) => [id, ...leb(body.length), ...body];
+  for (let done = batchKeep.length * K; done < total; done += K) {
+    const bodies = []; for (let j = 0; j < K; j++) { const b = [0x00, 0x41, ...leb(done + j + 1), 0x0b]; bodies.push(...leb(b.length), ...b); }
+    const exp = []; const nexp = allExports ? K : 1;
+    for (let j = 0; j < nexp; j++) { const nm = 'b' + j; exp.push(nm.length, ...[...nm].map((c) => c.charCodeAt(0)), 0x00, ...leb(j)); }
+    const bytes = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, ...sec(1, [0x01, 0x60, 0x00, 0x01, 0x7f]), ...sec(3, [...leb(K), ...new Array(K).fill(0)]), ...sec(7, [...leb(nexp), ...exp]), ...sec(10, [...leb(K), ...bodies])]);
+    batchKeep.push(new WebAssembly.Instance(new WebAssembly.Module(bytes), {}));
+  }
+}
 function makeBallast(n) {
   const leb = (v) => { const o = []; do { let b = v & 0x7f; v >>>= 7; if (v) b |= 0x80; o.push(b); } while (v); return o; };
   const keep = []; const t0 = performance.now();
@@ -126,7 +138,7 @@ async function main() {
   say(`UA ${navigator.userAgent.slice(0, 90)} | frame ${data.frame}: ${data.calls.length} calls, ${data.draws} draws, ${data.objs.length} objects | pace ${PACE} sync ${SYNC} where ${WHERE}`);
   for (const v of VARIANTS) {
     if (v.f.includes('M') && !window.__mem) window.__mem = new WebAssembly.Memory({ initial: 4096 });
-    if (v.b) { if (v.f.includes('Q')) growModules(v.b); else if (v.f.includes('I')) growInstances(v.b); else growBallast(v.b); }
+    if (v.b) { if (v.f.includes('K') || v.f.includes('L')) growBatched(v.b, +(q.get('k') || 100), v.f.includes('L')); else if (v.f.includes('Q')) growModules(v.b); else if (v.f.includes('I')) growInstances(v.b); else growBallast(v.b); }
     let paint = 0, on = true; (function pr() { if (!on) return; paint++; requestAnimationFrame(pr); })();
     const cv = document.createElement('canvas'); cv.width = 400; cv.height = 480; cv.style.cssText = 'width:200px;height:240px;background:#000'; document.body.replaceChild(cv, document.querySelector('canvas'));
     const t0 = performance.now(); let res;
@@ -146,7 +158,7 @@ async function main() {
       w.terminate();
     }
     on = false; const sec = (performance.now() - t0) / 1000;
-    say(res.err ? `${v.n}: ERROR ${res.err}` : `${(v.n + ' [' + v.f + ' ' + (ballastKeep.length || modOnly.length || instOnly.length) + ']').padEnd(24)} loop ${(res.frames / res.sec).toFixed(1)} /s  page repaints ${(paint / sec).toFixed(1)} /s  js ${res.jsMs.toFixed(2)} ms/frame` + (SYNC ? `  GPU wait ${res.waitMs.toFixed(2)} ms/frame` : ''));
+    say(res.err ? `${v.n}: ERROR ${res.err}` : `${(v.n + ' [' + v.f + ' ' + (ballastKeep.length || modOnly.length || instOnly.length || batchKeep.length) + ']').padEnd(24)} loop ${(res.frames / res.sec).toFixed(1)} /s  page repaints ${(paint / sec).toFixed(1)} /s  js ${res.jsMs.toFixed(2)} ms/frame` + (SYNC ? `  GPU wait ${res.waitMs.toFixed(2)} ms/frame` : ''));
     await sleep(500);
   }
   say('DONE');

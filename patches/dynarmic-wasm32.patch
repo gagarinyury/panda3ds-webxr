@@ -36,10 +36,10 @@ index b234cd2..9ffbb3c 100644
          target_link_libraries(dynarmic PRIVATE rt)
 diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
 new file mode 100644
-index 0000000..4948dc6
+index 0000000..12ed228
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_interface.cpp
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,488 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -83,19 +83,26 @@ index 0000000..4948dc6
 +});
 +
 +// Compiles a block module and installs it in the Impl's function table at `slot`.
-+EM_JS(int, jit_js_compile, (int id, int slot, const uint8_t* p, int n), {
++// Every block module has the same header/type/import sections (see Emitter::Assemble), so the function entries of many blocks can be moved into ONE module:
++// in WebKit each live WebAssembly.Instance costs time on every frame (59 Hz with 10 k instances, 43 Hz with 40 k, 25 Hz with 70 k), the number of functions does not.
++// With batch > 0 every block first gets its own instance (it has to run now); after `batch` blocks their entries are packed into one module and the table
++// slots are pointed at its exports, which leaves the single-block instances to the garbage collector.
++EM_JS(int, jit_js_compile, (int id, int slot, const uint8_t* p, int n, int prefix, int off, int len, int batch), {
 +    try {
 +        const impl = Module.jit.impls[id];
 +        const tA = performance.now();
 +        const mod = new WebAssembly.Module(HEAPU8.slice(p, p + n));
 +        const tB = performance.now();
-+        const imports = { e: { m: wasmMemory, t: impl.table } };
-+        for (const imp of WebAssembly.Module.imports(mod)) {
-+            if (imp.kind === 'function') {
++        let imports = impl.imports;
++        if (!prefix || !imports) {   // prefix 0 = legacy layout: every module imports only what it uses, so the import object is built per module
++            imports = { e: { m: wasmMemory, t: impl.table, h: wasmTable } };
++            const fimps = WebAssembly.Module.imports(mod).filter((x) => x.kind === 'function');
++            for (const imp of fimps) {
 +                const f = Module.jit.helpers[imp.name];
 +                if (!f) throw new Error('missing helper ' + imp.name);
 +                imports.e[imp.name] = f;
 +            }
++            if (prefix) { impl.imports = imports; impl.nHelpers = fimps.length; }
 +        }
 +        const inst = new WebAssembly.Instance(mod, imports);
 +        const tC = performance.now();
@@ -105,6 +112,28 @@ index 0000000..4948dc6
 +        if (!impl.fnCache) impl.fnCache = [];
 +        impl.fnCache[slot] = inst.exports.b;
 +        impl.count = (impl.count || 0) + 1; impl.bytes = (impl.bytes || 0) + n;
++        if (batch > 0) {
++            if (!impl.prefix) impl.prefix = HEAPU8.slice(p, p + prefix);
++            (impl.pend || (impl.pend = [])).push({ slot, ent: HEAPU8.slice(p + off, p + off + len) });
++            if (impl.pend.length >= batch) {
++                const tD = performance.now(), pend = impl.pend; impl.pend = [];
++                const leb = (v) => { const o = []; do { let b = v & 0x7f; v >>>= 7; if (v) b |= 0x80; o.push(b); } while (v); return o; };
++                const sec = (idn, body) => [idn, ...leb(body.length), ...body];
++                const K = pend.length, nH = impl.nHelpers, enc = new TextEncoder();
++                const exps = [...leb(K)]; for (let j = 0; j < K; j++) { const nm = enc.encode('b' + j); exps.push(nm.length, ...nm, 0x00, ...leb(nH + j)); }
++                const parts = [impl.prefix, new Uint8Array(sec(3, [...leb(K), ...new Array(K).fill(0)])), new Uint8Array(sec(7, exps))];
++                let esz = 0; for (const x of pend) esz += x.ent.length;
++                const cbody = [...leb(K)], chead = [10, ...leb(cbody.length + esz)];   // section id, size, count, then the entries
++                const total = parts.reduce((a, x) => a + x.length, 0) + chead.length + cbody.length + esz;
++                const out = new Uint8Array(total); let o = 0;
++                for (const x of parts) { out.set(x, o); o += x.length; }
++                out.set(chead, o); o += chead.length; out.set(cbody, o); o += cbody.length;
++                for (const x of pend) { out.set(x.ent, o); o += x.ent.length; }
++                const binst = new WebAssembly.Instance(new WebAssembly.Module(out), impl.imports);
++                for (let j = 0; j < K; j++) { const f = binst.exports['b' + j]; impl.table.set(pend[j].slot, f); impl.fnCache[pend[j].slot] = f; }
++                impl.batches = (impl.batches || 0) + 1; T[3] += performance.now() - tD;   // [3] packing batches into one module
++            }
++        }
 +        return slot;
 +    } catch (e) {
 +        console.error('[jit] module failed:', e && e.message ? e.message : e);
@@ -122,7 +151,7 @@ index 0000000..4948dc6
 +EM_JS(void, jit_js_clear, (int id, int dropped), {
 +    const impl = Module.jit.impls[id];
 +    impl.table = new WebAssembly.Table({ element: 'anyfunc', initial: 256 });
-+    impl.fnCache = [];
++    impl.fnCache = []; impl.imports = null; impl.pend = [];
 +    if (!impl.flushes || impl.flushes < 3) { try { Module.printErr('[jit] cache flush #' + ((impl.flushes || 0) + 1) + ' dropping ' + dropped + ' blocks, called from: ' + (new Error().stack || '').split('\n').slice(1, 9).map((l) => { l = l.trim(); const k = l.indexOf(' ('); return k > 0 ? l.slice(3, k) : l; }).join(' < ')); } catch (e) {} }
 +    impl.flushes = (impl.flushes || 0) + 1; impl.droppedBlocks = (impl.droppedBlocks || 0) + dropped;   // diagnostics: how often the whole cache is thrown away, and how many blocks that wasted
 +});
@@ -148,7 +177,7 @@ index 0000000..4948dc6
 +        static bool registered = false;
 +        if (!registered) {
 +            registered = true;
-+#define REG(n, f) jit_js_register_helper(n, static_cast<int>(reinterpret_cast<uintptr_t>(&f)))
++#define REG(n, f) do { jit_js_register_helper(n, static_cast<int>(reinterpret_cast<uintptr_t>(&f))); for (size_t k_ = 0; k_ < std::size(Backend::Wasm::kHelpers); k_++) if (std::strcmp(Backend::Wasm::kHelpers[k_].name, n) == 0) helper_fn[k_] = static_cast<u32>(reinterpret_cast<uintptr_t>(&f)); } while (0)
 +            REG("r8", H_r8); REG("r16", H_r16); REG("r32", H_r32); REG("r64", H_r64);
 +            REG("w8", H_w8); REG("w16", H_w16); REG("w32", H_w32); REG("w64", H_w64);
 +            REG("xr8", H_xr8); REG("xr16", H_xr16); REG("xr32", H_xr32); REG("xr64", H_xr64);
@@ -166,6 +195,7 @@ index 0000000..4948dc6
 +    }
 +
 +    UserConfig conf;
++    inline static u32 helper_fn[std::size(Backend::Wasm::kHelpers)] = {};   // filled by REG: where each helper sits in the host's function table
 +    Backend::Wasm::A32JitState st;
 +    static constexpr u32 kLinkEntries = 1u << 16;   // was 1 << 14: with 16k entries hot blocks evicted each other (1579 returns to the dispatcher per frame in the title scene; 553 with 64k, 320 with 256k, whose 4 MB table did not make the guest time better on the Mac)
 +    std::unordered_map<u64, u32> cache;  // location descriptor -> slot in the function table
@@ -342,6 +372,8 @@ index 0000000..4948dc6
 +        opt.chain = !no_chain;
 +        opt.chain_tail = chain_tail;
 +        opt.fast_fp = !slow_fp;
++        opt.helper_fn = helper_fn;
++        { static const bool legacy = std::getenv("JIT_BATCH") && std::atoi(std::getenv("JIT_BATCH")) < 0; opt.legacy_layout = legacy; }   // JIT_BATCH=-1: the old one-module-per-block layout
 +        if (const char* m = std::getenv("JIT_FPMASK")) opt.fast_fp_mask = static_cast<u32>(std::strtoul(m, nullptr, 0));   // bit per kind: 1 add, 2 sub, 4 mul, 8 div, 16 sqrt, 32 cmp
 +        UserConfig emit_conf = conf;
 +        if (no_fastmem) { emit_conf.wasm_read_table = nullptr; emit_conf.wasm_write_table = nullptr; }
@@ -363,7 +395,8 @@ index 0000000..4948dc6
 +            if (FILE* f = std::fopen(fn, "wb")) { std::fwrite(res.bytes.data(), 1, res.bytes.size(), f); std::fclose(f); }
 +            std::fprintf(stderr, "[jit] dumped slot %u pc=%08x (%zu bytes) to %s\n", slot, loc.PC(), res.bytes.size(), fn);
 +        }
-+        if (jit_js_compile(js_id, static_cast<int>(slot), res.bytes.data(), static_cast<int>(res.bytes.size())) < 0) {
++        static const int batch = std::getenv("JIT_BATCH") ? std::max(0, std::atoi(std::getenv("JIT_BATCH"))) : 256;   // blocks packed into one WebAssembly instance (JIT_BATCH=0: off, -1: old one-module-per-block layout)
++        if (jit_js_compile(js_id, static_cast<int>(slot), res.bytes.data(), static_cast<int>(res.bytes.size()), static_cast<int>(res.prefix_len), static_cast<int>(res.code_off), static_cast<int>(res.code_len), batch) < 0) {
 +            last_error = "WebAssembly module rejected";
 +            return -1;
 +        }
@@ -432,6 +465,11 @@ index 0000000..4948dc6
 +        if (const u32 ce = Impl::hc_on ? 1u : Impl::Crumbs(); ce != 0 && (++impl->crumb_n % ce) == 0) jit_js_crumb(2, s.regs[15], impl->crumb_n);   // 2 = dispatch
 +        ++dispatches;
 +        jit_js_run(impl->js_id, h, static_cast<int>(reinterpret_cast<uintptr_t>(&s)));
++        // EXPERIMENT, off by default: every compiled block is a live WebAssembly.Instance, and in WebKit the cost of each live instance is paid on every frame
++        // (a replay of a fixed frame: 59 Hz with 10 k instances, 43 Hz with 40 k, 25 Hz with 70 k). JIT_MAX_BLOCKS=N throws the whole cache away at N blocks.
++        // Measured: N=12000 thrashes the heavy scene (2 Hz), N=25000 gave 11.5 Hz (one run) against 28-31 Hz uncapped, so a flush-all cap is not a fix.
++        static const u32 kLiveLimit = std::getenv("JIT_MAX_BLOCKS") ? static_cast<u32>(std::strtoul(std::getenv("JIT_MAX_BLOCKS"), nullptr, 10)) : 0u;
++        if (kLiveLimit != 0 && impl->next_slot >= kLiveLimit && !impl->invalidate_pending) impl->DropAllBlocks();
 +        if (impl->invalidate_pending) {
 +            impl->invalidate_pending = false;
 +            impl->DropAllBlocks();
@@ -631,10 +669,10 @@ index 0000000..95cbcd9
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.cpp b/src/dynarmic/backend/wasm/emit_a32.cpp
 new file mode 100644
-index 0000000..4f33ca4
+index 0000000..e6b5ea0
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.cpp
-@@ -0,0 +1,1556 @@
+@@ -0,0 +1,1632 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -646,6 +684,7 @@ index 0000000..4f33ca4
 +#include "dynarmic/backend/wasm/emit_a32.h"
 +
 +#include <cstddef>
++#include <iterator>
 +#include <cstring>
 +#include <map>
 +#include <cstdlib>
@@ -690,7 +729,7 @@ index 0000000..4f33ca4
 +    EmitResult Run() {
 +        EmitResult res;
 +        Generate();
-+        if (error.empty()) res.bytes = Assemble();
++        if (error.empty()) { res.bytes = opt.legacy_layout ? AssembleLegacy() : Assemble(); res.prefix_len = prefix_len; res.code_off = code_off; res.code_len = code_len; }
 +        res.error = error;
 +        return res;
 +    }
@@ -703,7 +742,7 @@ index 0000000..4f33ca4
 +    Code c;
 +    std::vector<u8> extra_locals;  // types of locals after the single parameter (the state pointer)
 +    std::unordered_map<const IR::Inst*, u32> local_of;
-+    std::vector<std::string> import_order;
++    std::vector<std::string> import_order;   // legacy layout only
 +    std::map<std::string, u32> import_index;
 +    int check_bit_local = -1;
 +    std::string error;  // first failure; emission stops once set
@@ -770,19 +809,34 @@ index 0000000..4f33ca4
 +    void LdL(u32 local) { c.LocalGet(local); }
 +
 +    // ---------- helpers ----------
++    // Every module imports ALL helpers in kHelpers order, so a helper's function index is its position there. This makes the function bodies of
++    // different blocks interchangeable: the JS side can put many of them into one module (one WebAssembly.Instance for a whole batch of blocks).
 +    u32 Import(const char* name) {
-+        auto it = import_index.find(name);
-+        if (it != import_index.end()) return it->second;
-+        const u32 idx = static_cast<u32>(import_order.size());
-+        import_order.push_back(name);
-+        import_index[name] = idx;
-+        return idx;
++        if (opt.legacy_layout) {   // old layout: only the helpers this block uses, numbered in order of first use (kept to compare against in measurements)
++            auto it = import_index.find(name);
++            if (it != import_index.end()) return it->second;
++            const u32 idx = static_cast<u32>(import_order.size());
++            import_order.push_back(name);
++            import_index[name] = idx;
++            return idx;
++        }
++        for (u32 i = 0; i < std::size(kHelpers); i++) if (std::strcmp(kHelpers[i].name, name) == 0) return i;
++        Fail(std::string("unknown helper ") + name);
++        return 0;
 +    }
 +    void PushCtx() {
 +        c.LocalGet(0);
 +        c.I32Load(kOffCtx);
 +    }
-+    void CallHelper(const char* name) { c.Call(Import(name)); }
++    // Helpers are the host's own C++ functions (H_r32, ...) living in the main module's function table, so a block calls them with call_indirect through that table
++    // (imported as table 1) instead of importing them as functions: every imported function makes JavaScriptCore generate a wasm-to-JS stub in its executable
++    // memory pool (a block with 50 imports ran that pool dry: crash in ExecutableAllocator::allocate, on a Mac after 12 k blocks), and calls through the table need none.
++    void CallHelper(const char* name) {
++        if (opt.legacy_layout || !opt.helper_fn) { c.Call(Import(name)); return; }
++        const u32 i = Import(name);
++        c.I32Const(static_cast<s32>(opt.helper_fn[i]));
++        c.CallIndirect(i + 1, 1);   // type i + 1 = signature of kHelpers[i]; table 1 = the host's function table
++    }
 +
 +    // ---------- state ----------
 +    void StateLoad32(u32 off) {
@@ -2061,7 +2115,9 @@ index 0000000..4f33ca4
 +    // ---------- module assembly ----------
 +    static ValType SigChar(char ch) { return ch == 'l' ? I64 : I32; }
 +
-+    Bytes Assemble() {
++    u32 prefix_len = 0, code_off = 0, code_len = 0;   // where, inside the assembled module, the shared prefix ends and the function entry (size + body) sits
++
++    Bytes AssembleLegacy() {
 +        // type section: type 0 = block function (i32) -> i32; then one per distinct helper signature
 +        std::vector<std::string> sigs;  // signature strings, index = type index - 1
 +        auto type_of = [&](const std::string& s) -> u32 {
@@ -2125,6 +2181,64 @@ index 0000000..4f33ca4
 +        Append(m, Section(3, funcs));
 +        Append(m, Section(7, exports));
 +        Append(m, Section(10, code));
++        return m;
++    }
++
++    Bytes Assemble() {
++        // type section: type 0 = block function (i32) -> i32; then type i + 1 = signature of kHelpers[i]
++        constexpr size_t kN = std::size(kHelpers);
++        Bytes types;
++        LebU(types, 1 + kN);
++        Append(types, Bytes{0x60, 1, I32, 1, I32});
++        for (const auto& h : kHelpers) {
++            const std::string s = h.sig;
++            const size_t gt = s.find('>');
++            Bytes t{0x60};
++            LebU(t, gt);
++            for (size_t i = 0; i < gt; i++) t.push_back(SigChar(s[i]));
++            if (s[gt + 1] == 'v') t.push_back(0);
++            else { t.push_back(1); t.push_back(SigChar(s[gt + 1])); }
++            Append(types, t);
++        }
++
++        Bytes imports;
++        LebU(imports, 3);
++        Append(imports, Name("e")); Append(imports, Name("m")); imports.push_back(0x02); imports.push_back(0x00); LebU(imports, 1);
++        Append(imports, Name("e")); Append(imports, Name("t")); imports.push_back(0x01); imports.push_back(0x70); imports.push_back(0x00); LebU(imports, 0);   // table 0: the block table
++        Append(imports, Name("e")); Append(imports, Name("h")); imports.push_back(0x01); imports.push_back(0x70); imports.push_back(0x00); LebU(imports, 0);   // table 1: the host's function table
++
++        Bytes funcs{1, 0};
++        Bytes exports;
++        LebU(exports, 1);
++        Append(exports, Name("b")); exports.push_back(0x00); LebU(exports, 0);   // no function imports: our function is number 0
++
++        // code: local declarations (run-length) + body + end
++        Bytes body;
++        std::vector<std::pair<u32, u8>> groups;
++        for (u8 t : extra_locals) {
++            if (!groups.empty() && groups.back().second == t) groups.back().first++;
++            else groups.push_back({1, t});
++        }
++        LebU(body, groups.size());
++        for (auto& g : groups) { LebU(body, g.first); body.push_back(g.second); }
++        Append(body, c.b);
++        body.push_back(0x0b);
++        Bytes entry;
++        LebU(entry, body.size());
++        Append(entry, body);
++        Bytes code;
++        LebU(code, 1);
++        Append(code, entry);
++
++        Bytes m{0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0};
++        Append(m, Section(1, types));
++        Append(m, Section(2, imports));
++        prefix_len = static_cast<u32>(m.size());
++        Append(m, Section(3, funcs));
++        Append(m, Section(7, exports));
++        Append(m, Section(10, code));
++        code_len = static_cast<u32>(entry.size());
++        code_off = static_cast<u32>(m.size() - entry.size());
 +        return m;
 +    }
 +};
@@ -2193,10 +2307,10 @@ index 0000000..4f33ca4
 +}  // namespace Dynarmic::Backend::Wasm
 diff --git a/src/dynarmic/backend/wasm/emit_a32.h b/src/dynarmic/backend/wasm/emit_a32.h
 new file mode 100644
-index 0000000..6efb1aa
+index 0000000..f1c38be
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/emit_a32.h
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,72 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + */
@@ -2242,6 +2356,8 @@ index 0000000..6efb1aa
 +struct EmitResult {
 +    std::vector<u8> bytes;
 +    std::string error;  // empty on success
++    u32 prefix_len = 0;  ///< bytes[0, prefix_len) = header + type + import sections, identical for every block
++    u32 code_off = 0, code_len = 0;  ///< bytes[code_off, +code_len) = the function entry (size + locals + body), movable into a module with many functions
 +    bool ok() const { return error.empty(); }
 +};
 +
@@ -2254,6 +2370,8 @@ index 0000000..6efb1aa
 +    bool chain_tail = false;  ///< true: wasm tail calls (return_call_indirect); false: nested call_indirect with a depth limit
 +    u32 chain_depth_limit = 160;
 +    u32 fast_fp_mask = 0x3f;   ///< which inline VFP ops are enabled (bit per kind: add, sub, mul, div, sqrt, cmp) - for bisecting engine problems
++    const u32* helper_fn = nullptr;   ///< function-table index of each kHelpers entry in the host module (for call_indirect)
++    bool legacy_layout = false;   ///< one minimal module per block (only the imports it uses); the blocks of such modules cannot be packed together
 +    bool fast_fp = false;   ///< inline VFP for round-to-nearest / round-to-zero modes (exception flags are not accumulated on this path)
 +};
 +struct LinkEntry {

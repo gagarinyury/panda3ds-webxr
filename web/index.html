@@ -246,7 +246,7 @@ var Module = {
 let t0 = 0, frames = 0, running = true, worst = 0, sum = 0, late = 0, lastTick = 0, acc = 0, lastBeat = 0, hitches = 0;
 const ctx = ['top', 'bottom'].map((id) => document.getElementById(id).getContext('2d'));
 const imgs = [new ImageData(400, 240), new ImageData(320, 240)];
-const mem = () => { const j = Module.jit && Module.jit.impls[0]; return { wasmMB: Math.round(Module.HEAPU8.length / 1048576), blocks: j ? (j.count || 0) : 0, jitKB: j ? Math.round((j.bytes || 0) / 1024) : 0 }; };
+const mem = () => { const j = Module.jit && Module.jit.impls[0]; return { wasmMB: Math.round(Module.HEAPU8.length / 1048576), blocks: j ? (j.count || 0) : 0, jitKB: j ? Math.round((j.bytes || 0) / 1024) : 0, packMs: j && Module.jit.t ? Math.round(Module.jit.t[3] || 0) : 0, batches: j ? (j.batches || 0) : 0, compMs: Module.jit && Module.jit.t ? Math.round((Module.jit.t[1] || 0) + (Module.jit.t[2] || 0)) : 0 }; };
 
 function draw() {
   if (useGL) return;
@@ -673,10 +673,13 @@ for (const item of (params.get('tog') || '').split(',').filter(Boolean)) {
   }, +sec * 1000);
 }
 // fscript=A:2100,A:2660,B:3780: press a button (held for 6 frames) when the emulated frame counter reaches the given number - independent of machine speed
-const fsched = (params.get('fscript') || '').split(',').filter(Boolean).map((x) => { const [b, f, h] = x.split(':'); return [b, +f, +(h || 6)]; }).sort((p, q) => p[1] - q[1]), frel = [];
+// T:frame:hold:x:y touches the bottom screen at x,y (0..319, 0..239), e.g. the button in the lower right corner of the title screen
+const fsched = (params.get('fscript') || '').split(',').filter(Boolean).map((x) => { const [b, f, h, tx, ty] = x.split(':'); return [b, +f, +(h || 6), +tx, +ty]; }).sort((p, q) => p[1] - q[1]), frel = [];
+// fscriptfile=route-title.txt: the same list read from a file next to the page (a long route does not fit in the address)
+{ const ff = params.get('fscriptfile'); if (ff) fetch(ff).then((r) => r.text()).then((t) => { t.trim().split(',').filter(Boolean).forEach((x) => { const [b, f, h, tx, ty] = x.split(':'); fsched.push([b, +f, +(h || 6), +tx, +ty]); }); fsched.sort((p, q) => p[1] - q[1]); }).catch(() => {}); }
 function runScripted() {
-  while (fsched.length && frames >= fsched[0][1]) { const [b, , hold] = fsched.shift(); press(b, true); frel.push([frames + hold, b]); frel.sort((p, q) => p[0] - q[0]); }
-  while (frel.length && frames >= frel[0][0]) { press(frel.shift()[1], false); }
+  while (fsched.length && frames >= fsched[0][1]) { const [b, , hold, tx, ty] = fsched.shift(); if (b === 'T') { if (Module._web_touch) Module._web_touch(tx, ty, 1); } else press(b, true); frel.push([frames + hold, b]); frel.sort((p, q) => p[0] - q[0]); }
+  while (frel.length && frames >= frel[0][0]) { const b = frel.shift()[1]; if (b === 'T') { if (Module._web_touch) Module._web_touch(0, 0, 0); } else press(b, false); }
 }
 
 function runFrame() {
