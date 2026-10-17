@@ -40,6 +40,17 @@ Known problems: no soft shadow under characters (Mario, enemies) in World 1-1 (s
 - **Panda bugs found with real games:** `GLStateManager::setColourMask` assigned the arguments to the wrong side (no colour mask was ever applied), WebGL2 has no logic ops (NOOP/CLEAR are emulated), clip planes, depth/stencil write bits.
 - **Big game images** (1-2 GB) are not loaded into memory but read in 1 MB pieces with `Range` requests (`lazy=` parameter).
 
+## The web player (17 Oct 2026)
+
+`web/index.html` opened without test parameters is a clean player: one button to open a game (or a free homebrew demo), a small fps pill, the game fitted to the window. It works on a phone in Safari too (iPhone Air: Mario 3D Land opened from the Files app, 59-63 fps in the light scenes).
+
+- **Screens.** The core lays them out for the window (`web_layout`): portrait = one above the other, controls under them; touch + landscape = big main screen on the left, small second screen on the right, the controls float over the picture; desktop landscape = the screens in the middle and a column of controls on each side. It re-lays out on rotation and resizing, the controls never disappear (if there is no room under the screens they float over them).
+- **Controls.** Circle pad, ABXY, L/R, Start/Select, each button shows its keyboard key on a mouse device and is bigger without captions on a touch screen. The circle pad is mirrored into the direction bits by the core, so menus see arrows (the on-screen cross is hidden, `?dpad=1` brings it back). Keyboard, standard gamepads (left stick = circle pad), vibration on touch.
+- **Sizes.** The gear in the pill: main screen share (50-80 %), buttons size, buttons opacity; kept in the browser (`localStorage`).
+- **Loading and errors.** The open button waits for the emulator core, a spinner with the progress shows while the game loads, and a script error or an emulator abort is printed on the page (a blank screen on a phone says nothing).
+- **Test parameters switch to the diagnostic layout** (`name=`, `report=`, `fscript=`, `ff=`, `env=`, `frames=`, `turbo=`, the iOS app); `dev=1` forces it, `dev=0` forces the player. `touch=1` simulates a touch device on a desktop.
+- **Showing it to somebody.** `ios/prepare-site.sh` fills `ios/Site` (updated in place), `python3 scripts/serve-site.py 8791` serves it with `Cache-Control: no-store`, and `cloudflared tunnel --url http://127.0.0.1:8791` makes a temporary public address (alive while the Mac and both processes run). A permanent address needs a static host (Cloudflare Pages); game files are never part of it, people open their own.
+
 ## Run it
 
 ```sh
