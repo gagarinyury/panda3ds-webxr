@@ -17,9 +17,15 @@
 [![devkitPro 3ds-examples](https://img.shields.io/badge/3ds--examples_(iPhone)-53%2F58_passing-brightgreen?style=flat-square)](docs/examples-status.md)
 [![Fork Architecture](https://img.shields.io/badge/architecture-3--repo_split-informational?style=flat-square)](docs/forks.md)
 
-<img src="assets/preview-mario.png" width="560" alt="Super Mario 3D Land in a Chrome tab: both 3DS screens and the live diagnostics panel, 60 fps">
+<img src="assets/preview-player-mario.png" width="720" alt="The web player in Chrome: Super Mario 3D Land, World 1-1, both 3DS screens, on-screen circle pad and buttons, 60 fps">
 
-<sub>Super Mario 3D Land (own dump, not included), World 1-1, Chrome 148 on an M-series Mac: emulation speed 60 fps, 5.6 ms of emulator time per frame, GPU 1.9 ms (on battery power the browser repaints the page only about 32 times a second). Built from a fresh clone of this README.</sub>
+<sub>The web player in Chrome on an M-series Mac: Super Mario 3D Land (own dump, not included), World 1-1, emulation speed 60 fps. Nothing is installed; the page only opens a game you pick.</sub>
+
+<br><br>
+
+<img src="assets/preview-mario.png" width="560" alt="The same scene with the diagnostics panel: 60 fps, 5.8 ms of emulator time per frame, GPU 2.4 ms">
+
+<sub>The same scene with the diagnostics panel (test layout): 5.8 ms of emulator time per frame, GPU 2.4 ms. On battery power the browser repaints the page only about 32 times a second; plugged in it shows 60.</sub>
 
 </div>
 
