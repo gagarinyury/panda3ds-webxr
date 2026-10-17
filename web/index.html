@@ -541,6 +541,7 @@ async function start() {
   { const gc = document.getElementById('gl'); if (gc) { gc.addEventListener('webglcontextlost', () => { log('[gl] CONTEXT LOST at frame ' + frames, true); post('log', { msg: '[gl] CONTEXT LOST at frame ' + frames }); }); gc.addEventListener('webglcontextrestored', () => { log('[gl] context restored', true); post('log', { msg: '[gl] context restored' }); }); } }
   if (useGL) { const g = document.getElementById('gl'); g.width = GLW; g.height = GLH; g.style.width = (phone ? Math.floor(Math.min(innerWidth, 0.54 * innerHeight * GLW / GLH)) : Math.round(GLW * (innerWidth >= 900 ? Math.min(scale, (innerWidth - 440) / GLW) : Math.min(scale, (innerWidth - 16) / GLW)))) + 'px'; g.style.display = 'block'; document.getElementById('pad').style.display = phone ? 'none' : 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
   if (!Module._web_init(useGL ? 1 : 0, GLW, GLH)) { log('[FATAL] web_init failed', true); finish(); return; }
+  if (useGL) { try { const x = document.getElementById('gl').getContext('webgl2').getSupportedExtensions() || []; post('log', { msg: '[gl] extensions (' + x.length + '): ' + x.join(' ') }); } catch (e) {} }
   initGpuTimer();   // after web_init: the emulator must be the one that creates the WebGL context (its attributes: no alpha, depth, stencil)
 
   // Drag-and-drop & file input bindings

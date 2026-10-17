@@ -1,0 +1,90 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>worker vs main thread GL probe</title>
+<body style="background:#111;color:#8f8;font:13px ui-monospace,monospace;margin:8px">
+<pre id="o">starting…</pre>
+<canvas id="c" width="400" height="480" style="width:200px;height:240px;background:#000"></canvas>
+<script>
+// Does moving WebGL + the emulation loop into a Worker (OffscreenCanvas) change how often a heavy frame gets shown?
+// The same synthetic frame runs in every mode: `cpu` ms of busy work (stand-in for the emulator), then `n` draws with the Panda pattern
+// (a fresh vertex/index buffer per draw via bufferData, two programs, eight textures). Measured: frames the loop completed per second and,
+// for the page itself, how often the main thread's requestAnimationFrame ran (the page's own repaint rate).
+//   ?n=176&cpu=9&secs=12&modes=main-raf,main-timer,worker-raf,worker-timer
+const q = new URLSearchParams(location.search);
+const N = +(q.get('n') || 176), CPU = +(q.get('cpu') || 9), SECS = +(q.get('secs') || 12);
+const MODES = (q.get('modes') || 'main-raf,main-timer,worker-raf,worker-timer').split(',');
+const o = document.getElementById('o');
+const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda;
+const say = (s) => { o.textContent += s + '\n'; if (native) native.postMessage(JSON.stringify({ type: 'log', name: 'probe', msg: '[probe] ' + s })); else fetch('/live?name=probe-worker', { method: 'POST', body: JSON.stringify({ type: 'log', msg: '[probe] ' + s }) }).catch(() => {}); };
+
+// ---- the synthetic frame (shared by main thread and worker: passed as source text) ----
+function makeScene(gl, W, H, N, CPU) {
+  const mk = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); return x; };
+  const vs = '#version 300 es\nlayout(location=0) in vec2 p; layout(location=1) in vec2 t; out vec2 uv; uniform vec4 k; void main(){ uv=t; gl_Position=vec4(p*k.xy+k.zw,0.,1.); }';
+  const fs = ['#version 300 es\nprecision highp float; in vec2 uv; uniform sampler2D s; uniform vec4 k; out vec4 o; void main(){ vec4 c=texture(s,uv); o=c*k+vec4(0.1); }',
+              '#version 300 es\nprecision highp float; in vec2 uv; uniform sampler2D s; uniform vec4 k; out vec4 o; void main(){ vec4 c=texture(s,uv*1.5); o=mix(c,k,0.3); }'];
+  const progs = fs.map((f) => { const p = gl.createProgram(); gl.attachShader(p, mk(gl.VERTEX_SHADER, vs)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, f)); gl.linkProgram(p); return { p, k: gl.getUniformLocation(p, 'k'), s: gl.getUniformLocation(p, 's') }; });
+  const tex = []; const px = new Uint8Array(128 * 128 * 4); for (let i = 0; i < px.length; i++) px[i] = (i * 31) & 255;
+  for (let i = 0; i < 8; i++) { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 128, 128, 0, gl.RGBA, gl.UNSIGNED_BYTE, px); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); tex.push(t); }
+  const vb = gl.createBuffer(), ib = gl.createBuffer(), vao = gl.createVertexArray();
+  gl.bindVertexArray(vao); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+  const V = new Float32Array(300 * 4), I = new Uint16Array(450);
+  for (let i = 0; i < 300; i++) { V[i * 4] = ((i % 17) / 17) * 0.2 - 0.1; V[i * 4 + 1] = (Math.floor(i / 17) / 18) * 0.2 - 0.1; V[i * 4 + 2] = (i % 17) / 17; V[i * 4 + 3] = Math.floor(i / 17) / 18; }
+  for (let i = 0; i < 450; i++) I[i] = i % 300;
+  gl.viewport(0, 0, W, H);
+  return function frame(f) {
+    const t0 = performance.now(); while (performance.now() - t0 < CPU) { /* stand-in for guest code + Panda */ }
+    gl.clearColor(0.1, 0.1, 0.3, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    for (let i = 0; i < N; i++) {
+      const pr = progs[i & 1]; gl.useProgram(pr.p); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[i & 7]); gl.uniform1i(pr.s, 0);
+      gl.uniform4f(pr.k, 1 + (i % 7), 1 + (i % 5), ((i * 37 + f) % 200) / 100 - 1, ((i * 91) % 200) / 100 - 1);
+      gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, V, gl.STREAM_DRAW);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, I, gl.STREAM_DRAW);
+      gl.drawElements(gl.TRIANGLES, 450, gl.UNSIGNED_SHORT, 0);
+    }
+  };
+}
+// ---- the loop (shared): `pace` = raf | timer; returns frames completed per second via cb ----
+function makeLoop(frame, pace, secs, schedRaf, done) {
+  let f = 0, t0 = performance.now(), start = t0, next = t0; const FM = 1000 / 60;
+  (function tick() {
+    const now = performance.now();
+    if (now - start >= secs * 1000) { done({ frames: f, sec: (now - start) / 1000 }); return; }
+    frame(f++);
+    if (pace === 'raf') schedRaf(tick); else { next += FM; const d = Math.max(0, next - performance.now() - 1); if (d === 0 && next < performance.now() - 100) next = performance.now(); setTimeout(tick, d); }
+  })();
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function run(mode) {
+  const [where, pace] = mode.split('-');
+  let paint = 0, on = true; (function pr() { if (!on) return; paint++; requestAnimationFrame(pr); })();   // the main thread's own repaint rate
+  const t0 = performance.now(); let res;
+  const cv = document.createElement('canvas'); cv.width = 400; cv.height = 480; cv.style.cssText = 'width:200px;height:240px;background:#000'; document.body.replaceChild(cv, document.querySelector('canvas'));
+  if (where === 'main') {
+    const gl = cv.getContext('webgl2', { antialias: false, depth: false, stencil: false, alpha: false, powerPreference: 'high-performance' });
+    if (!gl) { say(mode + ': no webgl2'); on = false; return; }
+    const frame = makeScene(gl, 400, 480, N, CPU);
+    res = await new Promise((r) => makeLoop(frame, pace, SECS, (cb) => requestAnimationFrame(cb), r));
+  } else {
+    if (!cv.transferControlToOffscreen) { say(mode + ': no OffscreenCanvas transfer'); on = false; return; }
+    const off = cv.transferControlToOffscreen();
+    const src = `${makeScene.toString()}\n${makeLoop.toString()}\nonmessage = (e) => { const { off, N, CPU, SECS, pace } = e.data;
+      const gl = off.getContext('webgl2', { antialias: false, depth: false, stencil: false, alpha: false, powerPreference: 'high-performance' });
+      if (!gl) { postMessage({ err: 'no webgl2 in worker' }); return; }
+      const hasRaf = typeof requestAnimationFrame === 'function';
+      if (pace === 'raf' && !hasRaf) { postMessage({ err: 'no requestAnimationFrame in worker' }); return; }
+      const frame = makeScene(gl, 400, 480, N, CPU);
+      makeLoop(frame, pace, SECS, (cb) => requestAnimationFrame(cb), (r) => postMessage({ done: r })); };`;
+    const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    res = await new Promise((r) => { w.onmessage = (e) => r(e.data.done || { err: e.data.err }); w.onerror = (e) => r({ err: String(e.message || e) }); w.postMessage({ off, N, CPU, SECS, pace }, [off]); });
+    w.terminate();
+  }
+  on = false; const sec = (performance.now() - t0) / 1000;
+  say(res.err ? `${mode}: ERROR ${res.err}` : `${mode}: loop ${(res.frames / res.sec).toFixed(1)} frames/s   page repaints ${(paint / sec).toFixed(1)}/s   (n=${N} draws, cpu=${CPU} ms)`);
+}
+(async () => {
+  say('UA ' + navigator.userAgent + ' | offscreen ' + (typeof OffscreenCanvas) + ' | cross-origin isolated ' + self.crossOriginIsolated);
+  for (const m of MODES) { try { await run(m); } catch (e) { say(m + ': EXC ' + e); } await sleep(600); }
+  say('DONE');
+})();
+</script>
