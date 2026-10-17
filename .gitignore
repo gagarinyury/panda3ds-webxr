@@ -28,3 +28,4 @@ run/*.cia
 run/*.cxi
 config.toml
 web/glframe*.json
+ios/Site.new/
