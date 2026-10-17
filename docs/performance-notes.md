@@ -52,3 +52,10 @@ is the cheap step: 2.7x cheaper per draw in the benchmark. Not yet measured in t
 - A tick is an ARM11 cycle from Panda's `getCyclesForInstruction`, not an instruction, so ns per instruction is lower than that and unknown. Emitter facts: memory access is inlined through the page table; guest registers live in the state struct in linear memory (each GetRegister/SetRegister is a real load/store). Open: how big the gap to a native Dynarmic JIT really is. Cheapest answer: run the same scene in a native Panda3DS build on the same Mac and compare guest ms per frame.
 - Consequence: moving only the WebGL calls into a worker would gain ~12-20 % of a frame, not a factor of two.
 - A pool-buffer run on the iPhone (frames to 1805) ended with `webcontent_terminated` (iOS killed the WebContent process); the cause is not known. The pool's buffer memory is stable on the Mac (1921 buffers, 23.5 MB, `scripts/cdp-bufmem.mjs`). Not seen in ~10 earlier runs with the old buffers.
+
+### Native comparison (17 Oct, same Mac M5, same ROM, frames 1200-2400)
+
+Native Panda3DS (`cmake -S Panda3DS -B build-native -DCMAKE_BUILD_TYPE=Release -DENABLE_VULKAN=OFF -DENABLE_METAL=OFF -DENABLE_LUAJIT=OFF -DENABLE_DISCORD_RPC=OFF -DENABLE_RENDERDOC_API=OFF -DENABLE_USER_BUILD=ON`), env `CPU_STATS=1` prints per 120 frames the time inside `jit->Run()` and inside the SVC handlers.
+- The native `Run()` is 14-20 ms per frame, but 13-19 ms of that is inside SVC handlers (the frame limiter waits there) - not comparable with the web build.
+- Native guest code outside SVC handlers (including MMIO callbacks, like the web number): **~0.7 ms per frame**. Web build: **2.2-3.0 ms per frame**. So the WASM JIT is ~3-4x slower than the native ARM64 Dynarmic on the same CPU - not 10x. (The scheduler ticks per frame are the timeline, 4.47 M = 268 MHz / 60, not executed cycles, so ticks cannot be compared between the builds.)
+- Consequence: better generated code can bring maybe 1.3-2x on the guest part (registers in locals instead of the state struct is the obvious candidate); that is a real but bounded gain.

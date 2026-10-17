@@ -96,10 +96,43 @@ index 3185d35..16a2cf1 100644
  			DepthBufferFormat = 0x116,
  			ColourBufferFormat = 0x117,
 diff --git a/include/cpu_dynarmic.hpp b/include/cpu_dynarmic.hpp
-index 2435853..209e002 100644
+index 2435853..24bd02f 100644
 --- a/include/cpu_dynarmic.hpp
 +++ b/include/cpu_dynarmic.hpp
-@@ -180,6 +180,10 @@ class CPU {
+@@ -1,4 +1,6 @@
+ #pragma once
++#include <chrono>
++#include <cstdlib>
+ 
+ #include <span>
+ 
+@@ -14,6 +16,10 @@
+ class Emulator;
+ class CPU;
+ 
++// Env CPU_STATS=1: time spent in SVC handlers (Panda C++, includes frame waits), see CPU::runFrame
++inline const bool cpuStats = std::getenv("CPU_STATS") != nullptr;
++inline double cpuCallbackMs = 0;
++
+ class MyEnvironment final : public Dynarmic::A32::UserCallbacks {
+   public:
+ 	u64 ticksLeft = 0;
+@@ -79,7 +85,13 @@ class MyEnvironment final : public Dynarmic::A32::UserCallbacks {
+     }
+ 
+ 	void CallSVC(u32 swi) override {
+-		kernel.serviceSVC(swi);
++		if (cpuStats) {
++			const auto t0 = std::chrono::steady_clock::now();
++			kernel.serviceSVC(swi);
++			cpuCallbackMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
++		} else {
++			kernel.serviceSVC(swi);
++		}
+ 	}
+ 
+ 	void ExceptionRaised(u32 pc, Dynarmic::A32::Exception exception) override {
+@@ -180,6 +192,10 @@ class CPU {
  
      void addTicks(u64 ticks) { env.AddTicks(ticks); }
  
@@ -309,10 +342,21 @@ index f51ddf2..7b2834d 100644
  	void receiveNotification(u32 messagePointer);
  	void registerClient(u32 messagePointer);
 diff --git a/src/core/CPU/cpu_dynarmic.cpp b/src/core/CPU/cpu_dynarmic.cpp
-index 124647d..a94570e 100644
+index 124647d..d6c855b 100644
 --- a/src/core/CPU/cpu_dynarmic.cpp
 +++ b/src/core/CPU/cpu_dynarmic.cpp
-@@ -22,6 +22,12 @@ CPU::CPU(Memory& mem, Kernel& kernel, Emulator& emu) : mem(mem), emu(emu), sched
+@@ -4,6 +4,10 @@
+ #include "arm_defs.hpp"
+ #include "emulator.hpp"
+ 
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++
+ CPU::CPU(Memory& mem, Kernel& kernel, Emulator& emu) : mem(mem), emu(emu), scheduler(emu.getScheduler()), env(mem, kernel, emu.getScheduler()) {
+ 	cp15 = std::make_shared<CP15>();
+ 	mem.setCPUTicks(getTicksRef());
+@@ -22,6 +26,12 @@ CPU::CPU(Memory& mem, Kernel& kernel, Emulator& emu) : mem(mem), emu(emu), sched
  		config.fastmem_pointer = std::nullopt;
  	}
  
@@ -325,7 +369,31 @@ index 124647d..a94570e 100644
  	jit = std::make_unique<Dynarmic::A32::Jit>(config);
  }
  
-@@ -55,6 +61,8 @@ void CPU::runFrame() {
+@@ -40,12 +50,23 @@ void CPU::reset() {
+ void CPU::runFrame() {
+ 	emu.frameDone = false;
+ 
++	// Env CPU_STATS=1: every 120 frames print the wall time spent inside jit->Run() (guest code + host callbacks) and the guest ticks it covered
++	const bool stats = cpuStats;
++	static double runMs = 0;
++	static u64 runTicks = 0, runCalls = 0, statFrames = 0;
++	const u64 ts0 = scheduler.currentTimestamp;
++
+ 	while (!emu.frameDone) {
+ 		// Run CPU until the next scheduler event
+ 		env.ticksLeft = scheduler.nextTimestamp - scheduler.currentTimestamp;
+ 
+ 	execute:
++		const auto t0 = stats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+ 		const auto exitReason = jit->Run();
++		if (stats) {
++			runMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
++			runCalls++;
++		}
+ 
+ 		// Handle any scheduler events that need handling.
+ 		emu.pollScheduler();
+@@ -55,11 +76,29 @@ void CPU::runFrame() {
  			// The goto might be terrible but it does guarantee that this does not recursively call run and crash, instead getting optimized to a jump
  			if (Dynarmic::Has(exitReason, Dynarmic::HaltReason::CacheInvalidation)) {
  				goto execute;
@@ -334,17 +402,26 @@ index 124647d..a94570e 100644
  			} else {
  				Helpers::panic("Exit reason: %d\nPC: %08X", static_cast<u32>(exitReason), getReg(15));
  			}
-@@ -62,4 +70,11 @@ void CPU::runFrame() {
+ 		}
  	}
- }
- 
++
++	if (stats) {
++		runTicks += scheduler.currentTimestamp - ts0;
++		if (++statFrames % 120 == 0) {
++			std::printf("[cpu] frames %llu: %.2f ms in Run per frame (%.2f of it in SVC handlers, %.2f outside), %.0f ticks per frame, %.1f ns per tick, %.1f Run calls per frame\n", (unsigned long long)statFrames, runMs / 120.0, cpuCallbackMs / 120.0, (runMs - cpuCallbackMs) / 120.0, double(runTicks) / 120.0, runMs * 1e6 / double(runTicks), double(runCalls) / 120.0);
++			std::fflush(stdout);
++			runMs = 0; cpuCallbackMs = 0; runTicks = 0; runCalls = 0;
++		}
++	}
++}
++
 +void CPU::stop() {
 +	emu.running = false;
 +	emu.frameDone = true;
 +	env.ticksLeft = 0;
 +	jit->HaltExecution(Dynarmic::HaltReason::UserDefined1);
-+}
-+
+ }
+ 
  #endif  // CPU_DYNARMIC
 \ No newline at end of file
 diff --git a/src/core/PICA/gpu.cpp b/src/core/PICA/gpu.cpp
