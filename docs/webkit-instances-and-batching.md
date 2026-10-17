@@ -51,6 +51,10 @@ Reading: with packing the two runs agree (43.6 and 43.5 Hz, 137 and 148 samples,
 
 "speed" is the emulated rate including catch-up frames; **loop/paint Hz is what is shown**. Run-to-run noise is large (the same variant gave 31-46 Hz on an earlier day), the scene load differs between runs (636 k-949 k ticks per frame), so judge by repeats on the same scene. Earlier single, dirty pair: batch 34.5 Hz vs no batch 20.4 Hz (the player touched the page).
 
+### iPhone Air (17 Oct, 22:30, thermal nominal, build with `JIT_BATCH=256`, played by hand to W1-1)
+
+Light scenes (title, menus, cutscenes, frames 1000-5500): loop 47-63 Hz, 4.2-5.5 ms emulator time per frame, nothing killed. **World 1-1 (frames 5660-8170): loop 16-22 Hz, speed 32-44, emulator 7.8-10.6 ms per frame**, guest 5.4 ms, 3545 dispatcher returns per frame, ~74 700 blocks. The same scene on the same phone before packing was 21.4-22 Hz (notes of 17 Oct). **So the packing did not move the phone: the Safari-on-Mac gain (19 -> 44 Hz) does not carry over to the iPhone.** The loop period (~47 ms) is far larger than the emulator time (~8.4 ms), so most of the frame is spent outside our code (present / GPU / compositor / GC); the replay of a recorded W1-1 frame in a bare page on the same phone gave 58.9 Hz, so the stream of GL calls alone does not explain it either. Open: whether the per-instance cost also exists on the phone (run `probe-glreplay.html` with ballast on the phone), and what else differs between the replay page and the emulator.
+
 ## 5. Reproducible route to World 1-1 without hands
 
 Game facts (✅ user + screenshots): StreetPass dialog #1 "OK" takes A (~frame 1600); dialog #2 "Activate StreetPass?" needs a touch on [Cancel]; "A NEW GAME" takes A; intro cutscene; the Bowser story pages need a touch on the bottom-right corner (A and Start do not work reliably); on the world map the red "!" button on the bottom screen must be tapped (twice); then World 1-1 loads (~frame 6400) and gameplay starts (~6600). `ff=7500` is enough.
@@ -62,6 +66,6 @@ Game facts (✅ user + screenshots): StreetPass dialog #1 "OK" takes A (~frame 1
 
 ## 6. Not done / open
 
-- iPhone check of the batching and of the table-call layout (phone unlocked; no fast-forward on the phone). The executable-memory pool is smaller there, so the layout change may matter more. 🔍
+- iPhone: batching measured (above): no change in W1-1 (16-22 Hz). Next: ballast replay on the phone, and what else separates the phone's emulator loop from the bare replay.
 - Compile hitches in new areas (130-250 blocks, 30-47 ms), shader compile freezes (Mario Kart: ~1 s per program), missing shadows under characters in W1-1 (`docs/related-work-and-ios-hang.md`), Smash black screen.
 - Not tried: `persist=1` (IndexedDB game data) to shorten the route; evicting only start-up blocks.
