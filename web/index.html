@@ -62,6 +62,10 @@
   html.player #rom-drop span { display: none; }
   html.player.started #rom-drop, html.player.started #welcome { display: none !important; }
   html.player:not(.started) #gl { display: none !important; }
+  #set { display: none; position: fixed; right: 10px; top: 54px; z-index: 40; width: min(300px, calc(100vw - 20px)); padding: 12px 14px 10px; border-radius: 14px; background: rgba(20,23,28,.94); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); color: #cfd5de; font: 13px system-ui; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+  html.player.sets #set { display: block; }
+  #set label { display: grid; grid-template-columns: 1fr 44px; gap: 2px 8px; margin-bottom: 10px; color: #9aa4b2; } #set label input { grid-column: 1 / 3; width: 100%; accent-color: #3d7be0; } #set output { text-align: right; color: #e8ebf0; font-weight: 600; grid-row: 1; grid-column: 2; }
+  #set button { width: 100%; padding: 8px; border: 0; border-radius: 9px; background: #232832; color: #cfd5de; font: 600 13px system-ui; }
   #loading { display: none; position: fixed; inset: 0; z-index: 15; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: #0d0f13; color: #cfd5de; font: 600 15px system-ui; pointer-events: none; }
   #loading .ring { width: 54px; height: 54px; border-radius: 50%; border: 5px solid #232832; border-top-color: #3d7be0; animation: spin 0.9s linear infinite; }
   #loading #loadtxt { max-width: 80vw; text-align: center; font-weight: 500; color: #8a93a0; font-size: 13px; }
@@ -92,8 +96,8 @@
   /* ---- on-screen controller (player skin) ----
      Sizes come from one unit (--u) that follows the window; fingers get bigger targets and no key captions, a mouse gets compact buttons with the key printed on each.
      Portrait: screens on top, controls under them in the 3DS arrangement. Landscape: screens in the middle, one column of controls on each side (shoulder at the top, the main control in the middle, Start/Select low right). */
-  html.player { --u: clamp(38px, 6.4vmin, 54px); }
-  html.player.coarse { --u: clamp(46px, 9.5vmin, 66px); }
+  html.player { --u0: clamp(38px, 6.4vmin, 54px); --u: calc(var(--u0) * var(--us, 1)); }
+  html.player.coarse { --u0: clamp(46px, 9.5vmin, 66px); }
   html.player, html.player body { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
   #ctl, #pill { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: none; }
   #ctl { display: none; width: min(100%, 780px); margin: 10px auto 0; padding: 0 max(4px, env(safe-area-inset-left)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-right)); box-sizing: border-box; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr auto; gap: 8px 10px; align-items: stretch; }
@@ -138,7 +142,7 @@
 
   /* portrait window: the screens as wide as possible, the controls get what is left (the unit shrinks to fit) */
   @media (max-aspect-ratio: 13/10) {
-    html.player, html.player.coarse { --u: clamp(30px, calc((100dvh - 100vw * 1.2 - 44px) / 7.1), 56px); }
+    html.player, html.player.coarse { --u0: clamp(30px, calc((100dvh - 100vw * 1.2 - 44px) / 7.1), 56px); }
     html.player.started { --ctlh: calc(var(--u) * 7.1 + 44px); }
     html.player main { padding: 4px; }
     html.player #gl { width: min(calc(100vw - 8px), calc((100dvh - 8px - var(--ctlh, 0px)) * var(--w, 400) / var(--h, 480)), calc(var(--w, 400) * 3px)) !important; }
@@ -148,7 +152,7 @@
   html.player.ovl.started #stage { display: block; width: 100%; }
   html.player.ovl.started #gl { width: min(100vw, calc(100dvh * var(--w, 720) / var(--h, 240))) !important; border-radius: 0; box-shadow: none; }
   html.player.ovl.started { --ctlh: 0px; }
-  html.player.ovl.started #ctl { display: block; position: fixed; inset: 0; width: auto; margin: 0; padding: 0; pointer-events: none; opacity: .72; }
+  html.player.ovl.started #ctl { display: block; position: fixed; inset: 0; width: auto; margin: 0; padding: 0; pointer-events: none; opacity: var(--uo, .72); }
   html.player.ovl.noctl #ctl { display: none !important; }
   html.player.ovl #ctl .col { display: contents; }
   html.player.ovl #ctl b, html.player.ovl #cpad { pointer-events: auto; }
@@ -163,7 +167,13 @@
   html.player.ovl #pill { top: auto; bottom: 10px; right: 50%; transform: translateX(50%); }
 </style>
 <label id="romtiny" style="display:none">📂<input type="file" id="rom-file2" accept=".3ds,.cxi,.cci,.3dsx,.elf" style="display:none"></label>
-<div id="pill"><i></i><span id="pilltxt">starting</span><u id="fsbtn" title="Full screen">⛶</u><u id="ctlbtn" title="Show or hide the on-screen buttons">🎮</u><u id="infobtn" title="Show or hide details">ⓘ</u></div>
+<div id="pill"><i></i><span id="pilltxt">starting</span><u id="setbtn" title="Sizes">⚙</u><u id="fsbtn" title="Full screen">⛶</u><u id="ctlbtn" title="Show or hide the on-screen buttons">🎮</u><u id="infobtn" title="Show or hide details">ⓘ</u></div>
+<div id="set">
+  <label>Main screen <input type="range" id="s-top" min="50" max="80" step="1"><output></output></label>
+  <label>Buttons size <input type="range" id="s-us" min="60" max="150" step="5"><output></output></label>
+  <label>Buttons opacity <input type="range" id="s-uo" min="25" max="100" step="5"><output></output></label>
+  <button id="s-reset" type="button">Reset</button>
+</div>
 <main>
   <section id="stage">
   <div id="loading"><div class="ring"></div><div id="loadtxt">Loading the game…</div></div>
@@ -256,9 +266,9 @@ function applyLayout() {   // player skin: re-lay the screens out whenever the w
   const land = innerWidth > innerHeight * 1.25, touchy = de.classList.contains('coarse');
   if (window.Module && Module._web_layout && Module._web_layout_rect) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2); let cw, ch, layout, pct, mode;
-    if (touchy && land) { mode = 'ovl'; cw = innerWidth; ch = innerHeight; layout = 2; pct = Math.min(0.72, Math.max(0.5, 400 * (ch / 240) / cw)); }       // big top screen on the left, small bottom screen right, controls float over them
+    if (touchy && land) { mode = 'ovl'; cw = innerWidth; ch = innerHeight; layout = 2; pct = window.__sizes && window.__sizes.top ? window.__sizes.top / 100 : Math.min(0.72, Math.max(0.5, 400 * (ch / 240) / cw)); }       // big top screen on the left, small bottom screen right, controls float over them
     else if (land) { mode = 'flank'; cw = 400; ch = 480; layout = 0; pct = 0.5; }                                                                             // desktop: the CSS grid sizes the canvas; native 400x480, screens one above the other
-    else { mode = 'port'; const c = document.getElementById('ctl'), cs = c && getComputedStyle(c).display !== 'none' ? c.offsetHeight + 24 : 8; cw = innerWidth - 8; ch = Math.max(cw * 0.9, innerHeight - cs - 16); layout = 0; pct = 0.5; }   // one screen above the other, controls below
+    else { mode = 'port'; const c = document.getElementById('ctl'), cs = c && getComputedStyle(c).display !== 'none' ? c.offsetHeight + 24 : 8; cw = innerWidth - 8; ch = Math.max(cw * 0.9, innerHeight - cs - 16); layout = 0; pct = window.__sizes && window.__sizes.top ? window.__sizes.top / 100 : 0.5; }   // one screen above the other, controls below
     de.classList.toggle('ovl', mode === 'ovl');
     if (mode === 'flank') { g.style.removeProperty('width'); g.style.removeProperty('height'); } else { g.style.setProperty('width', Math.round(cw) + 'px', 'important'); g.style.setProperty('height', Math.round(ch) + 'px', 'important'); }
     const W = mode === 'flank' ? 400 : Math.round(cw * dpr), H = mode === 'flank' ? 480 : Math.round(ch * dpr), key = mode + W + 'x' + H + ':' + pct.toFixed(3);
@@ -862,6 +872,25 @@ function renderDiag() {
   const pill = document.getElementById('pill'); let t = 0;
   const wake = () => { pill.classList.remove('idle'); clearTimeout(t); t = setTimeout(() => pill.classList.add('idle'), 3500); };
   for (const ev of ['pointermove', 'pointerdown', 'keydown']) addEventListener(ev, wake, { passive: true }); wake();
+}
+{   // sizes the player can change: main screen share, buttons size and opacity (kept on the device)
+  const KEY = 'panda3ds.sizes', def = { top: 0, us: 100, uo: 72 }; let st = { ...def };
+  try { Object.assign(st, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) {}
+  window.__sizes = st;
+  const el = (id) => document.getElementById(id), de = document.documentElement;
+  const apply = () => {
+    de.style.setProperty('--us', st.us / 100); de.style.setProperty('--uo', st.uo / 100);
+    el('s-top').value = st.top || 60; el('s-us').value = st.us; el('s-uo').value = st.uo;
+    el('s-top').nextElementSibling.textContent = (st.top || 'auto') + (st.top ? '%' : ''); el('s-us').nextElementSibling.textContent = st.us + '%'; el('s-uo').nextElementSibling.textContent = st.uo + '%';
+    lastLay = ''; if (typeof applyLayout === 'function') applyLayout();
+  };
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} apply(); };
+  el('s-top').addEventListener('input', (e) => { st.top = +e.target.value; save(); });
+  el('s-us').addEventListener('input', (e) => { st.us = +e.target.value; save(); });
+  el('s-uo').addEventListener('input', (e) => { st.uo = +e.target.value; save(); });
+  el('s-reset').addEventListener('click', () => { st = { ...def }; window.__sizes = st; save(); });
+  el('setbtn').addEventListener('click', () => de.classList.toggle('sets'));
+  apply();
 }
 setInterval(renderDiag, 250);
 {   // player skin: one small status pill (fps, or the loading message) that opens the detailed panel
