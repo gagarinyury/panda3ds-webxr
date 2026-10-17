@@ -146,3 +146,9 @@ The following components are specific to our browser and iOS deployment:
 **Change:** on Emscripten use the existing `BufferDataStreamBuffer` (orphan + upload with one `glBufferData` per use) and let it grow when a request is bigger than its CPU copy. Same scene: 15-22 fps -> 60 fps, GL time 15-25 ms -> 0.3-0.7 ms per frame.
 **Open before sending:** it is only proven for WebGL2/ANGLE-Metal. Unknown for native GLES (Android) and ANGLE on other backends, so the PR should gate it (`__EMSCRIPTEN__`, or a runtime switch) and say so. Evidence and method: `scripts/cdp-watch.mjs`, the `[gl]` lines the page sends to `/live`.
 Related, smaller: the `setColourMask` assignments are reversed in upstream (`r = redMask`), a one-line fix for every platform.
+
+---
+
+## Finding for the wasm backend only (not an upstream PR): imports cost executable memory in JavaScriptCore
+
+A module that imports N functions makes N wasm-to-JS stubs in the engine's executable pool (`JSC::Wasm::wasmToJS`); with one module per block and ~50 helper imports each, Safari ran out of the pool and the page crashed. Reaching the helpers through `call_indirect` on a shared table needs no imports. Also, WebKit charges a fixed per-frame price per live `WebAssembly.Instance`, so blocks are packed 256 to an instance. Details and numbers: [webkit-instances-and-batching.md](webkit-instances-and-batching.md). Nothing here touches upstream Dynarmic or Panda3DS code paths other than the wasm backend.

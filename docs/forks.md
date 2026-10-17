@@ -14,3 +14,5 @@ Rules:
    The Panda3DS branch pins the dynarmic fork as its submodule, so after changing dynarmic: commit and push there first, then bump the pointer in Panda3DS.
 3. Anything meant for upstream goes into a **separate branch cut from upstream `master`** (one topic per branch), never from `wasm`. Nothing has been sent upstream yet.
 4. Game images, firmware and screenshots of commercial games are never committed (`run/*/` is ignored).
+
+Current heads (17 Oct 2026): Panda3DS `wasm` `03bee38` (pins dynarmic `9b3178d`), dynarmic `wasm32` `9b3178d` (table-call helpers + block packing; `JIT_MAX_BLOCKS` opt-in cap). See [webkit-instances-and-batching.md](webkit-instances-and-batching.md).
