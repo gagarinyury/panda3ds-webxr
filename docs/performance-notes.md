@@ -40,8 +40,8 @@ Same scene in every mode: each draw has its own 300 vertices, 450 indices and a 
 Mac (same test, headless Chrome): 8.0 / 4.3 / 2.4 / 1.5 us/draw at 176 draws.
 
 Reading: the cost of the draw calls comes mostly from creating a buffer for every upload (6x against one upload per frame); WebGPU gains only ~30 % over the best WebGL2 mode, so a WebGPU renderer is not worth
-it for this. The buffer pool (`BufferPoolStreamBuffer` in `third_party/duckstation/gl/stream_buffer.cpp`, default in the web build; env `GL_STREAM_BUFFERDATA:1` / `GL_STREAM_SUBDATA:1` select the old paths)
-is the cheap step: 2.7x cheaper per draw in the benchmark. Not yet measured in the game on the phone.
+it for this. The buffer pool (`BufferPoolStreamBuffer` in `third_party/duckstation/gl/stream_buffer.cpp`, opt-in with env `GL_STREAM_POOL:1`, size `GL_POOL_SIZE`) is 2.7x cheaper per draw in the benchmark.
+**In the game on the iPhone it did not help** (17 Oct, Mario 3D Land, frames 1100-2700, `GL_SYNC:1,GL_FINISH:1`): orphaning 9.9 ms GPU wait / 18.1 ms emu per frame; pool of 640: 9.7 / 18.0 (but iOS killed the WebContent process in 2 of 2 runs around frame 1700-1800, `thermal` 0); pool of 96: 11.2 / 20.2, not killed (1 run). So the benchmark win does not carry over, and the per-upload buffer creation is not the main cost of a frame. Default is orphaning again.
 
 ## Where the time of a frame goes (17 Oct, Mac, Chrome 148, Mario 3D Land, frames 1200+)
 
