@@ -55,6 +55,10 @@ Reading: with packing the two runs agree (43.6 and 43.5 Hz, 137 and 148 samples,
 
 Light scenes (title, menus, cutscenes, frames 1000-5500): loop 47-63 Hz, 4.2-5.5 ms emulator time per frame, nothing killed. **World 1-1 (frames 5660-8170): loop 16-22 Hz, speed 32-44, emulator 7.8-10.6 ms per frame**, guest 5.4 ms, 3545 dispatcher returns per frame, ~74 700 blocks. The same scene on the same phone before packing was 21.4-22 Hz (notes of 17 Oct). **So the packing did not move the phone: the Safari-on-Mac gain (19 -> 44 Hz) does not carry over to the iPhone.** The loop period (~47 ms) is far larger than the emulator time (~8.4 ms), so most of the frame is spent outside our code (present / GPU / compositor / GC); the replay of a recorded W1-1 frame in a bare page on the same phone gave 58.9 Hz, so the stream of GL calls alone does not explain it either. Open: whether the per-instance cost also exists on the phone (run `probe-glreplay.html` with ballast on the phone), and what else differs between the replay page and the emulator.
 
+### Chrome (Comet 154, Mac, packed blocks, same route; one short run, 17 Oct 22:37)
+
+Right after the fast-forward ended (frame 7518-7638, W1-1, 740-800 k ticks per frame): speed 59-60, emulator 5.4-5.8 ms per frame, **paint 31-33 Hz**, only three samples (the loop-rate field reads 58-84 there because it still contains the fast-forward bursts). Not enough for a verdict; the run was stopped on request. Do not read it as "Chrome 54-60 Hz with packing": the paint rate of this run is lower than the earlier Chrome numbers.
+
 ## 5. Reproducible route to World 1-1 without hands
 
 Game facts (✅ user + screenshots): StreetPass dialog #1 "OK" takes A (~frame 1600); dialog #2 "Activate StreetPass?" needs a touch on [Cancel]; "A NEW GAME" takes A; intro cutscene; the Bowser story pages need a touch on the bottom-right corner (A and Start do not work reliably); on the world map the red "!" button on the bottom screen must be tapped (twice); then World 1-1 loads (~frame 6400) and gameplay starts (~6600). `ff=7500` is enough.
