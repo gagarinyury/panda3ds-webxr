@@ -3,6 +3,11 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="theme-color" content="#0d0f13">
 <title>Panda3DS on a WASM JIT</title>
+<script>   // a blank screen on a phone tells nothing: show the first script error on the page itself
+(function () { const show = (m) => { let d = document.getElementById('errbox'); if (!d) { d = document.createElement('pre'); d.id = 'errbox'; d.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:99;margin:0;padding:10px;background:#3a1114;color:#ffd9d6;font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;border-radius:8px;max-height:45vh;overflow:auto'; (document.body || document.documentElement).appendChild(d); } d.textContent += m + '\n'; };
+  addEventListener('error', (e) => show('error: ' + e.message + ' (' + String(e.filename || '').split('/').pop() + ':' + e.lineno + ')'));
+  addEventListener('unhandledrejection', (e) => show('promise: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason))); })();
+</script>
 <style>
   body { margin: 0; background: #14161a; color: #cfd3da; font: 13px/1.4 ui-monospace, Menlo, monospace; }
   main { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 16px; padding: 8px; max-width: none; margin: 0; align-items: start; }
