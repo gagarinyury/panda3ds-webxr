@@ -247,7 +247,11 @@ const name = params.get('name') || 'run';
 const useGL = params.has('gl') ? params.get('gl') === '1' : !dev;                     // OpenGL ES renderer on a WebGL2 canvas instead of the Null renderer + 2D canvases
 const side = (params.get('layout') || (dev ? (innerWidth >= 900 ? 'side' : 'stack') : (document.documentElement.classList.contains('coarse') && innerWidth > innerHeight * 1.25 ? 'side' : 'stack'))) === 'side';   // both screens next to each other (720x240) or one above the other (400x480)
 const GLW = side ? 720 : 400, GLH = side ? 240 : 480;
-if (!dev && side) document.documentElement.classList.add('ovl');   // touch + landscape: both screens side by side, controls drawn over the picture
+if (!dev && side) document.documentElement.classList.add('ovl');
+if (!dev && side) {   // touch + landscape: fill the real visible area (CSS dvh is not reliable under Safari's moving toolbars)
+  const fit = () => { const g = document.getElementById('gl'); if (!g) return; const w = Math.floor(Math.min(innerWidth, innerHeight * GLW / GLH)); g.style.setProperty('width', w + 'px', 'important'); g.style.setProperty('height', Math.round(w * GLH / GLW) + 'px', 'important'); };
+  addEventListener('resize', fit); addEventListener('orientationchange', fit); if (window.visualViewport) visualViewport.addEventListener('resize', fit); addEventListener('DOMContentLoaded', fit); setInterval(fit, 1500);
+}   // touch + landscape: both screens side by side, controls drawn over the picture
 if (!dev) { document.documentElement.style.setProperty('--w', GLW); document.documentElement.style.setProperty('--h', GLH); }
 const useTimer = (params.get('pace') || (innerWidth >= 900 ? 'timer' : 'raf')) === 'timer';   // emulation clock from a timer (independent of how often the browser repaints) on desktop; rAF on phones
 const scale = parseFloat(params.get('scale') || '1.5');                // on-page size of the screens relative to the 3DS native size
