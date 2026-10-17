@@ -117,6 +117,7 @@
   #cpad #nub { position: absolute; left: 50%; top: 50%; width: calc(var(--u) * 1.3); height: calc(var(--u) * 1.3); margin: calc(var(--u) * -.65) 0 0 calc(var(--u) * -.65); border-radius: 50%; background: radial-gradient(circle at 40% 35%, #4a5261, #2b313c); box-shadow: 0 3px 8px rgba(0,0,0,.5); pointer-events: none; transition: transform .08s; }
   #cpad.drag #nub { transition: none; background: radial-gradient(circle at 40% 35%, #5d79b8, #34466e); }
   #cpad small { position: absolute; left: 50%; bottom: -17px; transform: translateX(-50%); font: 600 9.5px ui-monospace, Menlo, monospace; color: #9aa4b2; white-space: nowrap; }
+  #ctl .dpad { display: none !important; } html.dpad #ctl .dpad { display: grid !important; }   /* the circle pad already covers the arrows (the core mirrors it into the direction bits); ?dpad=1 brings the cross back */
   #ctl .row2 { display: flex; gap: calc(var(--u) * .3); align-items: flex-end; }
   html.player #gl { width: min(calc(100vw - 24px), calc((100dvh - 24px - var(--ctlh, 0px)) * var(--w, 400) / var(--h, 480)), calc(var(--w, 400) * 3px)) !important; }
   /* landscape window: the two screens in the middle, controls on both sides */
@@ -189,7 +190,7 @@
     <div class="col left">
       <div class="sh"><b data-k="L">L<em>Q</em></b></div>
       <div class="row2">
-        <div id="cpad"><div id="nub"></div><small>circle pad · arrows</small></div>
+        <div id="cpad"><div id="nub"></div><small>circle pad · arrow keys</small></div>
         <div class="dpad"><b data-k="Up">↑</b><b data-k="Left">←</b><b data-k="Right">→</b><b data-k="Down">↓</b></div>
       </div>
     </div>
@@ -220,6 +221,7 @@
 const params = new URLSearchParams(location.search);
 const dev = params.has('dev') ? params.get('dev') === '1' : ['name', 'report', 'fscript', 'fscriptfile', 'ff', 'shots', 'rp', 'glrec', 'env', 'frames', 'turbo', 'bench'].some((k) => params.has(k)) || !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda);   // test/app launches keep the diagnostic layout
 if (!dev) document.documentElement.classList.add('player');
+if (params.get('dpad') === '1') document.documentElement.classList.add('dpad');
 if ((window.matchMedia && matchMedia('(pointer: coarse)').matches) || params.get('touch') === '1') { document.documentElement.classList.add('coarse'); addEventListener('DOMContentLoaded', () => document.querySelectorAll('input[type=file]').forEach((i) => i.removeAttribute('accept'))); }   // iOS greys out files whose type it does not know (.3ds), so no filter on touch devices
 const phone = params.get('ui') ? params.get('ui') === 'phone' : (dev && (innerWidth < 900 || /iPhone|iPod/.test(navigator.userAgent)));   // the player skin has its own responsive layout   // ui=phone|desktop overrides
 if (phone) document.documentElement.classList.add('phone');
