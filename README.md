@@ -51,6 +51,15 @@ Measured on an M-series Mac (Comet 154 and a clean Chromium 148, visible window)
 | Save data | ✅ `persist=1` keeps SD card and game saves in IndexedDB; ✗ no full save states |
 | Input | ✅ keyboard, on-screen controller (circle pad, D-pad, ABXY, shoulders, Start/Select, each labelled with its key), touch on the lower screen |
 
+### Not finished yet
+
+- **iPhone, heavy 3D scenes:** World 1-1 runs at 16-22 fps (menus and light scenes 55-63). The cost is in the drawing, not in the CPU (see the table); the cause is being narrowed down. When the emulator runs slower than real time the sound crackles.
+- **Safari on the Mac:** the same heavy scene about 44 fps (Chrome 60). Firefox and Chrome on Android: not tested.
+- **Super Smash Bros. for 3DS** shows black screens; **Mario Kart 7** was not tried on the iPhone; only Mario 3D Land and Mario Kart 7 have been played through, other commercial games are untested.
+- **Freezes** of 0.3-1 s when a new shader or a new region of game code is compiled; the first ~500 frames of a big game stutter.
+- **No soft shadow** under characters in Mario 3D Land (trees and islands have them).
+- **No save states** (game saves persist, `persist=1`); a few homebrew examples stop on a Panda `[FATAL]` (for example sockets) and five render suspiciously.
+
 Audio notes: on iOS Web Audio is muted by the ringer switch, so the app declares a playback audio session and the page starts a looping silent `<audio>` clip on the first touch; the sound only starts after the first tap. The page used to switch sound off whenever the URL had `turbo=0` (the iOS app always passes it): fixed.
 
 Gaps in the sound: the emulator makes sound a little slower than the device plays it when frames are heavy (e.g. 59.3 fps against 59.83), so the buffer ran dry and short gaps were audible (the picture hides this). The web build now reads the buffer with a dynamic rate control (the device speed follows the buffer fill by up to ±1.5 %, no audible pitch change): after loading the starved-sample counter stays flat. Big hiccups (a 300+ ms shader compile) can still leave a gap.
