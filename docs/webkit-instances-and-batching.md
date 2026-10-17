@@ -53,11 +53,24 @@ Reading: with packing the two runs agree (43.6 and 43.5 Hz, 137 and 148 samples,
 
 ### iPhone Air (17 Oct, 22:30, thermal nominal, build with `JIT_BATCH=256`, played by hand to W1-1)
 
-Light scenes (title, menus, cutscenes, frames 1000-5500): loop 47-63 Hz, 4.2-5.5 ms emulator time per frame, nothing killed. **World 1-1 (frames 5660-8170): loop 16-22 Hz, speed 32-44, emulator 7.8-10.6 ms per frame**, guest 5.4 ms, 3545 dispatcher returns per frame, ~74 700 blocks. The same scene on the same phone before packing was 21.4-22 Hz (notes of 17 Oct). **So the packing did not move the phone: the Safari-on-Mac gain (19 -> 44 Hz) does not carry over to the iPhone.** The loop period (~47 ms) is far larger than the emulator time (~8.4 ms), so most of the frame is spent outside our code (present / GPU / compositor / GC); the replay of a recorded W1-1 frame in a bare page on the same phone gave 58.9 Hz, so the stream of GL calls alone does not explain it either. Open: whether the per-instance cost also exists on the phone (run `probe-glreplay.html` with ballast on the phone), and what else differs between the replay page and the emulator.
+Light scenes (title, menus, cutscenes, frames 1000-5500): loop 47-63 Hz, 4.2-5.5 ms emulator time per frame, nothing killed. **World 1-1 (frames 5660-8170): loop 16-22 Hz, speed 32-44, emulator 7.8-10.6 ms per frame**, guest 5.4 ms, 3545 dispatcher returns per frame, ~74 700 blocks. The same scene on the same phone before packing was 21.4-22 Hz (notes of 17 Oct). **So the packing did not move the phone: the Safari-on-Mac gain (19 -> 44 Hz) does not carry over to the iPhone.** The loop period (~47 ms) is far larger than the emulator time (~8.4 ms), so most of the frame is spent outside our code (present / GPU / compositor / GC); the replay of a recorded W1-1 frame in a bare page on the same phone gave 58.9 Hz, so the stream of GL calls alone does not explain it either. Whether the per-instance cost exists on the phone: no, see the next section.
 
 ### Chrome (Comet 154, Mac, packed blocks, same route; one short run, 17 Oct 22:37)
 
 Right after the fast-forward ended (frame 7518-7638, W1-1, 740-800 k ticks per frame): speed 59-60, emulator 5.4-5.8 ms per frame, **paint 31-33 Hz**, only three samples (the loop-rate field reads 58-84 there because it still contains the fast-forward bursts). Not enough for a verdict; the run was stopped on request. Do not read it as "Chrome 54-60 Hz with packing": the paint rate of this run is lower than the earlier Chrome numbers.
+
+### iPhone Air: no per-instance cost up to 40 000 instances (17 Oct, 22:50) ✅
+
+Bare replay page on the phone (`probe-glreplay.html`, the recorded W1-1 frame: 345 draws, 8711 calls, 9 ms busy work, flags `DSPCF`, rAF), with ballast of live instances (`growBallast`: one module + instance each) kept alive:
+
+| live instances | loop | repaints | JS per frame |
+|---|---|---|---|
+| 0 | 59.0 Hz | 59.0 | 9.34 ms |
+| 10 000 | 59.0 | 59.0 | 9.28 |
+| 20 000 | 59.1 | 59.2 | 9.27 |
+| 40 000 | 58.8 | 58.9 | 9.35 |
+
+On the Mac the same test gave 43 Hz at 40 000. So the phone does **not** have the per-instance price (at least up to 40 000; the game keeps ~74 000 blocks, 70 000 was not run on the phone), which is why packing the blocks did not change W1-1 there. The 16-22 Hz of the phone in W1-1 comes from something else; the replay of the same GL stream with the same busy time holds 59 Hz, so the difference must be in what the real emulator does besides that (candidates: audio thread, uploads from the 256 MB heap, real JIT code running between the calls, memory pressure of the page). (The user agent string of the page says iOS 18_7: WebKit freezes it, ignore.)
 
 ## 5. Reproducible route to World 1-1 without hands
 
@@ -70,6 +83,6 @@ Game facts (✅ user + screenshots): StreetPass dialog #1 "OK" takes A (~frame 1
 
 ## 6. Not done / open
 
-- iPhone: batching measured (above): no change in W1-1 (16-22 Hz). Next: ballast replay on the phone, and what else separates the phone's emulator loop from the bare replay.
+- iPhone: batching measured (above): no change in W1-1 (16-22 Hz). The ballast replay on the phone is done (no per-instance cost up to 40 000). Next: find what else separates the phone's emulator loop from the bare replay (add pieces of the emulator to the replay one at a time).
 - Compile hitches in new areas (130-250 blocks, 30-47 ms), shader compile freezes (Mario Kart: ~1 s per program), missing shadows under characters in W1-1 (`docs/related-work-and-ios-hang.md`), Smash black screen.
 - Not tried: `persist=1` (IndexedDB game data) to shorten the route; evicting only start-up blocks.
