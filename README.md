@@ -17,11 +17,9 @@
 [![devkitPro 3ds-examples](https://img.shields.io/badge/3ds--examples_(iPhone)-53%2F58_passing-brightgreen?style=flat-square)](docs/examples-status.md)
 [![Fork Architecture](https://img.shields.io/badge/architecture-3--repo_split-informational?style=flat-square)](docs/forks.md)
 
-<p align="center">
-  <img src="assets/gl-textured-cube-comet.jpg" width="32%" alt="Textured Cube (WebGL2)">
-  <img src="assets/doom-freedoom-comet.jpg" width="32%" alt="PrBoom+ 3DS / Freedoom (WebGL2)">
-  <img src="assets/minicraft-character-screen-comet.jpg" width="32%" alt="Minicraft 3DS (WebGL2)">
-</p>
+<img src="assets/preview-minicraft.jpg" width="360" alt="Minicraft 3DS running in the browser: both 3DS screens rendered with WebGL2">
+
+<sub>Minicraft 3DS (free homebrew) in a browser tab: ARM code → WebAssembly, PICA → WebGL2</sub>
 
 </div>
 
