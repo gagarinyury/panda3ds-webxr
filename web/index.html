@@ -22,7 +22,25 @@
   #pad b { min-width: 46px; padding: 12px 8px; background: #2a2f38; border-radius: 8px; color: #dfe6ee; font: 600 14px system-ui; }
   #pad b.on { background: #4b86d9; }
   pre { background: #0d0f12; padding: 8px; max-height: 160px; overflow: auto; white-space: pre-wrap; }
+  /* phone: no scrolling, no on-screen buttons; the game on top, a dense live panel below (tap the top screen = A) */
+  html.phone, html.phone body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+  html.phone body { font-size: 11px; line-height: 1.25; display: flex; flex-direction: column; padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); box-sizing: border-box; }
+  html.phone main { display: flex; flex-direction: column; padding: 0; gap: 0; flex: 1 1 auto; min-height: 0; }
+  html.phone #stage { flex: 0 0 auto; }
+  html.phone #gl { margin: 0 auto; }
+  html.phone #pad, html.phone #rom-drop, html.phone #diag > small, html.phone #log { display: none !important; }
+  html.phone #diag { position: static; border: 0; border-radius: 0; padding: 4px 6px; flex: 1 1 auto; min-height: 0; overflow: hidden; background: #0b0d10; }
+  html.phone #stats { display: none; }
+  html.phone #spark { height: 54px; margin: 3px 0; }
+  #hud { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px 6px; }
+  #hud div { background: #14181d; border-radius: 5px; padding: 2px 5px; min-width: 0; }
+  #hud small { display: block; color: #6b7480; font-size: 9px; white-space: nowrap; }
+  #hud b { font: 600 14px ui-monospace, Menlo, monospace; color: #e6edf5; white-space: nowrap; }
+  #hud b.ok { color: #3fb950; } #hud b.warn { color: #e3a008; } #hud b.bad { color: #f85149; }
+  #hudline { color: #8a93a0; font-size: 10px; margin-top: 2px; word-break: break-word; max-height: 3.8em; overflow: hidden; }
+  #romtiny { position: fixed; right: 6px; top: calc(env(safe-area-inset-top) + 4px); z-index: 5; font-size: 18px; opacity: .55; }
 </style>
+<label id="romtiny" style="display:none">📂<input type="file" id="rom-file2" accept=".3ds,.cxi,.cci,.3dsx,.elf" style="display:none"></label>
 <main>
   <section id="stage">
   <canvas id="gl" width="720" height="240" style="display:none"></canvas>
@@ -43,6 +61,7 @@
   </section>
   <aside id="diag">
     <div id="stats">loading…</div>
+    <div id="hud" style="display:none"></div><div id="hudline"></div>
     <div id="counters"></div>
     <canvas id="spark" width="720" height="180"></canvas>
     <small>frame time (emulator), last 240 frames; bars: green ≤ 16.7 ms, orange ≤ 2×, red above; line = budget</small>
@@ -51,6 +70,8 @@
 </main>
 <script>
 const params = new URLSearchParams(location.search);
+const phone = params.get('ui') ? params.get('ui') === 'phone' : (innerWidth < 900 || /iPhone|iPod/.test(navigator.userAgent));   // ui=phone|desktop overrides
+if (phone) document.documentElement.classList.add('phone');
 // test aid: rafcap=30 makes requestAnimationFrame fire at most 30 times per second (reproduces a browser that throttles the page)
 { const cap = parseFloat(new URLSearchParams(location.search).get('rafcap') || '0');
   if (cap) { const orig = window.requestAnimationFrame.bind(window); let last = -1e9; window.requestAnimationFrame = (cb) => orig(function f(t) { if (t - last < 1000 / cap - 2) return void orig(f); last = t; cb(t); }); } }
@@ -291,10 +312,13 @@ function touchAt(e, down) {   // bottom screen (320x240) inside the GL canvas: s
 }
 {
   const c = document.getElementById('gl'); let dragging = false;
-  c.addEventListener('pointerdown', (e) => { dragging = true; c.setPointerCapture(e.pointerId); touchAt(e, true); });
+  let tapA = false;
+  const onTopScreen = (e) => { const r = c.getBoundingClientRect(); return !side && (e.clientY - r.top) * GLH / r.height < 240; };
+  c.addEventListener('pointerdown', (e) => { dragging = true; c.setPointerCapture(e.pointerId); if (phone && onTopScreen(e)) { tapA = true; press('A', true); } else touchAt(e, true); });
   c.addEventListener('pointermove', (e) => { if (dragging) touchAt(e, true); });
   const end = (e) => {
     dragging = false;
+    if (tapA) { tapA = false; setTimeout(() => press('A', false), 120); return; }
     // Hold touch briefly so guest HID polling always captures the tap
     setTimeout(() => touchAt(e, false), 50);
   };
@@ -515,7 +539,7 @@ async function runDrawBench() {
 async function start() {
   if (benchDraws) { await runDrawBench(); return; }
   { const gc = document.getElementById('gl'); if (gc) { gc.addEventListener('webglcontextlost', () => { log('[gl] CONTEXT LOST at frame ' + frames, true); post('log', { msg: '[gl] CONTEXT LOST at frame ' + frames }); }); gc.addEventListener('webglcontextrestored', () => { log('[gl] context restored', true); post('log', { msg: '[gl] context restored' }); }); } }
-  if (useGL) { const g = document.getElementById('gl'); g.width = GLW; g.height = GLH; g.style.width = Math.round(GLW * (innerWidth >= 900 ? Math.min(scale, (innerWidth - 440) / GLW) : Math.min(scale, (innerWidth - 16) / GLW))) + 'px'; g.style.display = 'block'; document.getElementById('pad').style.display = 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
+  if (useGL) { const g = document.getElementById('gl'); g.width = GLW; g.height = GLH; g.style.width = (phone ? Math.floor(Math.min(innerWidth, 0.54 * innerHeight * GLW / GLH)) : Math.round(GLW * (innerWidth >= 900 ? Math.min(scale, (innerWidth - 440) / GLW) : Math.min(scale, (innerWidth - 16) / GLW)))) + 'px'; g.style.display = 'block'; document.getElementById('pad').style.display = phone ? 'none' : 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
   if (!Module._web_init(useGL ? 1 : 0, GLW, GLH)) { log('[FATAL] web_init failed', true); finish(); return; }
   initGpuTimer();   // after web_init: the emulator must be the one that creates the WebGL context (its attributes: no alpha, depth, stencil)
 
@@ -527,6 +551,8 @@ async function start() {
       await loadRomBuffer(await file.arrayBuffer(), file.name);
     }
   });
+  if (phone && !(params.has('rom') || native)) document.getElementById('romtiny').style.display = 'block';
+  document.getElementById('rom-file2')?.addEventListener('change', async (e) => { const file = e.target.files[0]; if (file) await loadRomBuffer(await file.arrayBuffer(), file.name); });
   window.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
   window.addEventListener('drop', async (e) => {
     e.preventDefault();
@@ -547,6 +573,7 @@ async function start() {
 // ---- live diagnostics (right column) ----
 const frameMs = [], gpuMs = [];            // ring buffers: emulator time per frame, GPU time per frame (when the browser has EXT_disjoint_timer_query_webgl2)
 let jitT0 = [0, 0, 0], jitRate = [0, 0, 0], presentCount = 0, presentHz = 0, battery = null, rafCount = 0, rafHz = 0, rafT = performance.now(), tickMsAvg = 0, lastTickAt = 0, maxGapMs = 0, gapWin = 0;
+let jitS = [0, 0, 0, 0, 0], jitSF = 0; const jitStat = { guestMsFr: null, retFr: null, ticksFr: null };
 let glx = null, tq = null, pendingQ = [], diagF = 0, diagT = performance.now(), fpsNow = 0, drawsPerFrame = null, lastCompiled = 0, compileRate = 0, worstFrame = 0, flushesAtWorst = 0;
 function initGpuTimer() {   // only when the page is opened on its own (my probe pages embed it in an iframe and use the same query slot)
   if (!useGL || window !== window.top || params.get('gpu') === '0') return;
@@ -564,6 +591,7 @@ function renderDiag() {
   const now = performance.now(), dt = (now - diagT) / 1000;
   if (dt > 0) { fpsNow = (frames - diagF) / dt; diagF = frames; diagT = now; rafHz = rafCount / dt; rafCount = 0; presentHz = presentCount / dt; presentCount = 0;
     { const T = (Module.jit && Module.jit.t) || [0, 0, 0]; for (let i = 0; i < 3; i++) { jitRate[i] = (T[i] - jitT0[i]) / dt; jitT0[i] = T[i]; } } maxGapMs = gapWin; gapWin = 0; }
+  { const S = (Module.jit && Module.jit.s) || [0, 0, 0, 0, 0], df = frames - jitSF; if (dt > 0 && df > 0) { jitStat.guestMsFr = ((S[3] - S[4]) - (jitS[3] - jitS[4])) / df; jitStat.retFr = (S[0] - jitS[0]) / df; jitStat.ticksFr = (S[1] - jitS[1]) / df; } jitS = S.slice(); jitSF = frames; }
   const jit0 = Module.jit && Module.jit.impls[0], flushes = jit0 ? (jit0.flushes || 0) : 0;
   if (dt > 0 && jit0) { compileRate = ((jit0.count || 0) - lastCompiled) / dt; lastCompiled = jit0.count || 0; }
   const m = mem(), last = frameMs.slice(-60), avg = last.length ? last.reduce((a, b) => a + b, 0) / last.length : 0;
@@ -571,14 +599,30 @@ function renderDiag() {
   const rows = [['frame', frames], ['speed (real)', fmt(fpsNow) + ' fps' + (fpsNow >= 58 ? '' : '  (target 59.8)')], ['our loop ticks (' + (useTimer ? 'timer' : 'rAF') + ')', fmt(rafHz, 0) + ' per s  (longest gap ' + fmt(maxGapMs, 0) + ' ms)'], ['browser repaints (rAF)', fmt(presentHz, 0) + ' per s'], ['browser state', document.visibilityState + ', ' + (document.hasFocus() ? 'focused' : 'NOT focused') + (battery ? ', battery ' + Math.round(battery.level * 100) + '% ' + (battery.charging ? 'charging' : 'on battery') : '')], ['one tick takes (JS)', fmt(tickMsAvg) + ' ms'], ['emulator, avg 60 fr', fmt(avg) + ' ms'], ['emulator, worst', fmt(worst, 0) + ' ms'],
     ['GPU / rendered frame', tq ? (gAvg === null ? '…' : fmt(gAvg) + ' ms') : 'n/a in this browser'], ['audio', audioOn ? (window.__audio.ctxs.length ? window.__audio.ctxs[0].state + ', level ' + window.__audio.rms.toFixed(3) + ' (peak ' + window.__audio.peak.toFixed(2) + ')' : 'no device') : 'off'], ['slow frames >30 ms', hitchStats.total ? hitchStats.total + ' (shader ' + hitchStats.shader + ', jit ' + hitchStats.jit + ', other ' + hitchStats.other + ')' : '0'], ['last slow frames', hitchStats.recent.join('; ') || '-'], ['late (dropped)', late], ['worst frame at', worstFrame ? '#' + worstFrame + '  (flushes by then: ' + flushesAtWorst + ')' : '–'], ['JIT cache flushes', flushes + (jit0 && jit0.droppedBlocks ? '  (' + jit0.droppedBlocks + ' blocks thrown away)' : '')], ['compiling now', fmt(compileRate, 0) + ' blocks/s'], ['  JIT cost: translate+emit', fmt(jitRate[0], 0) + ' ms/s'], ['  JIT cost: wasm compile', fmt(jitRate[1], 0) + ' ms/s'], ['  JIT cost: instantiate', fmt(jitRate[2], 0) + ' ms/s'], ['JIT modules (total compiled)', m.blocks], ['JIT wasm code', m.jitKB + ' KB'], ['wasm memory', m.wasmMB + ' MB'],
     ['layout', (side ? 'side by side' : 'stacked') + (useGL ? ', WebGL2' : ', no GPU')]];
+  if (phone) {
+    const nat = window.__native || {}, th = ['nominal', 'fair', 'SERIOUS', 'CRITICAL'][nat.thermal] || '–';
+    const lv = (v, ok, warn) => v === null || v === undefined || Number.isNaN(v) ? '' : (v <= ok ? 'ok' : v <= warn ? 'warn' : 'bad');
+    const hi = (v, ok, warn) => v === null || v === undefined || Number.isNaN(v) ? '' : (v >= ok ? 'ok' : v >= warn ? 'warn' : 'bad');
+    const jitMs = jitRate[0] + jitRate[1] + jitRate[2];
+    const cells = [
+      ['speed fps', fmt(fpsNow, 0), hi(fpsNow, 56, 45)], ['loop Hz', fmt(rafHz, 0), ''], ['emu avg ms', fmt(avg), lv(avg, 12, 16.7)], ['emu worst ms', fmt(worst, 0), lv(worst, 33, 100)],
+      ['thermal', th, nat.thermal === undefined ? '' : nat.thermal === 0 ? 'ok' : nat.thermal === 1 ? 'warn' : 'bad'], ['free MB (app)', nat.availMB === undefined ? '–' : nat.availMB, ''], ['battery', battery ? Math.round(battery.level * 100) + '%' + (battery.charging ? '+' : '') : '–', ''], ['GPU ms', tq ? fmt(gAvg) : 'n/a', ''],
+      ['guest ms/fr', fmt(jitStat.guestMsFr, 1), ''], ['returns/fr', fmt(jitStat.retFr, 0), ''], ['ticks/fr k', jitStat.ticksFr === null ? '–' : fmt(jitStat.ticksFr / 1000, 0), ''], ['wasm MB', m.wasmMB, ''],
+      ['slow >30ms', hitchStats.total, hitchStats.total ? 'warn' : 'ok'], ['shader/jit/other', hitchStats.shader + '/' + hitchStats.jit + '/' + hitchStats.other, ''], ['JIT blk/s', fmt(compileRate, 0), lv(compileRate, 5, 50)], ['JIT cost ms/s', fmt(jitMs, 0), lv(jitMs, 20, 100)],
+    ];
+    const hud = document.getElementById('hud'); hud.style.display = 'grid';
+    hud.innerHTML = cells.map(([k, v, c]) => `<div><small>${k}</small><b class="${c}">${v}</b></div>`).join('');
+    document.getElementById('hudline').textContent = 'frame ' + frames + ' · late ' + late + ' · audio ' + (audioOn ? (window.__audio.ctxs.length ? window.__audio.ctxs[0].state + ' ' + window.__audio.rms.toFixed(2) : 'no device') : 'off') + (nat.lowPower ? ' · LOW POWER' : '') + (hitchStats.recent.length ? ' · ' + hitchStats.recent.slice(-3).join('; ') : '');
+  } else
   document.getElementById('counters').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
-  const c = document.getElementById('spark'), g = c.getContext('2d'), W = c.width, H = c.height, N = 240, bw = W / N;
+  const c = document.getElementById('spark'); if (phone && c.height !== 80) c.height = 80;
+  const g = c.getContext('2d'), W = c.width, H = c.height, N = 240, bw = W / N;
   g.fillStyle = '#0b0d10'; g.fillRect(0, 0, W, H);
   const top = Math.max(40, ...frameMs.slice(-N)), y = (v) => H - (Math.min(v, top) / top) * (H - 4) - 2;
   frameMs.slice(-N).forEach((v, i) => { g.fillStyle = v <= FRAME_MS ? '#3fb950' : (v <= 2 * FRAME_MS ? '#e3a008' : '#f85149'); g.fillRect(i * bw, y(v), Math.max(1, bw - 1), H - y(v)); });
   if (gpuMs.length) { g.strokeStyle = '#58a6ff'; g.lineWidth = 2; g.beginPath(); gpuMs.slice(-N).forEach((v, i) => { const px = i * bw, py = y(v); i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.stroke(); }
   g.strokeStyle = '#8b949e'; g.setLineDash([6, 4]); g.lineWidth = 1; g.beginPath(); g.moveTo(0, y(FRAME_MS)); g.lineTo(W, y(FRAME_MS)); g.stroke(); g.setLineDash([]);
-  g.fillStyle = '#8b949e'; g.font = '16px ui-monospace, monospace'; g.fillText('16.7 ms', 6, y(FRAME_MS) - 4); g.fillText('max ' + top.toFixed(0) + ' ms' + (gpuMs.length ? '   blue = GPU' : ''), 6, 16);
+  g.fillStyle = '#8b949e'; g.font = (phone ? '22px' : '16px') + ' ui-monospace, monospace'; g.fillText('16.7 ms', 6, y(FRAME_MS) - 4); g.fillText('max ' + top.toFixed(0) + ' ms' + (gpuMs.length ? '   blue = GPU' : ''), 6, 16);
 }
 setInterval(renderDiag, 250);
 (function presentProbe() { presentCount++; requestAnimationFrame(presentProbe); })();   // how often the browser actually repaints this page
@@ -647,7 +691,7 @@ function tick(now) {
     lastBeat = now;
     const st = `frame ${frames}  avg ${(sum / Math.max(frames, 1)).toFixed(2)} ms  worst ${worst.toFixed(0)} ms  late ${late}  ${mem().wasmMB} MB  (budget 16.7)`;
     document.getElementById('stats').textContent = st;
-    post('tick', { speed: +fpsNow.toFixed(1), loopHz: +rafHz.toFixed(0), emuMs: +(frameMs.slice(-60).reduce((x, y) => x + y, 0) / Math.max(1, frameMs.slice(-60).length)).toFixed(1), frames, avgMs: sum / Math.max(frames, 1), worstMs: worst, late, hitches, ...mem(), fps: frames / ((performance.now() - t0) / 1000) });
+    post('tick', { speed: +fpsNow.toFixed(1), loopHz: +rafHz.toFixed(0), emuMs: +(frameMs.slice(-60).reduce((x, y) => x + y, 0) / Math.max(1, frameMs.slice(-60).length)).toFixed(1), frames, avgMs: sum / Math.max(frames, 1), worstMs: worst, late, hitches, guestMsFr: jitStat.guestMsFr === null ? null : +jitStat.guestMsFr.toFixed(2), retFr: jitStat.retFr === null ? null : Math.round(jitStat.retFr), ticksFr: jitStat.ticksFr === null ? null : Math.round(jitStat.ticksFr), ...mem(), fps: frames / ((performance.now() - t0) / 1000) });
   }
   tickMsAvg = tickMsAvg * 0.95 + (performance.now() - tickStart) * 0.05;
   if (!alive || (maxFrames && frames >= maxFrames)) { finish(); return; }

@@ -154,6 +154,7 @@ final class Host: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let model = withUnsafePointer(to: &info.machine) { $0.withMemoryRebound(to: CChar.self, capacity: 64) { String(cString: $0) } }
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             plog("{\"type\":\"native\",\"thermal\":\(ProcessInfo.processInfo.thermalState.rawValue),\"appAvailMB\":\(os_proc_available_memory() / 1_048_576),\"lowPower\":\(ProcessInfo.processInfo.isLowPowerModeEnabled)}")
+            self.webView.evaluateJavaScript("window.__native={thermal:\(ProcessInfo.processInfo.thermalState.rawValue),availMB:\(os_proc_available_memory() / 1_048_576),lowPower:\(ProcessInfo.processInfo.isLowPowerModeEnabled)}", completionHandler: nil)
         }
         if let pl = d.string(forKey: "playlist"), !pl.isEmpty {
             playlist = pl.split(separator: ",").map(String.init)
