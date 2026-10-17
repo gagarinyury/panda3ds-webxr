@@ -26,7 +26,7 @@ Gaps in the sound: the emulator makes sound a little slower than the device play
 
 More audio notes: in the single-threaded web build the DSP used to wait for the audio device to drain its buffer and froze the page (a deadlock): it now drops the oldest audio instead; miniaudio's Web Audio code needs `HEAPF32` exported from the Emscripten runtime.
 
-iPhone frame pacing: on the phone some scenes presented at 23-26 Hz (rAF) although the GPU needs only ~1.5 ms a frame (measured with a 1-pixel `readPixels` after each frame). Waiting for the GPU at the end of each frame (default in the iOS app, env `GL_SYNC:0` turns it off) keeps no frames queued: the same scene went from 52-55 fps (dips to 43) to ~60 fps (min 56). `gl.finish()` is useless for this on WebKit (returns at once).
+iPhone frame pacing: waiting for the GPU after every frame (a 1-pixel `readPixels`) looked like a fix on a light scene, but in the heavy demo scene the GPU needs 7-9 ms a frame and the wait serialised it with the 8 ms of CPU work: 35-47 fps. It is now off (env `GL_SYNC:1` turns it on as a measuring aid). `gl.finish()` returns at once on WebKit and measures nothing.
 
 Known problems: freezes of 0.5-1 s the first time a new shader is compiled; the first ~500 frames of a big game run slower while the JIT compiles 50-100 thousand blocks; the rendering of five homebrew examples is suspicious and not compared with native Panda; on the iPhone one launch right after install was killed for memory (not reproduced). Open ideas are listed in [docs/upstream-pr-plan.md](docs/upstream-pr-plan.md) (what could go upstream) and the issues above.
 

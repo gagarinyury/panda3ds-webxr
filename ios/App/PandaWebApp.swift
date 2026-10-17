@@ -142,7 +142,8 @@ final class Host: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let script = d.string(forKey: "script") ?? ""
         let shots = d.string(forKey: "shots") ?? "0"
         let pace = d.string(forKey: "pace") ?? ""
-        return "rom=\(rom)&frames=\(frames)&turbo=\(turbo)&name=\(name)&report=\(report)&dbg=\(dbg)&env=\(env)&gl=\(gl)&sd=\(sd)&script=\(script)&shots=\(shots)&pace=\(pace)"
+        let persist = d.string(forKey: "persist") ?? "1"   // keep SD card and game saves between launches (IndexedDB); -persist 0 starts clean
+        return "rom=\(rom)&frames=\(frames)&turbo=\(turbo)&name=\(name)&report=\(report)&dbg=\(dbg)&env=\(env)&gl=\(gl)&sd=\(sd)&script=\(script)&shots=\(shots)&pace=\(pace)&persist=\(persist)"
     }
 
     func start() {

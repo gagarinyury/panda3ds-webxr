@@ -57,7 +57,7 @@ const params = new URLSearchParams(location.search);
 const rom = params.get('rom') || '/run/ctr-hello.3dsx';   // absolute path on the dev server / app scheme
 const maxFrames = parseInt(params.get('frames') || '0');   // 0 = run forever
 const report = params.get('report') === '1';               // send a result to the host (server or native app) when done
-const audioMode = params.get('turbo') === '1' ? '0' : (params.get('audio') || 'on');   // audio=0 off; on = HLE DSP + output device; dsp = HLE DSP only; dev = output device only (debugging aids); turbo runs are silent
+const audioMode = params.get('turbo') === '1' || (params.get('env') || '').indexOf('AUDIO:0') >= 0 ? '0' : (params.get('audio') || 'on');   // audio=0 off; on = HLE DSP + output device; dsp = HLE DSP only; dev = output device only (debugging aids); turbo runs are silent
 const audioOn = audioMode === 'on' || audioMode === 'dev';
 const turbo = params.get('turbo') === '1';                 // run as fast as possible (benchmark) instead of real time
 const name = params.get('name') || 'run';
@@ -80,7 +80,8 @@ if (liveOn && window.WebGL2RenderingContext) {   // dev only: report WebGL calls
     P[k] = function (...a) { const t = performance.now(); const r = orig.apply(this, a); const d = performance.now() - t; if (d > 25) post('log', { msg: '[gl] slow ' + k + ' ' + d.toFixed(0) + ' ms at frame ' + (typeof frames === 'number' ? frames : '?') }); return r; };
   }
 }
-if (liveOn) {   // dev only: a fixed CPU benchmark (compare browsers) and the time per emulated frame spent inside WebGL calls, sent to /live
+const glProf = (params.get('env') || '').indexOf('GL_PROF') >= 0;   // env GL_PROF:1 on the phone: send the per-frame WebGL time and the costliest calls to the host
+if (liveOn || glProf) {   // dev only: a fixed CPU benchmark (compare browsers) and the time per emulated frame spent inside WebGL calls, sent to /live
   setTimeout(() => { const t = performance.now(); let x = 0; for (let i = 0; i < 2e7; i++) x += i % 7; post('log', { msg: '[gl] bench js 2e7 loop ' + (performance.now() - t).toFixed(0) + ' ms (x=' + x + ') ua=' + navigator.userAgent.slice(-40) }); }, 3000);
   if (window.WebGL2RenderingContext) {
     const P = WebGL2RenderingContext.prototype, acc = { ms: 0, n: 0 }, per = {};
@@ -116,9 +117,9 @@ if (window.WebGL2RenderingContext) {
   }
 }
 const finishProbe = !!(params.get('env') || '').indexOf && (params.get('env') || '').indexOf('GL_FINISH') >= 0, finishStat = { n: 0, sum: 0, max: 0, over: 0 };
-// Frame sync: on the iPhone the page presents at 23-26 Hz in some scenes although the GPU needs only ~1.5 ms per frame (measured). Waiting for the GPU at the end of each
-// frame keeps no frames queued and brings the same scene from 52-55 to ~60 fps. On by default in the iOS app (env GL_SYNC:0 turns it off), off elsewhere (env GL_SYNC:1 turns it on).
-const frameSync = native ? (params.get('env') || '').indexOf('GL_SYNC:0') < 0 : (params.get('env') || '').indexOf('GL_SYNC:1') >= 0;
+// Frame sync (env GL_SYNC:1): wait for the GPU with a 1-pixel read at the end of every frame. OFF by default: it serialises the GPU time with the CPU time, which cost
+// 7-9 ms a frame in the heavy iPhone demo scene (35-47 fps instead of ~60). Kept as a measuring aid (how long the GPU needs per frame).
+const frameSync = (params.get('env') || '').indexOf('GL_SYNC:1') >= 0;
 let finishCtx = null; const finishPx = new Uint8Array(4);   // taken on first use: the emulator must be the one that creates the context (its attributes: depth, stencil)
 const hitchStats = { jit: 0, shader: 0, other: 0, total: 0, worst: 0, recent: [] };
 // Audio: miniaudio's Web Audio backend creates a ScriptProcessorNode. Browsers keep the context suspended until a user gesture: resume it on the first one.
