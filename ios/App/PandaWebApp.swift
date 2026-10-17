@@ -103,6 +103,7 @@ final class Host: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     }
 
     func makeWebView() {
+        UIApplication.shared.isIdleTimerDisabled = true   // a game: keep the screen on (it also keeps unattended test runs from losing the device to the auto-lock)
         if let old = webView {
             old.stopLoading()
             old.configuration.userContentController.removeScriptMessageHandler(forName: "panda")

@@ -121,6 +121,42 @@ const finishProbe = !!(params.get('env') || '').indexOf && (params.get('env') ||
 // 7-9 ms a frame in the heavy iPhone demo scene (35-47 fps instead of ~60). Kept as a measuring aid (how long the GPU needs per frame).
 const frameSync = (params.get('env') || '').indexOf('GL_SYNC:1') >= 0;
 let finishCtx = null; const finishPx = new Uint8Array(4);   // taken on first use: the emulator must be the one that creates the context (its attributes: depth, stencil)
+// Measuring aid (env GL_DROP:idx|vtx|ubo): skip the orphaning glBufferData of one buffer kind after its first allocations (the old contents stay): shows what the allocations cost the GPU process
+{
+  const dm = /GL_DROP:(\w+)/.exec(params.get('env') || '');
+  if (dm && window.WebGL2RenderingContext) {
+    const target = { idx: 34963, vtx: 34962, ubo: 35345 }[dm[1]], seen = {}, P = WebGL2RenderingContext.prototype, orig = P.bufferData;
+    P.bufferData = function (t, ...a) { if (t === target && (seen[t] = (seen[t] || 0) + 1) > 8) return; return orig.call(this, t, ...a); };
+  }
+}
+// Measuring aid (env GL_NODRAW:1): keep every buffer allocation and upload but skip the draw calls themselves: what is left is the cost of the uploads
+if ((params.get('env') || '').indexOf('GL_NODRAW') >= 0 && window.WebGL2RenderingContext) {
+  const P = WebGL2RenderingContext.prototype;
+  for (const k of ['drawElements', 'drawArrays', 'drawRangeElements', 'drawElementsInstanced', 'drawArraysInstanced']) if (P[k]) P[k] = function () {};
+}
+// Measuring aid (env GL_FBCACHE:1): skip bindFramebuffer / framebufferTexture2D calls that set what is already set. On tile-based GPUs (Apple) re-attaching the same
+// texture can end the render pass, so ~140 of these a frame could be what the GPU spends its time on
+if ((params.get('env') || '').indexOf('GL_FBCACHE') >= 0 && window.WebGL2RenderingContext) {
+  const P = WebGL2RenderingContext.prototype, boundFb = { 36008: null, 36009: null }, att = new Map(), stat = window.__fbcache = { binds: 0, bindsSkipped: 0, atts: 0, attsSkipped: 0 };
+  const origBind = P.bindFramebuffer, origAtt = P.framebufferTexture2D, origDelFb = P.deleteFramebuffer, origDelTex = P.deleteTexture;
+  P.bindFramebuffer = function (t, fb) { stat.binds++; if (t === 36160) { if (boundFb[36008] === fb && boundFb[36009] === fb) { stat.bindsSkipped++; return; } boundFb[36008] = boundFb[36009] = fb; } else if (boundFb[t] === fb) { stat.bindsSkipped++; return; } else boundFb[t] = fb; return origBind.call(this, t, fb); };
+  P.framebufferTexture2D = function (t, a, tt, tex, lvl) {
+    stat.atts++; const fb = t === 36008 ? boundFb[36008] : boundFb[36009]; let m = att.get(fb); if (!m) att.set(fb, m = new Map());
+    const cur = m.get(a); if (cur && cur[0] === tt && cur[1] === tex && cur[2] === lvl) { stat.attsSkipped++; return; }
+    m.set(a, [tt, tex, lvl]); return origAtt.call(this, t, a, tt, tex, lvl);
+  };
+  P.deleteFramebuffer = function (fb) { att.delete(fb); return origDelFb.call(this, fb); };
+  P.deleteTexture = function (tex) { for (const m of att.values()) for (const [a, v] of m) if (v[1] === tex) m.delete(a); return origDelTex.call(this, tex); };
+  setInterval(() => post('log', { msg: '[gl] fbcache binds ' + stat.binds + ' (skipped ' + stat.bindsSkipped + '), attachments ' + stat.atts + ' (skipped ' + stat.attsSkipped + ')' }), 5000);
+}
+// Measuring aids: env GL_TINYSCISSOR:1 clips every draw to one pixel (vertex work stays, pixel work goes); env GL_MEDIUMP:1 turns `precision highp float` into mediump in shader sources
+{
+  const e = params.get('env') || '', P = window.WebGL2RenderingContext && WebGL2RenderingContext.prototype;
+  if (P && e.indexOf('GL_TINYSCISSOR') >= 0) {
+    for (const k of ['drawElements', 'drawArrays', 'drawRangeElements']) { const o = P[k]; if (o) P[k] = function (...a) { this.enable(3089); this.scissor(0, 0, 1, 1); return o.apply(this, a); }; }
+  }
+  if (P && e.indexOf('GL_MEDIUMP') >= 0) { const o = P.shaderSource; P.shaderSource = function (sh, src) { return o.call(this, sh, src.replace(/precision\s+highp\s+float\s*;/g, 'precision mediump float;')); }; }
+}
 const hitchStats = { jit: 0, shader: 0, other: 0, total: 0, worst: 0, recent: [] };
 // Audio: miniaudio's Web Audio backend creates a ScriptProcessorNode. Browsers keep the context suspended until a user gesture: resume it on the first one.
 // An analyser tapped onto the node gives the output level (shown in the panel) so sound can be checked without listening.

@@ -1,0 +1,27 @@
+# Performance notes (iPhone Air, iOS 27, Mario 3D Land demo scene)
+
+Everything below was measured, not assumed. Phone cold (`thermal 0`), 13 samples per row, a 1-pixel `readPixels` after every frame (`GL_SYNC:1,GL_FINISH:1`)
+measures how long the GPU process needs per frame ("GPU wait"). Scene: the "Press A" demo (top screen runs the 3D level).
+
+| Variant (env) | GPU wait | fps (with the sync) | Verdict |
+|---|---|---|---|
+| normal | 9.9 ms | 36.5 | baseline |
+| no draw calls at all, every upload kept (`GL_NODRAW:1`) | 1.0 ms | 59.9 | uploads/allocations cost nothing: the time is in the draws |
+| draws clipped to 1 pixel (`GL_TINYSCISSOR:1`) | 9.1 ms | 38.6 | pixel work is not the cost |
+| `precision mediump float` (`GL_MEDIUMP:1`) | 10.0 ms | 34.3 | no gain (phone warmed to thermal 1 in that run) |
+| skip redundant `bindFramebuffer`/`framebufferTexture2D` (`GL_FBCACHE:1`, 95-99.99 % skipped) | 9.6 ms | 38.4 | the driver already ignored them |
+| 8-bit indices widened to 16 bits (`GL_INDEX16:1`) | 9.1 ms | 38.7 | within noise |
+| sound off (`AUDIO:0`) | 9.6 ms | 36.4 | sound is not the cause |
+| index / vertex uploads dropped (`GL_DROP:idx|vtx`) | 6.4 / 1.0 ms | 49.4 / 58.2 | NOT a clean test: the picture breaks, so there is less to draw |
+
+What this leaves: ~9 ms per frame in the **draw calls themselves** (176 per frame, ~50 µs each) inside the browser's GPU process / ANGLE-Metal, not in pixel work,
+buffer allocation, framebuffer rebinding or sound. On the Mac the same scene needs ~1 ms. Reducing it would take fewer draws (batching compatible draws) or fewer frames
+rendered (skip every second frame when the phone is warm); both are untried.
+
+Other measured facts:
+- The phone reaches `thermal 1` after ~110 s of this scene (on a cable, full brightness) and then runs at ~42 fps instead of ~56; `thermal 2` gives 30-37 fps.
+- Waiting for the GPU every frame (`GL_SYNC`) makes it worse in heavy scenes (it serialises GPU and CPU time): 35-47 fps instead of ~56. Off by default.
+- `gl.finish()` returns at once on WebKit and measures nothing.
+- CPU profile (Mac): 55 % guest code in the WASM JIT, Panda3DS C++ < 6 %, WebGL calls ~1 ms per frame after the buffer fix.
+- Slow frames > 30 ms: mostly JIT compilation (300-600 blocks in a frame), shader compilation 30-600 ms, rare.
+- Looking ahead for the next block gave nothing (tested, removed): the spikes are entries into big new code regions.
