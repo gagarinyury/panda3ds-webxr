@@ -57,7 +57,7 @@ const params = new URLSearchParams(location.search);
 const rom = params.get('rom') || '/run/ctr-hello.3dsx';   // absolute path on the dev server / app scheme
 const maxFrames = parseInt(params.get('frames') || '0');   // 0 = run forever
 const report = params.get('report') === '1';               // send a result to the host (server or native app) when done
-const audioMode = params.get('turbo') ? '0' : (params.get('audio') || 'on');   // audio=0 off; on = HLE DSP + output device; dsp = HLE DSP only; dev = output device only (debugging aids); turbo runs are silent
+const audioMode = params.get('turbo') === '1' ? '0' : (params.get('audio') || 'on');   // audio=0 off; on = HLE DSP + output device; dsp = HLE DSP only; dev = output device only (debugging aids); turbo runs are silent
 const audioOn = audioMode === 'on' || audioMode === 'dev';
 const turbo = params.get('turbo') === '1';                 // run as fast as possible (benchmark) instead of real time
 const name = params.get('name') || 'run';
@@ -117,12 +117,16 @@ window.__audio = { ctxs: [], rms: 0, peak: 0, rate: 0 };
     try { const an = this.createAnalyser(); an.fftSize = 2048; node.connect(an); A.analyser = an; } catch (e) {}
     return node;
   };
-  const resume = () => { for (const c of A.ctxs) if (c.state !== 'running') c.resume().catch(() => {}); };
+  // iOS mutes Web Audio while the ringer switch is on silent, but not an <audio> element: a looping silent clip started in a gesture makes sound play anyway (the 'unmute' trick)
+  let unmuteEl = null;
+  const unmute = () => { if (unmuteEl) return; try { unmuteEl = document.createElement('audio'); unmuteEl.src = 'data:audio/wav;base64,UklGRpYDAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YXIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='; unmuteEl.loop = true; unmuteEl.setAttribute('playsinline', ''); unmuteEl.play().catch(() => { unmuteEl = null; }); } catch (e) { unmuteEl = null; } };
+  const resume = () => { unmute(); for (const c of A.ctxs) if (c.state !== 'running') c.resume().catch(() => {}); };
   for (const ev of ['pointerdown', 'keydown', 'touchstart', 'click']) window.addEventListener(ev, resume, { capture: true });
   if (new URLSearchParams(location.search).get('beep') === '1') {   // output test: a 440 Hz tone for one second on the first click or key, independent of the emulator
     const once = () => { try { const c = new AC(), o = c.createOscillator(), g = c.createGain(); g.gain.value = 0.2; o.frequency.value = 440; o.connect(g); g.connect(c.destination); c.resume().then(() => { o.start(); setTimeout(() => o.stop(), 1000); }); } catch (e) {} for (const ev of ['pointerdown', 'keydown', 'touchstart', 'click']) window.removeEventListener(ev, once, true); };
     for (const ev of ['pointerdown', 'keydown', 'touchstart', 'click']) window.addEventListener(ev, once, true);
   }
+  if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda) setInterval(() => { try { window.webkit.messageHandlers.panda.postMessage(JSON.stringify({ type: 'audio', state: A.ctxs.length ? A.ctxs[0].state : 'none', rate: A.rate, level: +A.rms.toFixed(4), peak: +A.peak.toFixed(3) })); } catch (e) {} }, 3000);
   setInterval(() => { if (!A.analyser) return; const d = new Float32Array(A.analyser.fftSize); A.analyser.getFloatTimeDomainData(d); let sq = 0, pk = 0; for (const v of d) { sq += v * v; if (Math.abs(v) > pk) pk = Math.abs(v); } A.rms = Math.sqrt(sq / d.length); A.peak = pk; }, 500);
 })();
 var Module = {

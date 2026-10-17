@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import AVFoundation
 
 @main
 struct PandaWebApp: App {
@@ -108,7 +109,11 @@ final class Host: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
             old.navigationDelegate = nil
             old.removeFromSuperview()
         }
+        // Web Audio obeys the silent switch unless the app declares a playback audio session; also let sound start without the page asking for playback
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+        try? AVAudioSession.sharedInstance().setActive(true)
         let cfg = WKWebViewConfiguration()
+        cfg.mediaTypesRequiringUserActionForPlayback = []
         cfg.setURLSchemeHandler(SiteHandler(), forURLScheme: "panda")
         let uc = WKUserContentController()
         cfg.userContentController = uc

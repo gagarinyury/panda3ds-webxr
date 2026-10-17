@@ -16,11 +16,13 @@ Measured on an M-series Mac (Comet 154 and a clean Chromium 148, visible window)
 | Super Mario 3D Land (own dump, not included) | ✅ ~60 fps on the Mac, 55-63 fps on the iPhone in 3D scenes |
 | Mario Kart 7 (own dump) | ✅ ~55-60 fps on the Mac (panel readings and by eye); 🔍 gameplay not tested in depth, iPhone not tried (1 GB image) |
 | Super Smash Bros. for 3DS (2 GB dump) | ⚠ boots (image read in 1 MB pieces), then waits at an "extra data is corrupted" dialog and shows black screens after OK; being investigated |
-| Audio | ✅ works (Panda's HLE DSP + miniaudio over Web Audio, 32768 Hz): music plays in Mario 3D Land after the first click or key (browsers keep sound suspended until a gesture); the first ~500 frames stutter while the JIT compiles. Not checked: iPhone, sound effects in other games |
+| Audio | ✅ works (Panda's HLE DSP + miniaudio over Web Audio, 32768 Hz): music plays in Mario 3D Land after the first click or key (browsers keep sound suspended until a gesture); the first ~500 frames stutter while the JIT compiles. ✅ iPhone Air: music plays (level meter and by ear); not checked: sound effects in other games |
 | Save data | ✅ `persist=1` keeps SD card and game saves in IndexedDB; ✗ no full save states |
 | Input | ✅ keyboard, on-screen buttons, touch on the lower screen; ✗ circle pad |
 
-Audio notes: in the single-threaded web build the DSP used to wait for the audio device to drain its buffer and froze the page (a deadlock): it now drops the oldest audio instead; miniaudio's Web Audio code needs `HEAPF32` exported from the Emscripten runtime.
+Audio notes: on iOS Web Audio is muted by the ringer switch, so the app declares a playback audio session and the page starts a looping silent `<audio>` clip on the first touch; the sound only starts after the first tap. The page used to switch sound off whenever the URL had `turbo=0` (the iOS app always passes it): fixed.
+
+More audio notes: in the single-threaded web build the DSP used to wait for the audio device to drain its buffer and froze the page (a deadlock): it now drops the oldest audio instead; miniaudio's Web Audio code needs `HEAPF32` exported from the Emscripten runtime.
 
 Known problems: freezes of 0.5-1 s the first time a new shader is compiled; the first ~500 frames of a big game run slower while the JIT compiles 50-100 thousand blocks; the rendering of five homebrew examples is suspicious and not compared with native Panda; on the iPhone one launch right after install was killed for memory (not reproduced). Open ideas are listed in [docs/upstream-pr-plan.md](docs/upstream-pr-plan.md) (what could go upstream) and the issues above.
 
