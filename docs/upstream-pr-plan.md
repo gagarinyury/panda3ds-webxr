@@ -136,7 +136,7 @@ The following components are specific to our browser and iOS deployment:
    - Remote telemetry and crash diagnostics via `scripts/ios-watch.py`.
 4. **Headless & Automation Tooling (`headless/`, `scripts/`)**:
    - Node-based headless runner for CI/CD regression testing.
-   - Automated 3DS example batch runner (`run-examples.py`): **58 of 58 devkitPro examples passing**.
+   - Automated 3DS example batch runner (`run-examples.py`): 58 of 58 devkitPro examples run to the end headless with the Null renderer; on the iPhone with the real renderer 53 of 58 ran at the last full device run ([examples-status.md](examples-status.md)).
 
 ---
 

@@ -1,0 +1,76 @@
+# Engineering log (moved from the README)
+
+Written while the backend was being built; some numbers are from early runs. Current state: [README](../README.md).
+
+## Engineering log: JIT backend verification
+
+Details of the JIT backend and its tests (written while the backend was being built; the numbers are from those runs).
+
+## Status
+
+| Check | Result |
+|---|---|
+| Dynarmic A32 front end + IR build with Emscripten (wasm32) | ✅ two small fixes (`size_t` assumed 64-bit, function pointers cast to `u64`) |
+| Real ARMv6 code decoded to IR inside WASM | ✅ [`probe/ir_dump.cpp`](../probe/ir_dump.cpp), output in [`probe/data/hash_loop.ir.txt`](../probe/data/hash_loop.ir.txt): a 29-instruction IR block optimises to 17 |
+| Whole Panda3DS core + SDL front end links to `Alber.js` / `Alber.wasm` (first link 5.2 MB; the browser build `AlberWeb.wasm` is now ~9 MB) | ✅ at the time ~50 lines of CMake/source changes in Panda3DS; the fork has grown since, see [docs/forks.md](forks.md) |
+| IR → WASM backend (`Dynarmic::A32::Jit` for wasm) | ✅ (packed halving/saturating ops added for Smash Bros: checked against an independent reference on 400 k vectors) v0: executes real ARM and Thumb code; integer, memory, flags, conditions, branches, calls, CP15 TLS. VFP scalar float/double (add, sub, mul, div, sqrt, compare, conversions) via bit-exact soft-float. Scalar saturation (SSAT, USAT, QADD, QSUB) and ARMv6 packed SIMD (uadd8, usub8, sadd8, ssub8, 16-bit packed, sel, usada8). Not yet: NEON/vector, 64-bit shifts, fast inline FP |
+| VFP fast path through the JIT vs. the soft-float reference ([`tests/jit/fpjit.sh`](../tests/jit/fpjit.sh)): 10 FPSCR modes × 123 k operand pairs × add/sub/mul/div/sqrt/vcmp | ✅ 7.4 M bit-exact comparisons (and a negative control that fails when the rounding fix is removed) |
+| Differential tests ([`tests/jit`](../tests/jit)): 14 C kernels × ARM/Thumb × 32 inputs vs. the same C compiled to wasm | ✅ 34/34 pass (14 integer kernels × ARM/Thumb, 6 VFP kernels; return value and scratch memory compared) |
+| Soft-float VFP vs. Apple Silicon FPU ([`tests/fp`](../tests/fp)): add/sub/mul/div/sqrt/cmp/convert, f32+f64, all 16 FPCR modes (rounding × FZ × DN), result **and** exception flags | ✅ 2 785 536 comparisons, 0 mismatches (after fixing one Dynarmic bug in float → unsigned conversion) |
+| A homebrew `.3dsx` runs through the real Panda3DS core with the WASM JIT (headless, Node) | ✅ [`guest/hello.c`](../guest/hello.c): prints via `svcOutputDebugString`, 2 M-iteration hash loop and a VFP computation; both results equal the native reference bit for bit (`scripts/test-hello.sh`) |
+| A real **libctru** homebrew (devkitPro `3ds-examples/graphics/printing/hello-world`, built with the official devkitARM image) runs to its main loop and draws its text | ✅ [`assets/ctr-hello-world-top.png`](../assets/ctr-hello-world-top.png) is the emulated top screen (`scripts/test-ctr-hello.sh`) |
+| **In a real browser**: `web/index.html` drives the core from `requestAnimationFrame` and paints both screens on canvases. Verified in **Safari 27.0.1 (WebKit)** and Comet (Chromium 154) | ✅ libctru hello-world: 120 frames, avg 1.16 ms/frame in Safari, same 520 lit pixels as Node. 8 more examples (opus/vorbis decoding, box2d, sockets, threads, input…) run in Safari with pixel counts identical to Node |
+| `WKWebView` on an iPhone | ✅ iPhone Air, iOS 27.0.1: the app in [`ios/`](ios) (WKWebView, `panda://` scheme) runs the same page; homebrew examples and commercial-game tests below |
+| 3D rendering (PICA → WebGL2) | ✅ Panda3DS's OpenGL ES renderer on WebGL2: 20/20 `graphics/gpu` examples draw on iPhone and in Comet (a few look suspicious and are not verified against native Panda) |
+
+<p align="center"><img src="../assets/ctr-hello-world-top.png" width="400" alt="Emulated 3DS top screen: Hello World!"></p>
+
+The only place Panda3DS touches Dynarmic is `Dynarmic::A32::Jit` (see `src/core/CPU/cpu_dynarmic.cpp`), so the new backend plugs in behind the same interface. (Panda3DS itself was later changed in the renderer, kernel and file system: see the fork's `wasm` branch.)
+
+## Current state (Oct 2026)
+
+Verified by running it (not by reading the code):
+
+- **Homebrew:** on the iPhone 53 of the 58 devkitPro examples ran at the last full device run (5 stop on a Panda `[FATAL]`); Doom (PrBoom+ 3DS with Freedoom) runs; Minicraft, GameYob and others start.
+- **A commercial game** (Super Mario 3D Land, an own dump that is not included): boots, menus ~60 fps, 3D scenes 25–40 fps on a Mac (Comet/Chrome) and on the iPhone (at that time; see the top of this file and docs/webkit-instances-and-batching.md for later numbers). About 50–60 thousand JIT modules (now packed 256 per instance) / 33 MB of generated WASM, 256 MB guest memory + the 512 MB image streamed into MEMFS.
+- **Rendering fixes found with it:** Panda's `GLStateManager::setColourMask` assigned the arguments to the wrong side (no mask was ever applied), WebGL2 has no logic ops (NOOP/CLEAR are emulated), clip planes, depth/stencil write bits, a stream-buffer size that cost 14 → 59 fps in menus on ANGLE/Metal.
+- **Not done (at the time; audio has been working since, see the top of this file):** analog stick, full save states (game saves persist in IndexedDB with `persist=1`), exact frame pacing in WebKit, see `docs/`.
+- **The 3D slowdown, found and fixed (16 Oct 2026):** in a visible browser window every `glBufferSubData` into the stream-buffer rings cost 30–40 µs (ANGLE/Metal copies the whole buffer when the GPU still reads it), 500+ calls per frame = 15–25 ms. Headless Chrome hid it (GPU idle). Writing each buffer with an orphaning `glBufferData(size, data)` costs ~1 µs: the same game scene went from 15–22 fps to a steady 60 fps (emulator 30–60 ms → 5–10 ms per frame), measured in Comet and in a clean Chromium window. Lesson: measure in a visible window on the real screen, never only headless. The page reports its panel to `/live` on the dev server (`scripts/serve-web.py`) so the developer can see what the person at the screen sees.
+- **Still open:** 0.5–1 s freezes the first time a new shader is compiled (`getShaderParameter` blocks), save states.
+
+## Speed (Node 25 / V8, guest MIPS, higher is better)
+
+Measured with [`tests/jit/bench.sh`](../tests/jit/bench.sh). Real 3DS needs ~270 MIPS per core (Old) / ~800 MIPS (New).
+
+| kernel | interpreter-style dispatch + callbacks | + block chaining | + inline memory | + inline VFP |
+|---|---:|---:|---:|---:|
+| `b_hash` tight integer loop | 157 | 1 411 | 1 486 | **1 446** |
+| `b_memsum` loads/stores | 213 | 684 | 1 646 | **1 625** |
+| `b_calls` recursion, call/return | 97 | 309 | 911 | **917** |
+| `b_fdot` VFP dot products | 120 | 200 | 248 | **1 659** |
+
+Block chaining = blocks tail-call each other through a shared function table (`return_call_indirect`) via a direct-mapped cache.
+Inline memory = the same page tables Panda3DS uses, indexed from generated code. Inline VFP = add/sub/mul/div/sqrt/compare in
+round-to-nearest and round-to-zero modes (the 3DS default is round-to-zero + flush-to-zero + default-NaN) with NaN cases delegated
+to the bit-exact helper. The inline path does not accumulate FPSR exception flags.
+
+### In the browser
+
+```sh
+scripts/serve-web.py 8765 &                      # static server + report collector
+open "http://127.0.0.1:8765/web/index.html?rom=/run/ctr-hello.3dsx"
+python3 scripts/web-examples.py Safari threads__thread-basic audio__opus-decoding   # batch run through real Safari
+```
+
+First frames hitch (worst frame 60–200 ms) while the first blocks are compiled; steady state is 1–6 ms/frame (budget 16.7).
+
+![Safari](../assets/safari-ctr-hello-world-top.png)
+
+### Idle thread fix (Panda3DS)
+
+When every guest thread is waiting, Panda3DS runs an idle thread that loops on `svcSleepThread(0)`. It already skips ahead to the next
+event, but the CPU time slice (sized for a whole frame when it began) kept running, so the idle loop spun through the rest of it:
+~300 000 supervisor calls per frame, ~20 ms/frame for a program that does nothing. The fix (`Kernel::sleepThread` + `CPU::stopSlice`)
+ends the slice after the skip so the scheduler handles the event immediately.
+All 58 devkitPro examples: mean 16.9 → 2.3 ms/frame, worst 24.2 → 5.6 ms/frame (budget 16.7 ms), same pass rate (54/58).
+
