@@ -98,7 +98,7 @@ if (glProf) {   // dev only (env GL_PROF:1): a fixed CPU benchmark (compare brow
 function native0() { return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda); }
 const post = (type, payload) => {
   if (native) native.postMessage(JSON.stringify({ type, name, ...payload }));
-  else if (liveOn && (type === 'tick' || type === 'hitch' || type === 'gpuwait' || (type === 'log' && /\[jit\]|\[gl\]|\[audio|\[abort\]|FATAL|panic|warning|unimplemented|failed|abort/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
+  else if (liveOn && (type === 'tick' || type === 'hitch' || type === 'gpuwait' || (type === 'log' && /\[jit\]|\[gl\]|\[bench\]|\[audio|\[abort\]|FATAL|panic|warning|unimplemented|failed|abort/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
 };
 const log = (s, err) => {
   const lines = logEl.textContent.split('\n');
@@ -156,6 +156,14 @@ if ((params.get('env') || '').indexOf('GL_FBCACHE') >= 0 && window.WebGL2Renderi
     for (const k of ['drawElements', 'drawArrays', 'drawRangeElements']) { const o = P[k]; if (o) P[k] = function (...a) { this.enable(3089); this.scissor(0, 0, 1, 1); return o.apply(this, a); }; }
   }
   if (P && e.indexOf('GL_MEDIUMP') >= 0) { const o = P.shaderSource; P.shaderSource = function (sh, src) { return o.call(this, sh, src.replace(/precision\s+highp\s+float\s*;/g, 'precision mediump float;')); }; }
+}
+// Measuring aid (env GL_FEWVERTS:1): every draw call uses at most 3 vertices/indices: shows whether the GPU time depends on the vertex count
+if ((params.get('env') || '').indexOf('GL_FEWVERTS') >= 0 && window.WebGL2RenderingContext) {
+  const P = WebGL2RenderingContext.prototype;
+  const oe = P.drawElements, od = P.drawRangeElements, oa = P.drawArrays;
+  P.drawElements = function (m, c, t, o) { return oe.call(this, m, Math.min(c, 3), t, o); };
+  P.drawRangeElements = function (m, s, e, c, t, o) { return od.call(this, m, s, e, Math.min(c, 3), t, o); };
+  P.drawArrays = function (m, f, c) { return oa.call(this, m, f, Math.min(c, 3)); };
 }
 const hitchStats = { jit: 0, shader: 0, other: 0, total: 0, worst: 0, recent: [] };
 // Audio: miniaudio's Web Audio backend creates a ScriptProcessorNode. Browsers keep the context suspended until a user gesture: resume it on the first one.
@@ -397,7 +405,115 @@ async function loadRomUrl(url) {
   return loadRomBuffer(await resp.arrayBuffer(), url);
 }
 
+
+// ---- draw-call micro benchmark (env BENCH_DRAWS:1): the same scene (N draws a frame, each with its own vertices, indices and a uniform block) through
+// WebGL2 as Panda does it (new buffers per draw), WebGL2 with one upload per frame, and WebGPU. Results go to the host as '[bench]' lines.
+const benchDraws = (params.get('env') || '').indexOf('BENCH_DRAWS') >= 0;
+async function runDrawBench() {
+  const say = (m) => { log('[bench] ' + m); post('log', { msg: '[bench] ' + m }); };
+  const NV = 300, NI = 450, VSZ = 36, ISZ = 904, USZ = 256, FR = 120, WARM = 30;
+  const mk = (N) => {   // data for one frame
+    const v = new Float32Array(N * NV * 9), idx = new Uint16Array(N * ISZ / 2), u = new Float32Array(N * USZ / 4);
+    for (let d = 0; d < N; d++) {
+      for (let k = 0; k < NV; k++) { const o = (d * NV + k) * 9, gx = (k % 20) / 20, gy = Math.floor(k / 20) / 15; v[o] = gx; v[o + 1] = gy; v[o + 2] = 0.5; v[o + 3] = gx; v[o + 4] = gy; v[o + 5] = 0.5; v[o + 6] = 1; v[o + 7] = gx; v[o + 8] = gy; }
+      for (let k = 0; k < NI; k++) idx[d * ISZ / 2 + k] = (k * 7 + (k % 3)) % NV;
+      const o = d * USZ / 4; u[o] = 1; u[o + 1] = 1; u[o + 2] = 1; u[o + 3] = 1; u[o + 4] = 0.04; u[o + 5] = 0.05; u[o + 6] = -0.95 + (d % 22) * 0.086; u[o + 7] = -0.9 + Math.floor(d / 22) * 0.2;
+    }
+    return { v, idx, u };
+  };
+  const results = {};
+  for (const N of [88, 176, 352]) {
+    const D = mk(N);
+    // ---- WebGL2
+    const cv = document.createElement('canvas'); cv.width = 400; cv.height = 240; document.body.appendChild(cv);
+    const gl = cv.getContext('webgl2', { antialias: false, alpha: false, depth: true, stencil: true });
+    const vs = '#version 300 es\nlayout(location=0) in vec3 a_pos; layout(location=1) in vec4 a_col; layout(location=2) in vec2 a_uv;\nlayout(std140) uniform U { vec4 tint; vec4 xf; };\nout vec4 v_col;\nvoid main() { v_col = a_col * tint; gl_Position = vec4(a_pos.xy * xf.xy + xf.zw, a_pos.z, 1.0); }';
+    const fs = '#version 300 es\nprecision mediump float;\nin vec4 v_col;\nout vec4 o;\nvoid main() { o = v_col; }';
+    const sh = (t, src) => { const x = gl.createShader(t); gl.shaderSource(x, src); gl.compileShader(x); return x; };
+    const pr = gl.createProgram(); gl.attachShader(pr, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(pr);
+    if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) { say('WebGL program failed: ' + gl.getProgramInfoLog(pr)); return; }
+    gl.useProgram(pr); gl.uniformBlockBinding(pr, gl.getUniformBlockIndex(pr, 'U'), 0); gl.disable(gl.DEPTH_TEST);
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    const bV = gl.createBuffer(), bI = gl.createBuffer(), bU = gl.createBuffer(), px = new Uint8Array(4);
+    const orphanFrame = () => {   // Panda: every draw gets fresh buffers
+      for (let d = 0; d < N; d++) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, bV); gl.bufferData(gl.ARRAY_BUFFER, D.v.subarray(d * NV * 9, (d + 1) * NV * 9), gl.STREAM_DRAW);
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, VSZ, 0); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, VSZ, 12); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, VSZ, 28);
+        gl.enableVertexAttribArray(0); gl.enableVertexAttribArray(1); gl.enableVertexAttribArray(2);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bI); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, D.idx.subarray(d * ISZ / 2, d * ISZ / 2 + NI), gl.STREAM_DRAW);
+        gl.bindBuffer(gl.UNIFORM_BUFFER, bU); gl.bufferData(gl.UNIFORM_BUFFER, D.u.subarray(d * USZ / 4, (d + 1) * USZ / 4), gl.STREAM_DRAW); gl.bindBufferRange(gl.UNIFORM_BUFFER, 0, bU, 0, USZ);
+        gl.drawElements(gl.TRIANGLES, NI, gl.UNSIGNED_SHORT, 0);
+      }
+    };
+    const rV = gl.createBuffer(), rI = gl.createBuffer(), rU = gl.createBuffer(); let ringInit = false;
+    const ringFrame = () => {   // one upload per buffer, draws use offsets
+      if (!ringInit) { gl.bindBuffer(gl.ARRAY_BUFFER, rV); gl.bufferData(gl.ARRAY_BUFFER, D.v.byteLength, gl.DYNAMIC_DRAW); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, rI); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, D.idx.byteLength, gl.DYNAMIC_DRAW); gl.bindBuffer(gl.UNIFORM_BUFFER, rU); gl.bufferData(gl.UNIFORM_BUFFER, D.u.byteLength, gl.DYNAMIC_DRAW); ringInit = true; }
+      gl.bindBuffer(gl.ARRAY_BUFFER, rV); gl.bufferSubData(gl.ARRAY_BUFFER, 0, D.v); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, rI); gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, D.idx); gl.bindBuffer(gl.UNIFORM_BUFFER, rU); gl.bufferSubData(gl.UNIFORM_BUFFER, 0, D.u);
+      gl.bindBuffer(gl.ARRAY_BUFFER, rV); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, rI);
+      for (let d = 0; d < N; d++) {
+        const vo = d * NV * VSZ;
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, VSZ, vo); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, VSZ, vo + 12); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, VSZ, vo + 28);
+        gl.bindBufferRange(gl.UNIFORM_BUFFER, 0, rU, d * USZ, USZ);
+        gl.drawElements(gl.TRIANGLES, NI, gl.UNSIGNED_SHORT, d * ISZ);
+      }
+    };
+    // pool: every draw writes into the next buffer of a pool (bufferSubData, no new allocation); the pool is big enough that a buffer is not in use by the GPU when it comes round again
+    const POOL = 3 * N, pV = [], pI = [], pU = []; let pc = 0;
+    for (let k = 0; k < POOL; k++) { for (const [arr, tg, sz] of [[pV, gl.ARRAY_BUFFER, NV * VSZ], [pI, gl.ELEMENT_ARRAY_BUFFER, ISZ], [pU, gl.UNIFORM_BUFFER, USZ]]) { const b = gl.createBuffer(); gl.bindBuffer(tg, b); gl.bufferData(tg, sz, gl.DYNAMIC_DRAW); arr.push(b); } }
+    const poolFrame = () => {
+      for (let d = 0; d < N; d++) {
+        const k = pc++ % POOL;
+        gl.bindBuffer(gl.ARRAY_BUFFER, pV[k]); gl.bufferSubData(gl.ARRAY_BUFFER, 0, D.v.subarray(d * NV * 9, (d + 1) * NV * 9));
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, VSZ, 0); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, VSZ, 12); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, VSZ, 28);
+        gl.enableVertexAttribArray(0); gl.enableVertexAttribArray(1); gl.enableVertexAttribArray(2);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, pI[k]); gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, D.idx.subarray(d * ISZ / 2, d * ISZ / 2 + NI));
+        gl.bindBuffer(gl.UNIFORM_BUFFER, pU[k]); gl.bufferSubData(gl.UNIFORM_BUFFER, 0, D.u.subarray(d * USZ / 4, (d + 1) * USZ / 4)); gl.bindBufferRange(gl.UNIFORM_BUFFER, 0, pU[k], 0, USZ);
+        gl.drawElements(gl.TRIANGLES, NI, gl.UNSIGNED_SHORT, 0);
+      }
+    };
+    for (const [name, fn] of [['gl-orphan', orphanFrame], ['gl-pool', poolFrame], ['gl-oneupload', ringFrame]]) {
+      for (let f = 0; f < WARM; f++) { gl.clear(gl.COLOR_BUFFER_BIT); fn(); } gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const t0 = performance.now(); let cpu = 0;
+      for (let f = 0; f < FR; f++) { const c0 = performance.now(); gl.clear(gl.COLOR_BUFFER_BIT); fn(); cpu += performance.now() - c0; }
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); const tot = performance.now() - t0;
+      results[name + ' N=' + N] = { frameMs: +(tot / FR).toFixed(2), cpuMs: +(cpu / FR).toFixed(2), perDrawUs: +(tot / FR / N * 1000).toFixed(1) };
+      say(name + ' N=' + N + ': ' + (tot / FR).toFixed(2) + ' ms/frame (JS ' + (cpu / FR).toFixed(2) + ' ms), ' + (tot / FR / N * 1000).toFixed(1) + ' us/draw');
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    cv.remove();
+    // ---- WebGPU
+    if (!navigator.gpu) { say('no navigator.gpu here'); continue; }
+    try {
+      const ad = await navigator.gpu.requestAdapter(), dev = await ad.requestDevice();
+      const c2 = document.createElement('canvas'); c2.width = 400; c2.height = 240; document.body.appendChild(c2);
+      const ctx = c2.getContext('webgpu'), fmt = navigator.gpu.getPreferredCanvasFormat(); ctx.configure({ device: dev, format: fmt, alphaMode: 'opaque' });
+      const code = 'struct U { tint: vec4f, xf: vec4f };\n@group(0) @binding(0) var<uniform> u: U;\nstruct VIn { @location(0) pos: vec3f, @location(1) col: vec4f, @location(2) uv: vec2f };\nstruct VOut { @builtin(position) p: vec4f, @location(0) col: vec4f };\n@vertex fn vs(i: VIn) -> VOut { var o: VOut; o.p = vec4f(i.pos.xy * u.xf.xy + u.xf.zw, i.pos.z, 1.0); o.col = i.col * u.tint; return o; }\n@fragment fn fs(i: VOut) -> @location(0) vec4f { return i.col; }';
+      const mod = dev.createShaderModule({ code });
+      const pipe = dev.createRenderPipeline({ layout: 'auto', vertex: { module: mod, entryPoint: 'vs', buffers: [{ arrayStride: VSZ, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x4' }, { shaderLocation: 2, offset: 28, format: 'float32x2' }] }] }, fragment: { module: mod, entryPoint: 'fs', targets: [{ format: fmt }] }, primitive: { topology: 'triangle-list' } });
+      const gV = dev.createBuffer({ size: D.v.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }), gI = dev.createBuffer({ size: D.idx.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST }), gU = dev.createBuffer({ size: D.u.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: gU, offset: 0, size: USZ } }] });
+      const gpuFrame = () => {
+        dev.queue.writeBuffer(gV, 0, D.v); dev.queue.writeBuffer(gI, 0, D.idx); dev.queue.writeBuffer(gU, 0, D.u);
+        const enc = dev.createCommandEncoder(), pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+        pass.setPipeline(pipe);
+        for (let d = 0; d < N; d++) { pass.setBindGroup(0, bg, [d * USZ]); pass.setVertexBuffer(0, gV, d * NV * VSZ, NV * VSZ); pass.setIndexBuffer(gI, 'uint16', d * ISZ, NI * 2); pass.drawIndexed(NI); }
+        pass.end(); dev.queue.submit([enc.finish()]);
+      };
+      for (let f = 0; f < WARM; f++) gpuFrame(); await dev.queue.onSubmittedWorkDone();
+      const t0 = performance.now(); let cpu = 0;
+      for (let f = 0; f < FR; f++) { const c0 = performance.now(); gpuFrame(); cpu += performance.now() - c0; }
+      await dev.queue.onSubmittedWorkDone(); const tot = performance.now() - t0;
+      results['webgpu N=' + N] = { frameMs: +(tot / FR).toFixed(2), cpuMs: +(cpu / FR).toFixed(2), perDrawUs: +(tot / FR / N * 1000).toFixed(1) };
+      say('webgpu N=' + N + ': ' + (tot / FR).toFixed(2) + ' ms/frame (JS ' + (cpu / FR).toFixed(2) + ' ms), ' + (tot / FR / N * 1000).toFixed(1) + ' us/draw');
+      c2.remove(); dev.destroy();
+    } catch (e) { say('webgpu failed: ' + e); }
+  }
+  say('RESULT ' + JSON.stringify(results));
+  say('DONE');
+}
+
 async function start() {
+  if (benchDraws) { await runDrawBench(); return; }
   { const gc = document.getElementById('gl'); if (gc) { gc.addEventListener('webglcontextlost', () => { log('[gl] CONTEXT LOST at frame ' + frames, true); post('log', { msg: '[gl] CONTEXT LOST at frame ' + frames }); }); gc.addEventListener('webglcontextrestored', () => { log('[gl] context restored', true); post('log', { msg: '[gl] context restored' }); }); } }
   if (useGL) { const g = document.getElementById('gl'); g.width = GLW; g.height = GLH; g.style.width = Math.round(GLW * (innerWidth >= 900 ? Math.min(scale, (innerWidth - 440) / GLW) : Math.min(scale, (innerWidth - 16) / GLW))) + 'px'; g.style.display = 'block'; document.getElementById('pad').style.display = 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
   if (!Module._web_init(useGL ? 1 : 0, GLW, GLH)) { log('[FATAL] web_init failed', true); finish(); return; }

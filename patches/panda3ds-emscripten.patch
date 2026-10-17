@@ -1303,7 +1303,7 @@ index 04fadfc..c232e61 100644
  
  out vec2 UV;
 diff --git a/third_party/duckstation/gl/stream_buffer.cpp b/third_party/duckstation/gl/stream_buffer.cpp
-index b7a4060..a6cf773 100644
+index b7a4060..c662fbc 100644
 --- a/third_party/duckstation/gl/stream_buffer.cpp
 +++ b/third_party/duckstation/gl/stream_buffer.cpp
 @@ -1,6 +1,7 @@
@@ -1398,7 +1398,73 @@ index b7a4060..a6cf773 100644
  
  		u32 Unmap(u32 used_size) override {
  			if (used_size == 0) return 0;
-@@ -273,16 +313,14 @@ std::unique_ptr<OpenGLStreamBuffer> OpenGLStreamBuffer::Create(GLenum target, u3
+@@ -111,6 +151,65 @@ namespace {
+ 		u8* m_cpu_buffer;
+ 	};
+ 
++	// Rotates through a pool of buffers and fills the next one with glBufferSubData (no new allocation, no copy-on-write as long as the pool is big enough that the GPU
++	// has finished with a buffer by the time it comes round again). On ANGLE-Metal in the iPhone's browser this costs ~6 us a draw against ~17 us for orphaning with
++	// glBufferData (micro benchmark in web/index.html, env BENCH_DRAWS:1). Every Unmap switches m_buffer_id to the buffer it filled; callers bind GetGLBufferId() / Bind() afterwards.
++	class BufferPoolStreamBuffer final : public OpenGLStreamBuffer {
++	  public:
++		static constexpr u32 kPoolSize = 640, kInitialCapacity = 4096;
++
++		~BufferPoolStreamBuffer() override {
++			glDeleteBuffers(static_cast<GLsizei>(m_pool.size()), m_pool.data());
++			Common::alignedFree(m_cpu_buffer);
++		}
++
++		MappingResult Map(u32 alignment, u32 min_size) override {
++			if (min_size > m_size) {
++				const u32 new_size = Common::alignUp(min_size * 2, 64 * 1024);
++				u8* new_cpu = static_cast<u8*>(Common::alignedMalloc(new_size, 32));
++				if (!new_cpu) Panic("Failed to grow CPU storage for GL buffer");
++				Common::alignedFree(m_cpu_buffer);
++				m_cpu_buffer = new_cpu;
++				m_size = new_size;
++			}
++			return MappingResult{static_cast<void*>(m_cpu_buffer), 0, 0, m_size / alignment};
++		}
++
++		u32 Unmap(u32 used_size) override {
++			if (used_size == 0) return 0;
++
++			const size_t i = m_next++ % m_pool.size();
++			glBindBuffer(m_target, m_pool[i]);
++			if (used_size > m_capacity[i]) {   // first use, or a draw bigger than anything this buffer held: (re)allocate once
++				m_capacity[i] = Common::alignUp(used_size * 2, kInitialCapacity);
++				glBufferData(m_target, m_capacity[i], nullptr, GL_DYNAMIC_DRAW);
++			}
++			glBufferSubData(m_target, 0, used_size, m_cpu_buffer);
++			m_buffer_id = m_pool[i];
++			return 0;
++		}
++
++		u32 GetChunkSize() const override { return m_size; }
++
++		static std::unique_ptr<OpenGLStreamBuffer> Create(GLenum target, u32 size) {
++			std::vector<GLuint> pool(kPoolSize);
++			glGenBuffers(static_cast<GLsizei>(pool.size()), pool.data());
++			return std::unique_ptr<OpenGLStreamBuffer>(new BufferPoolStreamBuffer(target, std::move(pool), size));
++		}
++
++	  private:
++		BufferPoolStreamBuffer(GLenum target, std::vector<GLuint> pool, u32 size)
++			: OpenGLStreamBuffer(target, pool[0], size), m_pool(std::move(pool)), m_capacity(m_pool.size(), 0) {
++			m_cpu_buffer = static_cast<u8*>(Common::alignedMalloc(size, 32));
++			if (!m_cpu_buffer) Panic("Failed to allocate CPU storage for GL buffer");
++		}
++
++		std::vector<GLuint> m_pool;
++		std::vector<u32> m_capacity;
++		size_t m_next = 0;
++		u8* m_cpu_buffer;
++	};
++
+ 	// Base class for implementations which require syncing.
+ 	class SyncingStreamBuffer : public OpenGLStreamBuffer {
+ 	  public:
+@@ -273,16 +372,17 @@ std::unique_ptr<OpenGLStreamBuffer> OpenGLStreamBuffer::Create(GLenum target, u3
  		if (buf) return buf;
  	}
  
@@ -1408,19 +1474,21 @@ index b7a4060..a6cf773 100644
 -	if (std::strcmp(vendor, "ARM") == 0 || std::strcmp(vendor, "Qualcomm") == 0) {
 -		// Mali and Adreno drivers can't do sub-buffer tracking...
 -		return BufferDataStreamBuffer::Create(target, size);
--	}
--
--	return BufferSubDataStreamBuffer::Create(target, size);
 +	// WebGL2 / ANGLE-Metal: a glBufferSubData into a ring buffer the GPU is still reading makes ANGLE copy the whole buffer, ~30-40 us per call (500+ calls a frame: 15-25 ms,
 +	// measured in a visible Chromium window; invisible in headless Chrome, where the GPU is idle). Orphaning with glBufferData(size, data) per use costs ~1 us.
 +	// Env GL_STREAM_SUBDATA=1 restores the ring for comparison; GL_STREAM_BUFFERDATA=1 forces the orphaning path on other platforms.
 +#ifdef __EMSCRIPTEN__
-+	static const bool useBufferData = std::getenv("GL_STREAM_SUBDATA") == nullptr;
++	// Env GL_STREAM_SUBDATA=1: the old ring of glBufferSubData; GL_STREAM_BUFFERDATA=1: orphaning with glBufferData per use; default: the buffer pool
++	if (std::getenv("GL_STREAM_SUBDATA") == nullptr) {
++		if (std::getenv("GL_STREAM_BUFFERDATA") != nullptr) return BufferDataStreamBuffer::Create(target, size);
++		return BufferPoolStreamBuffer::Create(target, size);
+ 	}
+-
+-	return BufferSubDataStreamBuffer::Create(target, size);
  #else
 -	return BufferDataStreamBuffer::Create(target, size);
-+	static const bool useBufferData = std::getenv("GL_STREAM_BUFFERDATA") != nullptr;
++	if (std::getenv("GL_STREAM_BUFFERDATA") != nullptr) return BufferDataStreamBuffer::Create(target, size);
  #endif
-+	if (useBufferData) return BufferDataStreamBuffer::Create(target, size);
 +	return BufferSubDataStreamBuffer::Create(target, size);
  }
 \ No newline at end of file
