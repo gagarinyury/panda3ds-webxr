@@ -77,3 +77,13 @@ Native Panda3DS (`cmake -S Panda3DS -B build-native -DCMAKE_BUILD_TYPE=Release -
 - Moving the loop and the GL into a Worker (OffscreenCanvas): the synthetic frame (9 ms busy + 176 draws) already runs at 60 Hz on the main thread, and in a worker too (60-63). No gain expected from a worker alone.
 - Block link table (`kLinkEntries`, direct-mapped on `pc >> 1`): 16 k entries -> 1579 returns to the dispatcher per frame in the title scene (Mac), 64 k -> 553, 256 k -> 320; guest time on the Mac 2.2-3.0 -> 1.7-2.5 ms with 64 k, no further gain with 256 k (4 MB, cache misses). 64 k kept. Phone effect not yet measured (there the game scene has ~9000 returns per frame and guest time grows with the returns).
 - Folium (App Store, native, Azahar core `Cytrus`, no JIT: `System/core/arm` has dynarmic, dyncom and `fastinterp`): visibly smoother than this build in Mario Kart on the same phone (user's report).
+
+### Real Safari on the Mac as a lab, and what was wrong with some of my tools (17 Oct, night)
+
+- `scripts/safari-ab.py name=query ...` opens each variant in real Safari (WebKit, the engine class of the iPhone's WKWebView), reads the page's `/live` telemetry and prints loop / paint rate. Chrome at 60 Hz, Safari on the same page: 36-49 Hz in a light scene, the same machine.
+- Timer pacing and the desktop layout (which paces with a timer) are always worse in Safari: 15.8 / 17.9 / 24.1 Hz and 6-7 ms of emulator time per frame, against 36-49 Hz and 1.6-4.8 ms with rAF. Same on the phone earlier.
+- Results on the Mac are noisy: the same variant gave 47.6 and 35.9 Hz in two runs, with the machine under memory pressure (31 GB used, 133 MB free, 10 GB compressed, 3 M swap-ins) and a forgotten emulator tab in the test Chrome. Only differences of 2x or more are trustworthy there.
+- `?ping=1` (MessageChannel main-thread probe) perturbs the page: with it Safari ran at 19-26 Hz, without at 49 Hz. The first version with a 1 ms timer in the loop read as "main thread busy 1000 ms/s" (timer clamp). Do not use it for conclusions about the loop rate.
+- Block link table 16 k -> 64 k entries on the phone, W1-1: returns to the dispatcher 9178 -> 3431 per frame, guest ms 7.0 -> 6.5-6.8, speed 44 -> 42.6, loop 22 -> 21.4 Hz: **the dispatcher is not what costs the time**.
+- Fast-forward (`ff=<frame>`) works but the phone only gains ~1.4x over real time; one run of it was killed by iOS (WebContent terminated at frame ~3950, 63.9 k JIT modules).
+- Audio: the "slow down below the middle of the buffer" regulator (pitch drop) was tried and removed on the user's feedback; back to +/-1.5 %.

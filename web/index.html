@@ -80,7 +80,18 @@ const maxFrames = parseInt(params.get('frames') || '0');   // 0 = run forever
 const report = params.get('report') === '1';               // send a result to the host (server or native app) when done
 const audioMode = params.get('turbo') === '1' || (params.get('env') || '').indexOf('AUDIO:0') >= 0 ? '0' : (params.get('audio') || 'on');   // audio=0 off; on = HLE DSP + output device; dsp = HLE DSP only; dev = output device only (debugging aids); turbo runs are silent
 const audioOn = audioMode === 'on' || audioMode === 'dev';
-const turbo = params.get('turbo') === '1';                 // run as fast as possible (benchmark) instead of real time
+const turbo = params.get('turbo') === '1';
+// rp=<frame>: from that emulated frame on, the emulator is replaced by the replay of the frame recorded in IndexedDB (glrec.js), run through the same loop, canvas and
+// telemetry: does the loop still drop to 22 Hz when the emulator is not producing the GL calls? rpcpu = ms of busy work per replayed frame (stand-in for the emulator).
+const rpFrom = parseInt(params.get('rp') || '0'), rpCpu = parseFloat(params.get('rpcpu') || '9'); let rpFrame = null, rpState = 0;   // 0 off, 1 loading, 2 replaying
+let rpData = null;
+if (rpFrom) {   // load the recorded frame in the background: IndexedDB first (recorded on the phone), else glframe.json next to the page
+  const fromFile = () => fetch('glframe.json').then((r) => r.json()).then((d) => { rpData = d; }).catch(() => {});
+  try { const rq = indexedDB.open('glrec', 1); rq.onupgradeneeded = () => rq.result.createObjectStore('frames');
+    rq.onsuccess = () => { const g = rq.result.transaction('frames').objectStore('frames').get('glframe'); g.onsuccess = () => { if (g.result) rpData = JSON.parse(g.result); else fromFile(); }; g.onerror = fromFile; }; rq.onerror = fromFile; } catch (e) { fromFile(); }
+}
+const ffTo = parseInt(params.get('ff') || '0');                // ff=6000: run flat out until that emulated frame, then at the normal speed (skips the intro of a test route)
+const fast = () => turbo || (ffTo > 0 && frames < ffTo);                 // run as fast as possible (benchmark) instead of real time
 const name = params.get('name') || 'run';
 const useGL = params.get('gl') === '1';                     // OpenGL ES renderer on a WebGL2 canvas instead of the Null renderer + 2D canvases
 const side = (params.get('layout') || (innerWidth >= 900 ? 'side' : 'stack')) === 'side';   // both screens next to each other (720x240) or one above the other (400x480)
@@ -599,7 +610,7 @@ if (pingOn) {
       const out = Math.max(0, gap - ov); pingIn += ov; pingOut += out; pingGaps++; if (out > pingOutMax) pingOutMax = out;
     }
     if (n - pingWin >= 1000) { const dt = (n - pingWin) / 1000; pingStat = { outMsS: +(pingOut / dt).toFixed(0), outMax: +pingOutMax.toFixed(0), inMsS: +(pingIn / dt).toFixed(0), gaps: +(pingGaps / dt).toFixed(0) }; pingOut = 0; pingIn = 0; pingOutMax = 0; pingGaps = 0; pingWin = n; }
-    setTimeout(() => ch.port2.postMessage(0), 1);
+    ch.port2.postMessage(0);   // straight back, no timer: WebKit clamps nested timers to 4 ms, which looked like a busy thread
   };
   ch.port2.postMessage(0);
 }
@@ -668,7 +679,13 @@ function runFrame() {
   let qo = null; if (tq) { pollGpu(); qo = glx.createQuery(); glx.beginQuery(tq.TIME_ELAPSED_EXT, qo); }
   const jb0 = Module.jit ? Module.jit.impls[0].count || 0 : 0, gs0 = window.__glSlow.ms;
   if (window.__glrec) window.__glrec.begin(frames);
-  const alive = Module._web_frame();
+  if (rpFrom && rpState === 0 && frames >= rpFrom && window.makeReplayer && rpData) {   // switch: build the replayer from the recorded frame (takes a while: shaders are compiled)
+    rpState = 1;
+    const data = rpData;
+    const gl = document.getElementById('gl').getContext('webgl2'); rpFrame = makeReplayer(gl, data, new Set(), rpCpu, false); rpState = 2;
+    post('log', { msg: '[rp] replay mode from frame ' + frames + ' (' + data.draws + ' draws, ' + data.calls.length + ' calls)' });
+  }
+  const alive = rpState === 2 ? (rpFrame(), 1) : Module._web_frame();
   if (window.__glrec) window.__glrec.end(frames);
   if (finishProbe || frameSync) {   // wait until the GPU has executed this frame's commands (a 1-pixel read); GL_FINISH:1 also records how long that took
     if (!finishCtx) finishCtx = glx || document.getElementById('gl').getContext('webgl2');
@@ -691,14 +708,15 @@ function runFrame() {
   return alive;
 }
 
-function schedule() { if (turbo) setTimeout(() => tick(performance.now()), 0); else if (useTimer) setTimeout(() => tick(performance.now()), Math.max(0, FRAME_MS - acc - 1)); else requestAnimationFrame(tick); }
+function schedule() { if (fast()) setTimeout(() => tick(performance.now()), 0); else if (useTimer) setTimeout(() => tick(performance.now()), Math.max(0, FRAME_MS - acc - 1)); else requestAnimationFrame(tick); }
 
 function tick(now) {
   if (!running) return;
   const tickStart = performance.now(); rafCount++; if (pingOn) { tickSpans.push([tickStart, 0]); if (tickSpans.length > 6) tickSpans.shift(); } if (lastTickAt) { const gap = now - lastTickAt; if (gap > gapWin) gapWin = gap; } lastTickAt = now;
   let alive = 1, ran = 0;
-  if (turbo) {
+  if (fast()) {
     const tt0 = performance.now(); for (; ran < 16 && alive && !(maxFrames && frames >= maxFrames) && (ran === 0 || performance.now() - tt0 < 12); ran++) alive = runFrame();
+    if (!fast()) { acc = 0; lastTick = performance.now(); }   // fast-forward is over: restart the real-time clock
   } else {
     acc += Math.min(now - lastTick, 100); lastTick = now;     // fixed time step: the display may refresh at 60 or 120 Hz
     // The browser may call us less often than 60 times a second (Comet on battery / low-power / occluded: ~30 per second, measured), so run as many
@@ -755,5 +773,6 @@ async function finish() {
   }
 }
 </script>
+<script>if (new URLSearchParams(location.search).get('rp')) document.write('<script src="glreplay.js"><\/script>');</script>
 <script>if (new URLSearchParams(location.search).get('glrec')) document.write('<script src="glrec.js"><\/script>');</script>
 <script src="../build-core/AlberWeb.js"></script>
