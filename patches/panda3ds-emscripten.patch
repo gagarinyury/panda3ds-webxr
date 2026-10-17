@@ -511,7 +511,7 @@ index 092f94a..86100b0 100644
  			while (sampleBuffer.size() + frame.size() * 2 > sampleBuffer.Capacity()) {
  				std::this_thread::sleep_for(std::chrono::milliseconds{1});
 diff --git a/src/core/audio/miniaudio_device.cpp b/src/core/audio/miniaudio_device.cpp
-index 8e2a1e7..3cd40a3 100644
+index 8e2a1e7..22242f3 100644
 --- a/src/core/audio/miniaudio_device.cpp
 +++ b/src/core/audio/miniaudio_device.cpp
 @@ -1,6 +1,8 @@
@@ -523,8 +523,44 @@ index 8e2a1e7..3cd40a3 100644
  #include <cmath>
  #include <cstring>
  #include <limits>
-@@ -105,6 +107,14 @@ void MiniAudioDevice::init(Samples& samples, bool safe) {
+@@ -103,8 +105,50 @@ void MiniAudioDevice::init(Samples& samples, bool safe) {
+ 		}
+ 
  		s16* output = reinterpret_cast<ma_int16*>(out);
++#ifdef __EMSCRIPTEN__
++		{
++			// Dynamic rate control. The emulator makes sound a little slower or faster than the device plays it (59.3 fps measured against 59.83), and a stall
++			// of the page empties the buffer: either way the player hears gaps. So the device reads its input at 1 +/- 1.5 % of the nominal speed, depending on
++			// how full the buffer is, which keeps the fill near the middle without an audible change of pitch (linear interpolation between neighbours).
++			static double pos = 0.0;
++			static s16 prev[2] = {0, 0}, cur[2] = {0, 0};
++			static u64 calls = 0, starvedTotal = 0;
++			const double target = double(self->samples->Capacity()) / 2.0 * 0.5;   // in frames: half of the buffer
++			const double fill = double(self->samples->size()) / 2.0;
++			const double ratio = 1.0 + std::clamp((fill - target) / target, -1.0, 1.0) * 0.015;
++			float volume = self->audioSettings.getVolume();
++			if (volume > 1.0f) volume = 0.6f + 20.0f * std::log10(volume);
++			else if (self->audioSettings.volumeCurve == AudioDeviceConfig::VolumeCurve::Cubic) volume = volume * volume * volume;
++			s16* o = output;
++			for (ma_uint32 i = 0; i < frameCount; i++) {
++				pos += ratio;
++				while (pos >= 1.0) {
++					prev[0] = cur[0]; prev[1] = cur[1];
++					s16 frame[2];
++					if (self->samples->pop(frame, 2) == 2) { cur[0] = frame[0]; cur[1] = frame[1]; } else { starvedTotal++; }
++					pos -= 1.0;
++				}
++				const float t = float(pos);
++				for (int c = 0; c < 2; c++) {
++					float v = (float(prev[c]) + (float(cur[c]) - float(prev[c])) * t) * volume;
++					*o++ = s16(std::clamp(v, -32768.0f, 32767.0f));
++				}
++			}
++			static const bool dbg = std::getenv("AUDIO_DEBUG") != nullptr;
++			if (dbg && ++calls % 40 == 0) std::printf("[audio-dbg] rate control: fill %.0f frames (target %.0f), ratio %.4f, starved frames so far %llu\n", fill, target, ratio, (unsigned long long)starvedTotal);
++			return;
++		}
++#endif
  		usize samplesWritten = 0;
  		samplesWritten += self->samples->pop(output, frameCount * channelCount);
 +		{

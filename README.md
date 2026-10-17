@@ -22,6 +22,8 @@ Measured on an M-series Mac (Comet 154 and a clean Chromium 148, visible window)
 
 Audio notes: on iOS Web Audio is muted by the ringer switch, so the app declares a playback audio session and the page starts a looping silent `<audio>` clip on the first touch; the sound only starts after the first tap. The page used to switch sound off whenever the URL had `turbo=0` (the iOS app always passes it): fixed.
 
+Gaps in the sound: the emulator makes sound a little slower than the device plays it when frames are heavy (e.g. 59.3 fps against 59.83), so the buffer ran dry and short gaps were audible (the picture hides this). The web build now reads the buffer with a dynamic rate control (the device speed follows the buffer fill by up to ±1.5 %, no audible pitch change): after loading the starved-sample counter stays flat. Big hiccups (a 300+ ms shader compile) can still leave a gap.
+
 More audio notes: in the single-threaded web build the DSP used to wait for the audio device to drain its buffer and froze the page (a deadlock): it now drops the oldest audio instead; miniaudio's Web Audio code needs `HEAPF32` exported from the Emscripten runtime.
 
 Known problems: freezes of 0.5-1 s the first time a new shader is compiled; the first ~500 frames of a big game run slower while the JIT compiles 50-100 thousand blocks; the rendering of five homebrew examples is suspicious and not compared with native Panda; on the iPhone one launch right after install was killed for memory (not reproduced). Open ideas are listed in [docs/upstream-pr-plan.md](docs/upstream-pr-plan.md) (what could go upstream) and the issues above.
