@@ -97,7 +97,7 @@ if (liveOn) {   // dev only: a fixed CPU benchmark (compare browsers) and the ti
 function native0() { return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda); }
 const post = (type, payload) => {
   if (native) native.postMessage(JSON.stringify({ type, name, ...payload }));
-  else if (liveOn && (type === 'tick' || type === 'hitch' || (type === 'log' && /\[jit\]|\[gl\]|\[audio|\[abort\]|FATAL|panic|warning|unimplemented|failed|abort/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
+  else if (liveOn && (type === 'tick' || type === 'hitch' || type === 'gpuwait' || (type === 'log' && /\[jit\]|\[gl\]|\[audio|\[abort\]|FATAL|panic|warning|unimplemented|failed|abort/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
 };
 const log = (s, err) => {
   const lines = logEl.textContent.split('\n');
@@ -115,6 +115,11 @@ if (window.WebGL2RenderingContext) {
     P[k] = function (...a) { const t = performance.now(); const r = orig.apply(this, a); const d = performance.now() - t; if (d > 4) window.__glSlow.ms += d; return r; };
   }
 }
+const finishProbe = !!(params.get('env') || '').indexOf && (params.get('env') || '').indexOf('GL_FINISH') >= 0, finishStat = { n: 0, sum: 0, max: 0, over: 0 };
+// Frame sync: on the iPhone the page presents at 23-26 Hz in some scenes although the GPU needs only ~1.5 ms per frame (measured). Waiting for the GPU at the end of each
+// frame keeps no frames queued and brings the same scene from 52-55 to ~60 fps. On by default in the iOS app (env GL_SYNC:0 turns it off), off elsewhere (env GL_SYNC:1 turns it on).
+const frameSync = native ? (params.get('env') || '').indexOf('GL_SYNC:0') < 0 : (params.get('env') || '').indexOf('GL_SYNC:1') >= 0;
+let finishCtx = null; const finishPx = new Uint8Array(4);   // taken on first use: the emulator must be the one that creates the context (its attributes: depth, stencil)
 const hitchStats = { jit: 0, shader: 0, other: 0, total: 0, worst: 0, recent: [] };
 // Audio: miniaudio's Web Audio backend creates a ScriptProcessorNode. Browsers keep the context suspended until a user gesture: resume it on the first one.
 // An analyser tapped onto the node gives the output level (shown in the panel) so sound can be checked without listening.
@@ -438,6 +443,12 @@ function runFrame() {
   let qo = null; if (tq) { pollGpu(); qo = glx.createQuery(); glx.beginQuery(tq.TIME_ELAPSED_EXT, qo); }
   const jb0 = Module.jit ? Module.jit.impls[0].count || 0 : 0, gs0 = window.__glSlow.ms;
   const alive = Module._web_frame();
+  if (finishProbe || frameSync) {   // wait until the GPU has executed this frame's commands (a 1-pixel read); GL_FINISH:1 also records how long that took
+    if (!finishCtx) finishCtx = glx || document.getElementById('gl').getContext('webgl2');
+    const f0 = performance.now(); finishCtx.readPixels(0, 0, 1, 1, finishCtx.RGBA, finishCtx.UNSIGNED_BYTE, finishPx); const fd = performance.now() - f0;   // finish() returns at once on WebKit; reading a pixel really waits for the GPU
+    if (finishProbe) { finishStat.n++; finishStat.sum += fd; if (fd > finishStat.max) finishStat.max = fd; if (fd > 16) finishStat.over++;
+    if (finishStat.n >= 120) { post('gpuwait', { avgMs: +(finishStat.sum / finishStat.n).toFixed(1), maxMs: +finishStat.max.toFixed(1), over16: finishStat.over, frames: finishStat.n, frame: frames }); finishStat.n = 0; finishStat.sum = 0; finishStat.max = 0; finishStat.over = 0; } }
+  }
   if (qo) { glx.endQuery(tq.TIME_ELAPSED_EXT); pendingQ.push(qo); }
   const ms = performance.now() - a;
   if (ms > 30) {   // a slow frame: say what it was spent on
