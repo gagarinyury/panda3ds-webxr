@@ -81,7 +81,7 @@ if (liveOn && window.WebGL2RenderingContext) {   // dev only: report WebGL calls
   }
 }
 const glProf = (params.get('env') || '').indexOf('GL_PROF') >= 0;   // env GL_PROF:1 on the phone: send the per-frame WebGL time and the costliest calls to the host
-if (liveOn || glProf) {   // dev only: a fixed CPU benchmark (compare browsers) and the time per emulated frame spent inside WebGL calls, sent to /live
+if (glProf) {   // dev only (env GL_PROF:1): a fixed CPU benchmark (compare browsers) and the time per emulated frame spent inside WebGL calls, sent to /live
   setTimeout(() => { const t = performance.now(); let x = 0; for (let i = 0; i < 2e7; i++) x += i % 7; post('log', { msg: '[gl] bench js 2e7 loop ' + (performance.now() - t).toFixed(0) + ' ms (x=' + x + ') ua=' + navigator.userAgent.slice(-40) }); }, 3000);
   if (window.WebGL2RenderingContext) {
     const P = WebGL2RenderingContext.prototype, acc = { ms: 0, n: 0 }, per = {};
@@ -111,7 +111,7 @@ const log = (s, err) => {
 window.__glSlow = { ms: 0 };
 if (window.WebGL2RenderingContext) {
   const P = WebGL2RenderingContext.prototype;
-  for (const k of ['linkProgram', 'compileShader', 'useProgram', 'getProgramParameter', 'getShaderParameter', 'texImage2D', 'texStorage2D', 'validateProgram']) {
+  for (const k of ['linkProgram', 'compileShader', 'getProgramParameter', 'getShaderParameter', 'texImage2D', 'texStorage2D']) {   // rare calls only: a wrapper on a per-draw call (useProgram) cost a few % of the CPU
     const orig = P[k]; if (!orig) continue;
     P[k] = function (...a) { const t = performance.now(); const r = orig.apply(this, a); const d = performance.now() - t; if (d > 4) window.__glSlow.ms += d; return r; };
   }

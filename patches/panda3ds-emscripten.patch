@@ -780,7 +780,7 @@ index 5ada30e..12b1028 100644
  		}
  	} else {  // If we're sleeping for >= 0 ns
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
-index 659a1e1..e1e23c0 100644
+index 659a1e1..2a1393f 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
 +++ b/src/core/renderer_gl/renderer_gl.cpp
 @@ -1,5 +1,12 @@
@@ -929,10 +929,12 @@ index 659a1e1..e1e23c0 100644
  	glActiveTexture(GL_TEXTURE0);
  }
  
-@@ -422,6 +481,30 @@ void RendererGL::updateFogLUT() {
+@@ -422,6 +481,32 @@ void RendererGL::updateFogLUT() {
  }
  
  void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> vertices) {
++	static const bool skipDraws = std::getenv("GL_SKIP_DRAWS") != nullptr;   // measuring aid: skip all 3D draws (the rest of the frame stays)
++	if (skipDraws) return;
 +	// A game may draw before it has configured the framebuffer (size 0, or uninitialised memory in a non-zeroed heap): skip such draws
 +	if (fbSize[0] == 0 || fbSize[1] == 0 || fbSize[0] > 4096 || fbSize[1] > 4096) return;
 +
@@ -960,7 +962,7 @@ index 659a1e1..e1e23c0 100644
  	// The fourth type is meant to be "Geometry primitive". TODO: Find out what that is
  	static constexpr std::array<OpenGL::Primitives, 4> primTypes = {
  		OpenGL::Triangle,
-@@ -449,12 +532,14 @@ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> v
+@@ -449,12 +534,14 @@ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> v
  	poop->fbo.bind(OpenGL::DrawAndReadFramebuffer);
  
  	const u32 depthControl = regs[PICA::InternalRegs::DepthAndColorMask];
@@ -977,7 +979,17 @@ index 659a1e1..e1e23c0 100644
  
  	static constexpr std::array<GLenum, 8> depthModes = {
  		GL_NEVER, GL_ALWAYS, GL_EQUAL, GL_NOTEQUAL, GL_LESS, GL_LEQUAL, GL_GREATER, GL_GEQUAL,
-@@ -722,7 +807,12 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
+@@ -563,7 +650,8 @@ void RendererGL::display() {
+ 	const u32 bottomScreenAddr = externalRegs[bottomActiveFb == 0 ? Framebuffer1AFirstAddr : Framebuffer1ASecondAddr];
+ 	auto bottomScreen = colourBufferCache.findFromAddress(bottomScreenAddr);
+ 
+-	if (bottomScreen) {
++	static const bool skipBottom = std::getenv("GL_SKIP_BOTTOM") != nullptr;   // measuring aid: what does drawing the lower screen cost?
++	if (bottomScreen && !skipBottom) {
+ 		bottomScreen->get().texture.bind();
+ 		OpenGL::setViewport(40, 0, 320, 240);
+ 		OpenGL::draw(OpenGL::TriangleStrip, 4);
+@@ -722,7 +810,12 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
  			return blankTexture;
  		}
  
@@ -991,7 +1003,7 @@ index 659a1e1..e1e23c0 100644
  		Texture& newTex = textureCache.add(tex);
  		newTex.decodeTexture(textureData);
  
-@@ -955,6 +1045,9 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -955,6 +1048,9 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  		uniforms.clipCoords[1] = f24::fromRaw(regs[PICA::InternalRegs::ClipData1] & 0xffffff).toFloat32();
  		uniforms.clipCoords[2] = f24::fromRaw(regs[PICA::InternalRegs::ClipData2] & 0xffffff).toFloat32();
  		uniforms.clipCoords[3] = f24::fromRaw(regs[PICA::InternalRegs::ClipData3] & 0xffffff).toFloat32();
@@ -1001,7 +1013,7 @@ index 659a1e1..e1e23c0 100644
  	}
  
  	// Set up the constant color for the 6 TEV stages
-@@ -1018,16 +1111,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -1018,16 +1114,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  		}
  	}
  

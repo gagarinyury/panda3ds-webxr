@@ -61,7 +61,7 @@ EMSCRIPTEN_KEEPALIVE int web_init(int gl, int w, int h) {
         a.depth = true;
         a.stencil = true;
         a.antialias = false;
-        a.preserveDrawingBuffer = true;   // lets the page read the picture back after the frame
+        a.preserveDrawingBuffer = std::getenv("GL_NOPRESERVE") == nullptr;   // true: lets the page read the picture back after the frame (tests, screenshots); env GL_NOPRESERVE:1 saves the copy the browser makes at every present
         a.powerPreference = EM_WEBGL_POWER_PREFERENCE_HIGH_PERFORMANCE;
         a.enableExtensionsByDefault = true;
         EMSCRIPTEN_WEBGL_CONTEXT_HANDLE ctx = emscripten_webgl_create_context("#gl", &a);
