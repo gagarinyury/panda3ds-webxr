@@ -59,3 +59,12 @@ Native Panda3DS (`cmake -S Panda3DS -B build-native -DCMAKE_BUILD_TYPE=Release -
 - The native `Run()` is 14-20 ms per frame, but 13-19 ms of that is inside SVC handlers (the frame limiter waits there) - not comparable with the web build.
 - Native guest code outside SVC handlers (including MMIO callbacks, like the web number): **~0.7 ms per frame**. Web build: **2.2-3.0 ms per frame**. So the WASM JIT is ~3-4x slower than the native ARM64 Dynarmic on the same CPU - not 10x. (The scheduler ticks per frame are the timeline, 4.47 M = 268 MHz / 60, not executed cycles, so ticks cannot be compared between the builds.)
 - Consequence: better generated code can bring maybe 1.3-2x on the guest part (registers in locals instead of the state struct is the obvious candidate); that is a real but bounded gain.
+
+### Claims from an external code review, checked (17 Oct)
+
+- `FragmentUniforms` was not zeroed before the `memcmp` dedupe (real UB: unset members and padding hold stack garbage). Zeroed now (`GL_UNIFORMS_UNINIT:1` restores the old behaviour). **No measurable effect**: UBO uploads per draw 1.37 before and after (`scripts/cdp-gl-counts.mjs`, Mac, frames 1200+).
+- `preserveDrawingBuffer` (default on) vs `GL_NOPRESERVE:1` on the iPhone, Mario 3D Land, frames 1100-2700, 29 samples each, no sync probes: speed 53.4 vs 53.5, 3D loop 28.5 vs 28.7 Hz, emu 7.8 vs 7.9 ms, thermal 0. **No effect.**
+- The `link[]` table is direct-mapped (`(pc >> 1) & 0x3FFF`) and filled only by the host's `GetBlock()`, so collisions between hot blocks are possible; how many of the ~1570 dispatcher returns per frame they cause is not measured (upper bound of the gain: the dispatcher's ~8 % of busy time on the Mac).
+- `DropRange` keeps every table slot allocated and clears the whole `link[]` (documented in the code); it runs only when the guest invalidates code, not on the hot path.
+- Not a bug: after an SVC the block ends with `CheckHalt{PopRSBHint}`, `ChainDynamic` reads the live PC from the state.
+- Not applicable: a frame-skip of 3D draws (Mario 3D Land already renders 3D every second video frame); a render worker (WebGL calls are ~12-20 % of a frame).
