@@ -2,7 +2,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="theme-color" content="#0d0f13">
-<title>Panda3DS on a WASM JIT</title>
+<title>Nintendo 3DS emulator in your browser: Panda3DS on WebAssembly</title>
+<meta name="description" content="Play your own Nintendo 3DS games in a browser or on an iPhone, no install, no JIT entitlement: the Panda3DS emulator with the guest code recompiled to WebAssembly and the GPU on WebGL2. Free and open source (GPL-3.0). No games included.">
+<link rel="canonical" href="https://panda.profy.top/">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<meta property="og:type" content="website"><meta property="og:site_name" content="Panda3DS in the browser">
+<meta property="og:title" content="Nintendo 3DS emulator in your browser">
+<meta property="og:description" content="Panda3DS compiled to WebAssembly: runs your own game dumps on a computer or an iPhone, nothing is uploaded. Open source, GPL-3.0.">
+<meta property="og:url" content="https://panda.profy.top/"><meta property="og:image" content="https://panda.profy.top/og.png">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="Nintendo 3DS emulator in your browser"><meta name="twitter:image" content="https://panda.profy.top/og.png">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Panda3DS in the browser","applicationCategory":"GameApplication","operatingSystem":"Any (Chrome, Safari, Firefox; iPhone and iPad)","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"},"license":"https://www.gnu.org/licenses/gpl-3.0.html","url":"https://panda.profy.top/","codeRepository":"https://github.com/gagarinyury/panda3ds-wasm","description":"A Nintendo 3DS emulator (Panda3DS) running in a web browser: guest ARM code is recompiled to WebAssembly at run time and the GPU is drawn with WebGL2. No games are included."}</script>
 <script>   // a blank screen on a phone tells nothing: show the first script error on the page itself
 (function () { const show = (m) => { let d = document.getElementById('errbox'); if (!d) { d = document.createElement('pre'); d.id = 'errbox'; d.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:99;margin:0;padding:10px;background:#3a1114;color:#ffd9d6;font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;border-radius:8px;max-height:45vh;overflow:auto'; (document.body || document.documentElement).appendChild(d); } d.textContent += m + '\n'; };
   window.__showErr = show;
@@ -214,8 +223,8 @@
   <div id="demos">No game at hand? Try a free homebrew demo:
     <a href="?rom=/run/examples/graphics__gpu__textured_cube.3dsx">textured cube</a> ·
     <a href="?rom=/run/examples/graphics__gpu__toon_shading.3dsx">toon shading</a> ·
-    <a href="?rom=/run/examples/graphics__gpu__particles.3dsx">particles</a> ·
     <a href="?rom=/run/examples/graphics__gpu__fragment_light.3dsx">lighting</a></div>
+  <noscript><p style="color:#a6aebb;max-width:520px;margin:12px auto;text-align:center">This page needs JavaScript and WebAssembly: it runs a Nintendo 3DS emulator (Panda3DS) in your browser. Open source: github.com/gagarinyury/panda3ds-wasm.</p></noscript>
   <div id="foot">.3ds · .cci · .cxi · .3dsx &nbsp;·&nbsp; <a href="https://github.com/gagarinyury/panda3ds-wasm">source on GitHub</a> (GPL-3.0) &nbsp;·&nbsp; not affiliated with Nintendo or Apple</div>
   </section>
   <aside id="diag">

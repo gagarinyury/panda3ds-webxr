@@ -49,7 +49,7 @@ Known problems: no soft shadow under characters (Mario, enemies) in World 1-1 (s
 - **Sizes.** The gear in the pill: main screen share (50-80 %), buttons size, buttons opacity; kept in the browser (`localStorage`).
 - **Loading and errors.** The open button waits for the emulator core, a spinner with the progress shows while the game loads, and a script error or an emulator abort is printed on the page (a blank screen on a phone says nothing).
 - **Test parameters switch to the diagnostic layout** (`name=`, `report=`, `fscript=`, `ff=`, `env=`, `frames=`, `turbo=`, the iOS app); `dev=1` forces it, `dev=0` forces the player. `touch=1` simulates a touch device on a desktop.
-- **Showing it to somebody.** `ios/prepare-site.sh` fills `ios/Site` (updated in place), `python3 scripts/serve-site.py 8791` serves it with `Cache-Control: no-store`, and `cloudflared tunnel --url http://127.0.0.1:8791` makes a temporary public address (alive while the Mac and both processes run). A permanent address needs a static host (Cloudflare Pages); game files are never part of it, people open their own.
+- **Live:** https://panda.profy.top/ (Cloudflare Pages, only the player, the core and three free demos; people open their own games). How it is built and deployed: [docs/deploy.md](docs/deploy.md). For a quick look before deploying: `ios/prepare-site.sh` + `scripts/serve-site.py` + a `cloudflared` tunnel.
 
 ## Run it
 
