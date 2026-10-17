@@ -1,0 +1,122 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GL replay</title>
+<body style="background:#111;color:#8f8;font:13px ui-monospace,monospace;margin:8px">
+<pre id="o">starting…</pre>
+<canvas id="c" width="400" height="480" style="width:200px;height:240px;background:#000"></canvas>
+<script>
+// Replays the WebGL calls of one real emulated frame (recorded by glrec.js into glframe.json) in a bare page, no emulator. Each variant can leave out
+// some call names to see which ones the browser + GPU make expensive.
+//   ?secs=10&pace=raf|timer&sync=1&cpu=0&variants=base:;nofbatt:framebufferTexture2D;nofbo:bindFramebuffer,framebufferTexture2D&file=glframe.json&where=main|worker
+const q = new URLSearchParams(location.search);
+const SECS = +(q.get('secs') || 10), PACE = q.get('pace') || 'raf', SYNC = q.get('sync') === '1', CPU = +(q.get('cpu') || 0), WHERE = q.get('where') || 'main';
+const FILE = q.get('file') || 'glframe.json';
+// variant = name:skipCalls:flags   flags: D depth, S stencil, P preserveDrawingBuffer (the emulator's context has all three), C = 9 ms of busy work per frame (stand-in for the emulator)
+const VARIANTS = (q.get('variants') || 'base:').split(';').map((v) => { const [n, s, f] = v.split(':'); return { n, skip: new Set((s || '').split(',').filter(Boolean)), f: f || '' }; });
+const o = document.getElementById('o');
+const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda;
+const say = (s) => { o.textContent += s + '\n'; if (native) native.postMessage(JSON.stringify({ type: 'log', name: 'replay', msg: '[replay] ' + s })); else fetch('/live?name=replay', { method: 'POST', body: JSON.stringify({ type: 'log', msg: '[replay] ' + s }) }).catch(() => {}); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---- everything below is shared with the worker variant (passed as source text) ----
+function makeReplayer(gl, data, skip, cpu, heapMode) {
+  const objs = new Map(data.objs.map((x) => [x.id, x])), real = new Map(), zeros = new Map();
+  const build = (id) => {
+    if (real.has(id)) return real.get(id);
+    const x = objs.get(id); if (!x) return null; const m = x.m; let r = null;
+    switch (x.type) {
+      case 'Shader': r = gl.createShader(m.stype); gl.shaderSource(r, m.src); gl.compileShader(r); break;
+      case 'Program': r = gl.createProgram(); (m.shaders || []).forEach((s) => gl.attachShader(r, build(s))); (m.attribs || []).forEach(([i, n]) => gl.bindAttribLocation(r, i, n)); gl.linkProgram(r); (m.ubb || []).forEach(([i, b]) => gl.uniformBlockBinding(r, i, b)); break;
+      case 'UniformLocation': r = gl.getUniformLocation(build(m.prog), m.name); break;
+      case 'Texture': r = gl.createTexture(); if (m.w) { gl.bindTexture(m.target, r); if (m.storage) gl.texStorage2D(m.target, m.levels || 1, m.ifmt, m.w, m.h); else gl.texImage2D(m.target, 0, m.ifmt, m.w, m.h, 0, m.format, m.type, null); for (const [k, v] of Object.entries(m.params || {})) gl.texParameteri(m.target, +k, v); } break;
+      case 'Buffer': r = gl.createBuffer(); if (m.size) { gl.bindBuffer(m.target, r); gl.bufferData(m.target, m.size, m.usage || gl.STREAM_DRAW); } break;
+      case 'Renderbuffer': r = gl.createRenderbuffer(); if (m.w) { gl.bindRenderbuffer(gl.RENDERBUFFER, r); if (m.samples) gl.renderbufferStorageMultisample(gl.RENDERBUFFER, m.samples, m.ifmt, m.w, m.h); else gl.renderbufferStorage(gl.RENDERBUFFER, m.ifmt, m.w, m.h); } break;
+      case 'Framebuffer': r = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, r);
+        for (const [att, a] of Object.entries(m.att || {})) { if (a.kind === 'tex') gl.framebufferTexture2D(gl.FRAMEBUFFER, +att, a.textarget, build(a.tex), a.level); else gl.framebufferRenderbuffer(gl.FRAMEBUFFER, +att, gl.RENDERBUFFER, build(a.rb)); } break;
+      case 'VertexArrayObject': r = gl.createVertexArray(); break;
+      case 'Query': r = gl.createQuery(); break;
+      case 'Sampler': r = gl.createSampler(); break;
+      default: r = null;
+    }
+    real.set(id, r); return r;
+  };
+  for (const id of objs.keys()) build(id);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  const T = { Float32Array, Uint8Array, Uint16Array, Uint32Array, Int32Array, Int16Array, Int8Array, Float64Array };
+  const dec = (a) => {
+    if (a === null || typeof a !== 'object') return a;
+    if (Array.isArray(a)) return a.map(dec);
+    if (a.o !== undefined) return real.get(a.o) || null;
+    if (a.z !== undefined) { let z = zeros.get(a.z); if (!z) { z = new Uint8Array(a.z); zeros.set(a.z, z); } return z; }
+    if (a.t !== undefined) { const s = atob(a.b), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return new T[a.t](u.buffer, 0, u.length / T[a.t].BYTES_PER_ELEMENT); }
+    return a;
+  };
+  // decode once (typed data is shared between iterations), keep the creating calls separate so they run only on the first pass
+  const calls = data.calls.filter((c) => !skip.has(c[0])).map((c) => ({ n: c[0], a: c[1].map(dec), ret: c[2] }));
+  if (heapMode) {   // the Emscripten way: every upload is a view of one big memory plus (srcOffset, length) - the data is copied into that memory first
+    const mem = new WebAssembly.Memory({ initial: 4096 }), heap = new Uint8Array(mem.buffer); let top = 4096;
+    const put = (v) => { top = (top + 15) & ~15; const n = v.byteLength; heap.set(new Uint8Array(v.buffer, v.byteOffset, n), top); const o = top; top += n; return [o, n]; };
+    for (const c of calls) {
+      if (c.n === 'bufferData' && ArrayBuffer.isView(c.a[1])) { const [o, n] = put(c.a[1]); c.a = [c.a[0], heap, c.a[2], o, n]; }
+      else if (c.n === 'bufferSubData' && ArrayBuffer.isView(c.a[2])) { const [o, n] = put(c.a[2]); c.a = [c.a[0], c.a[1], heap, o, n]; }
+      else if (/^uniform/.test(c.n)) { c.a = c.a.map((x) => { if (!ArrayBuffer.isView(x)) return x; const [o, n] = put(x); return new x.constructor(mem.buffer, o, n / x.BYTES_PER_ELEMENT); }); }
+    }
+  }
+  let first = true;
+  const prof = {}; let profOn = false;
+  const f = function frame() {
+    const t0 = performance.now(); if (cpu) while (performance.now() - t0 < cpu) { }
+    for (let i = 0; i < calls.length; i++) {
+      const c = calls[i];
+      if (c.ret !== undefined) { if (!first) continue; const r = gl[c.n](...c.a); real.set(c.ret, r); continue; }
+      if (profOn) { const a = performance.now(); gl[c.n](...c.a); const e = prof[c.n] || (prof[c.n] = { n: 0, ms: 0 }); e.n++; e.ms += performance.now() - a; } else gl[c.n](...c.a);
+    }
+    first = false;
+  };
+  f.prof = prof; f.setProf = (v) => { profOn = v; };
+  return f;
+}
+function runLoop(frame, gl, pace, secs, sync, schedRaf, done) {
+  const px = new Uint8Array(4); let f = 0, jsSum = 0, waitSum = 0; const start = performance.now(); let next = start; const FM = 1000 / 60;
+  (function tick() {
+    const now = performance.now();
+    if (now - start >= secs * 1000) { done({ frames: f, sec: (now - start) / 1000, jsMs: jsSum / Math.max(f, 1), waitMs: waitSum / Math.max(f, 1) }); return; }
+    const a = performance.now(); frame(); const b = performance.now(); jsSum += b - a;
+    if (sync) { gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); waitSum += performance.now() - b; }
+    f++;
+    if (pace === 'raf') schedRaf(tick); else { next += FM; const d = Math.max(0, next - performance.now() - 1); if (next < performance.now() - 100) next = performance.now(); setTimeout(tick, d); }
+  })();
+}
+// ------------------------------------------------------------------------------------------------
+async function main() {
+  let data;
+  if (FILE === 'idb') data = JSON.parse(await new Promise((res, rej) => { const rq = indexedDB.open('glrec', 1); rq.onupgradeneeded = () => rq.result.createObjectStore('frames'); rq.onerror = () => rej(rq.error); rq.onsuccess = () => { const g = rq.result.transaction('frames').objectStore('frames').get('glframe'); g.onsuccess = () => (g.result ? res(g.result) : rej(new Error('no recorded frame in IndexedDB'))); g.onerror = () => rej(g.error); }; }));
+  else data = await (await fetch(FILE)).json();
+  say(`UA ${navigator.userAgent.slice(0, 90)} | frame ${data.frame}: ${data.calls.length} calls, ${data.draws} draws, ${data.objs.length} objects | pace ${PACE} sync ${SYNC} where ${WHERE}`);
+  for (const v of VARIANTS) {
+    let paint = 0, on = true; (function pr() { if (!on) return; paint++; requestAnimationFrame(pr); })();
+    const cv = document.createElement('canvas'); cv.width = 400; cv.height = 480; cv.style.cssText = 'width:200px;height:240px;background:#000'; document.body.replaceChild(cv, document.querySelector('canvas'));
+    const t0 = performance.now(); let res;
+    if (WHERE === 'main') {
+      const gl = cv.getContext('webgl2', { antialias: false, depth: v.f.includes('D'), stencil: v.f.includes('S'), alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: v.f.includes('P') });
+      const frame = makeReplayer(gl, data, v.skip, v.f.includes('C') ? 9 : CPU, v.f.includes('H'));
+      if (v.f.includes('F')) frame.setProf(true);
+      res = await new Promise((r) => runLoop(frame, gl, PACE, SECS, SYNC, (cb) => requestAnimationFrame(cb), r));
+      if (v.f.includes('F')) say('  top calls: ' + Object.entries(frame.prof).sort((a, b) => b[1].ms - a[1].ms).slice(0, 6).map(([k, x]) => k + ' ' + (x.ms / Math.max(1, res.frames)).toFixed(2) + 'ms/frame (' + (x.n / Math.max(1, res.frames)).toFixed(0) + ' calls)').join('; '));
+    } else {
+      const off = cv.transferControlToOffscreen();
+      const src = `${makeReplayer.toString()}\n${runLoop.toString()}\nonmessage = (e) => { const { off, data, skip, cpu, pace, secs, sync } = e.data;
+        const gl = off.getContext('webgl2', { antialias: false, depth: false, stencil: false, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: false });
+        const frame = makeReplayer(gl, data, new Set(skip), cpu); runLoop(frame, gl, pace, secs, sync, (cb) => requestAnimationFrame(cb), (r) => postMessage({ done: r })); };`;
+      const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+      res = await new Promise((r) => { w.onmessage = (e) => r(e.data.done); w.onerror = (e) => r({ err: String(e.message) }); w.postMessage({ off, data, skip: [...v.skip], cpu: CPU, pace: PACE, secs: SECS, sync: SYNC }, [off]); });
+      w.terminate();
+    }
+    on = false; const sec = (performance.now() - t0) / 1000;
+    say(res.err ? `${v.n}: ERROR ${res.err}` : `${(v.n + ' [' + v.f + ']').padEnd(18)} loop ${(res.frames / res.sec).toFixed(1)} /s  page repaints ${(paint / sec).toFixed(1)} /s  js ${res.jsMs.toFixed(2)} ms/frame` + (SYNC ? `  GPU wait ${res.waitMs.toFixed(2)} ms/frame` : ''));
+    await sleep(500);
+  }
+  say('DONE');
+}
+main().catch((e) => say('FATAL ' + e + ' ' + (e.stack || '').slice(0, 200)));
+</script>

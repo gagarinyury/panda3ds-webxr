@@ -36,7 +36,7 @@ index b234cd2..9ffbb3c 100644
          target_link_libraries(dynarmic PRIVATE rt)
 diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
 new file mode 100644
-index 0000000..e66b163
+index 0000000..4948dc6
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_interface.cpp
 @@ -0,0 +1,450 @@
@@ -167,7 +167,7 @@ index 0000000..e66b163
 +
 +    UserConfig conf;
 +    Backend::Wasm::A32JitState st;
-+    static constexpr u32 kLinkEntries = 1u << 14;
++    static constexpr u32 kLinkEntries = 1u << 16;   // was 1 << 14: with 16k entries hot blocks evicted each other (1579 returns to the dispatcher per frame in the title scene; 553 with 64k, 320 with 256k, whose 4 MB table did not make the guest time better on the Mac)
 +    std::unordered_map<u64, u32> cache;  // location descriptor -> slot in the function table
 +    std::vector<Backend::Wasm::LinkEntry> link = std::vector<Backend::Wasm::LinkEntry>(kLinkEntries, Backend::Wasm::LinkEntry{0xFFFFFFFFu, 0, 0, 0});
 +    int js_id = -1;

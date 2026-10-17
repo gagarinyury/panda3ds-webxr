@@ -588,6 +588,21 @@ function pollGpu() {
   while (pendingQ.length > 8) glx.deleteQuery(pendingQ.shift());
 }
 const fmt = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v)) ? '–' : v.toFixed(d);
+// ?ping=1: a MessageChannel ping-pong tells how long the main thread was NOT available to other tasks, and whether that was inside our tick or between ticks
+const pingOn = params.get('ping') === '1', tickSpans = []; let pingLast = performance.now(), pingOut = 0, pingOutMax = 0, pingIn = 0, pingGaps = 0, pingWin = performance.now(), pingStat = { outMsS: null, outMax: null, inMsS: null, gaps: null };
+if (pingOn) {
+  const ch = new MessageChannel();
+  ch.port1.onmessage = () => {
+    const n = performance.now(), a = pingLast, gap = n - a; pingLast = n;
+    if (gap > 3) {
+      let ov = 0; for (const [ts, te] of tickSpans) { const lo = Math.max(a, ts), hi = Math.min(n, te || n); if (hi > lo) ov += hi - lo; }
+      const out = Math.max(0, gap - ov); pingIn += ov; pingOut += out; pingGaps++; if (out > pingOutMax) pingOutMax = out;
+    }
+    if (n - pingWin >= 1000) { const dt = (n - pingWin) / 1000; pingStat = { outMsS: +(pingOut / dt).toFixed(0), outMax: +pingOutMax.toFixed(0), inMsS: +(pingIn / dt).toFixed(0), gaps: +(pingGaps / dt).toFixed(0) }; pingOut = 0; pingIn = 0; pingOutMax = 0; pingGaps = 0; pingWin = n; }
+    setTimeout(() => ch.port2.postMessage(0), 1);
+  };
+  ch.port2.postMessage(0);
+}
 let hudOff = false;
 function renderDiag() {
   if (hudOff) return;
@@ -615,7 +630,7 @@ function renderDiag() {
     ];
     const hud = document.getElementById('hud'); hud.style.display = 'grid';
     hud.innerHTML = cells.map(([k, v, c]) => `<div><small>${k}</small><b class="${c}">${v}</b></div>`).join('');
-    document.getElementById('hudline').textContent = 'frame ' + frames + ' · ' + (useTimer ? 'timer' : 'rAF') + ' loop · tick ' + fmt(tickMsAvg) + ' ms · late ' + late + ' · audio ' + (audioOn ? (window.__audio.ctxs.length ? window.__audio.ctxs[0].state + ' ' + window.__audio.rms.toFixed(2) : 'no device') : 'off') + (nat.lowPower ? ' · LOW POWER' : '') + (hitchStats.recent.length ? ' · ' + hitchStats.recent.slice(-3).join('; ') : '');
+    document.getElementById('hudline').textContent = 'frame ' + frames + ' · ' + (useTimer ? 'timer' : 'rAF') + ' loop · tick ' + fmt(tickMsAvg) + ' ms' + (pingOn ? ' · main thread busy outside tick ' + pingStat.outMsS + ' ms/s (max ' + pingStat.outMax + '), in tick ' + pingStat.inMsS + ' ms/s' : '') + ' · late ' + late + ' · audio ' + (audioOn ? (window.__audio.ctxs.length ? window.__audio.ctxs[0].state + ' ' + window.__audio.rms.toFixed(2) : 'no device') : 'off') + (nat.lowPower ? ' · LOW POWER' : '') + (hitchStats.recent.length ? ' · ' + hitchStats.recent.slice(-3).join('; ') : '');
   } else
   document.getElementById('counters').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
   const c = document.getElementById('spark'); if (phone && c.height !== 80) c.height = 80;
@@ -652,7 +667,9 @@ function runFrame() {
   const a = performance.now();
   let qo = null; if (tq) { pollGpu(); qo = glx.createQuery(); glx.beginQuery(tq.TIME_ELAPSED_EXT, qo); }
   const jb0 = Module.jit ? Module.jit.impls[0].count || 0 : 0, gs0 = window.__glSlow.ms;
+  if (window.__glrec) window.__glrec.begin(frames);
   const alive = Module._web_frame();
+  if (window.__glrec) window.__glrec.end(frames);
   if (finishProbe || frameSync) {   // wait until the GPU has executed this frame's commands (a 1-pixel read); GL_FINISH:1 also records how long that took
     if (!finishCtx) finishCtx = glx || document.getElementById('gl').getContext('webgl2');
     const f0 = performance.now(); finishCtx.readPixels(0, 0, 1, 1, finishCtx.RGBA, finishCtx.UNSIGNED_BYTE, finishPx); const fd = performance.now() - f0;   // finish() returns at once on WebKit; reading a pixel really waits for the GPU
@@ -678,7 +695,7 @@ function schedule() { if (turbo) setTimeout(() => tick(performance.now()), 0); e
 
 function tick(now) {
   if (!running) return;
-  const tickStart = performance.now(); rafCount++; if (lastTickAt) { const gap = now - lastTickAt; if (gap > gapWin) gapWin = gap; } lastTickAt = now;
+  const tickStart = performance.now(); rafCount++; if (pingOn) { tickSpans.push([tickStart, 0]); if (tickSpans.length > 6) tickSpans.shift(); } if (lastTickAt) { const gap = now - lastTickAt; if (gap > gapWin) gapWin = gap; } lastTickAt = now;
   let alive = 1, ran = 0;
   if (turbo) {
     const tt0 = performance.now(); for (; ran < 16 && alive && !(maxFrames && frames >= maxFrames) && (ran === 0 || performance.now() - tt0 < 12); ran++) alive = runFrame();
@@ -704,9 +721,9 @@ function tick(now) {
     lastBeat = now;
     const st = `frame ${frames}  avg ${(sum / Math.max(frames, 1)).toFixed(2)} ms  worst ${worst.toFixed(0)} ms  late ${late}  ${mem().wasmMB} MB  (budget 16.7)`;
     document.getElementById('stats').textContent = st;
-    post('tick', { speed: +fpsNow.toFixed(1), loopHz: +rafHz.toFixed(0), paintHz: +presentHz.toFixed(0), tickMs: +tickMsAvg.toFixed(1), emuMs: +(frameMs.slice(-60).reduce((x, y) => x + y, 0) / Math.max(1, frameMs.slice(-60).length)).toFixed(1), frames, avgMs: sum / Math.max(frames, 1), worstMs: worst, late, hitches, guestMsFr: jitStat.guestMsFr === null ? null : +jitStat.guestMsFr.toFixed(2), retFr: jitStat.retFr === null ? null : Math.round(jitStat.retFr), ticksFr: jitStat.ticksFr === null ? null : Math.round(jitStat.ticksFr), ...mem(), fps: frames / ((performance.now() - t0) / 1000) });
+    post('tick', { speed: +fpsNow.toFixed(1), loopHz: +rafHz.toFixed(0), paintHz: +presentHz.toFixed(0), tickMs: +tickMsAvg.toFixed(1), emuMs: +(frameMs.slice(-60).reduce((x, y) => x + y, 0) / Math.max(1, frameMs.slice(-60).length)).toFixed(1), frames, avgMs: sum / Math.max(frames, 1), worstMs: worst, late, hitches, ...(pingOn ? { pingOutMsS: pingStat.outMsS, pingOutMax: pingStat.outMax, pingInMsS: pingStat.inMsS, pingGapsS: pingStat.gaps } : {}), guestMsFr: jitStat.guestMsFr === null ? null : +jitStat.guestMsFr.toFixed(2), retFr: jitStat.retFr === null ? null : Math.round(jitStat.retFr), ticksFr: jitStat.ticksFr === null ? null : Math.round(jitStat.ticksFr), ...mem(), fps: frames / ((performance.now() - t0) / 1000) });
   }
-  tickMsAvg = tickMsAvg * 0.95 + (performance.now() - tickStart) * 0.05;
+  tickMsAvg = tickMsAvg * 0.95 + (performance.now() - tickStart) * 0.05; if (pingOn) tickSpans[tickSpans.length - 1][1] = performance.now();
   if (!alive || (maxFrames && frames >= maxFrames)) { finish(); return; }
   schedule();
 }
@@ -738,4 +755,5 @@ async function finish() {
   }
 }
 </script>
+<script>if (new URLSearchParams(location.search).get('glrec')) document.write('<script src="glrec.js"><\/script>');</script>
 <script src="../build-core/AlberWeb.js"></script>
