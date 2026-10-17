@@ -588,7 +588,7 @@ index 092f94a..86100b0 100644
  			while (sampleBuffer.size() + frame.size() * 2 > sampleBuffer.Capacity()) {
  				std::this_thread::sleep_for(std::chrono::milliseconds{1});
 diff --git a/src/core/audio/miniaudio_device.cpp b/src/core/audio/miniaudio_device.cpp
-index 8e2a1e7..af8c4e9 100644
+index 8e2a1e7..22242f3 100644
 --- a/src/core/audio/miniaudio_device.cpp
 +++ b/src/core/audio/miniaudio_device.cpp
 @@ -1,6 +1,8 @@
@@ -600,7 +600,7 @@ index 8e2a1e7..af8c4e9 100644
  #include <cmath>
  #include <cstring>
  #include <limits>
-@@ -103,8 +105,53 @@ void MiniAudioDevice::init(Samples& samples, bool safe) {
+@@ -103,8 +105,50 @@ void MiniAudioDevice::init(Samples& samples, bool safe) {
  		}
  
  		s16* output = reinterpret_cast<ma_int16*>(out);
@@ -614,10 +614,7 @@ index 8e2a1e7..af8c4e9 100644
 +			static u64 calls = 0, starvedTotal = 0;
 +			const double target = double(self->samples->Capacity()) / 2.0 * 0.5;   // in frames: half of the buffer
 +			const double fill = double(self->samples->size()) / 2.0;
-+			// Above the middle of the buffer: +1.5 % at most (the emulator is a little faster than real time). Below it: follow the emulator down to 55 % of the
-+			// nominal speed, so a phone that runs the game at 35-42 fps plays slowed-down sound (lower pitch) instead of repeating the last sample, which is the buzzing.
-+			const double x = std::clamp((fill - target) / target, -1.0, 1.0);
-+			const double ratio = x >= 0.0 ? 1.0 + x * 0.015 : 1.0 + x * 0.45;
++			const double ratio = 1.0 + std::clamp((fill - target) / target, -1.0, 1.0) * 0.015;
 +			float volume = self->audioSettings.getVolume();
 +			if (volume > 1.0f) volume = 0.6f + 20.0f * std::log10(volume);
 +			else if (self->audioSettings.volumeCurve == AudioDeviceConfig::VolumeCurve::Cubic) volume = volume * volume * volume;
