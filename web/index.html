@@ -97,7 +97,7 @@ if (liveOn) {   // dev only: a fixed CPU benchmark (compare browsers) and the ti
 function native0() { return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda); }
 const post = (type, payload) => {
   if (native) native.postMessage(JSON.stringify({ type, name, ...payload }));
-  else if (liveOn && (type === 'tick' || (type === 'log' && /\[jit\]|\[gl\]|\[audio|\[abort\]|FATAL|panic|warning|unimplemented|failed|abort/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
+  else if (liveOn && (type === 'tick' || type === 'hitch' || (type === 'log' && /\[jit\]|\[gl\]|\[audio|\[abort\]|FATAL|panic|warning|unimplemented|failed|abort/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
 };
 const log = (s, err) => {
   const lines = logEl.textContent.split('\n');
@@ -106,6 +106,16 @@ const log = (s, err) => {
   logEl.scrollTop = logEl.scrollHeight;
   if (err) { errors.push(s); post('error', { msg: s }); }
 };
+// Frame hitch attribution: time spent in WebGL calls that can block on shader compilation / allocation, summed per frame (see runFrame)
+window.__glSlow = { ms: 0 };
+if (window.WebGL2RenderingContext) {
+  const P = WebGL2RenderingContext.prototype;
+  for (const k of ['linkProgram', 'compileShader', 'useProgram', 'getProgramParameter', 'getShaderParameter', 'texImage2D', 'texStorage2D', 'validateProgram']) {
+    const orig = P[k]; if (!orig) continue;
+    P[k] = function (...a) { const t = performance.now(); const r = orig.apply(this, a); const d = performance.now() - t; if (d > 4) window.__glSlow.ms += d; return r; };
+  }
+}
+const hitchStats = { jit: 0, shader: 0, other: 0, total: 0, worst: 0, recent: [] };
 // Audio: miniaudio's Web Audio backend creates a ScriptProcessorNode. Browsers keep the context suspended until a user gesture: resume it on the first one.
 // An analyser tapped onto the node gives the output level (shown in the panel) so sound can be checked without listening.
 window.__audio = { ctxs: [], rms: 0, peak: 0, rate: 0 };
@@ -401,7 +411,7 @@ function renderDiag() {
   const m = mem(), last = frameMs.slice(-60), avg = last.length ? last.reduce((a, b) => a + b, 0) / last.length : 0;
   const gpuRender = gpuMs.slice(-60).filter((x) => x > 0.05), gAvg = gpuRender.length ? gpuRender.reduce((a, b) => a + b, 0) / gpuRender.length : null;
   const rows = [['frame', frames], ['speed (real)', fmt(fpsNow) + ' fps' + (fpsNow >= 58 ? '' : '  (target 59.8)')], ['our loop ticks (' + (useTimer ? 'timer' : 'rAF') + ')', fmt(rafHz, 0) + ' per s  (longest gap ' + fmt(maxGapMs, 0) + ' ms)'], ['browser repaints (rAF)', fmt(presentHz, 0) + ' per s'], ['browser state', document.visibilityState + ', ' + (document.hasFocus() ? 'focused' : 'NOT focused') + (battery ? ', battery ' + Math.round(battery.level * 100) + '% ' + (battery.charging ? 'charging' : 'on battery') : '')], ['one tick takes (JS)', fmt(tickMsAvg) + ' ms'], ['emulator, avg 60 fr', fmt(avg) + ' ms'], ['emulator, worst', fmt(worst, 0) + ' ms'],
-    ['GPU / rendered frame', tq ? (gAvg === null ? '…' : fmt(gAvg) + ' ms') : 'n/a in this browser'], ['audio', audioOn ? (window.__audio.ctxs.length ? window.__audio.ctxs[0].state + ', level ' + window.__audio.rms.toFixed(3) + ' (peak ' + window.__audio.peak.toFixed(2) + ')' : 'no device') : 'off'], ['late (dropped)', late], ['worst frame at', worstFrame ? '#' + worstFrame + '  (flushes by then: ' + flushesAtWorst + ')' : '–'], ['JIT cache flushes', flushes + (jit0 && jit0.droppedBlocks ? '  (' + jit0.droppedBlocks + ' blocks thrown away)' : '')], ['compiling now', fmt(compileRate, 0) + ' blocks/s'], ['  JIT cost: translate+emit', fmt(jitRate[0], 0) + ' ms/s'], ['  JIT cost: wasm compile', fmt(jitRate[1], 0) + ' ms/s'], ['  JIT cost: instantiate', fmt(jitRate[2], 0) + ' ms/s'], ['JIT modules (total compiled)', m.blocks], ['JIT wasm code', m.jitKB + ' KB'], ['wasm memory', m.wasmMB + ' MB'],
+    ['GPU / rendered frame', tq ? (gAvg === null ? '…' : fmt(gAvg) + ' ms') : 'n/a in this browser'], ['audio', audioOn ? (window.__audio.ctxs.length ? window.__audio.ctxs[0].state + ', level ' + window.__audio.rms.toFixed(3) + ' (peak ' + window.__audio.peak.toFixed(2) + ')' : 'no device') : 'off'], ['slow frames >30 ms', hitchStats.total ? hitchStats.total + ' (shader ' + hitchStats.shader + ', jit ' + hitchStats.jit + ', other ' + hitchStats.other + ')' : '0'], ['last slow frames', hitchStats.recent.join('; ') || '-'], ['late (dropped)', late], ['worst frame at', worstFrame ? '#' + worstFrame + '  (flushes by then: ' + flushesAtWorst + ')' : '–'], ['JIT cache flushes', flushes + (jit0 && jit0.droppedBlocks ? '  (' + jit0.droppedBlocks + ' blocks thrown away)' : '')], ['compiling now', fmt(compileRate, 0) + ' blocks/s'], ['  JIT cost: translate+emit', fmt(jitRate[0], 0) + ' ms/s'], ['  JIT cost: wasm compile', fmt(jitRate[1], 0) + ' ms/s'], ['  JIT cost: instantiate', fmt(jitRate[2], 0) + ' ms/s'], ['JIT modules (total compiled)', m.blocks], ['JIT wasm code', m.jitKB + ' KB'], ['wasm memory', m.wasmMB + ' MB'],
     ['layout', (side ? 'side by side' : 'stacked') + (useGL ? ', WebGL2' : ', no GPU')]];
   document.getElementById('counters').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
   const c = document.getElementById('spark'), g = c.getContext('2d'), W = c.width, H = c.height, N = 240, bw = W / N;
@@ -426,9 +436,17 @@ function runScripted() {
 function runFrame() {
   const a = performance.now();
   let qo = null; if (tq) { pollGpu(); qo = glx.createQuery(); glx.beginQuery(tq.TIME_ELAPSED_EXT, qo); }
+  const jb0 = Module.jit ? Module.jit.impls[0].count || 0 : 0, gs0 = window.__glSlow.ms;
   const alive = Module._web_frame();
   if (qo) { glx.endQuery(tq.TIME_ELAPSED_EXT); pendingQ.push(qo); }
   const ms = performance.now() - a;
+  if (ms > 30) {   // a slow frame: say what it was spent on
+    const jb = (Module.jit ? Module.jit.impls[0].count || 0 : 0) - jb0, gs = window.__glSlow.ms - gs0;
+    const cause = gs > ms * 0.4 ? 'shader' : (jb > 15 ? 'jit' : 'other');
+    hitchStats[cause]++; hitchStats.total++; if (ms > hitchStats.worst) hitchStats.worst = ms;
+    hitchStats.recent.push(`#${frames + 1} ${ms.toFixed(0)}ms ${cause}${cause === 'shader' ? ' ' + gs.toFixed(0) + 'ms' : cause === 'jit' ? ' ' + jb + ' blocks' : ''}`); if (hitchStats.recent.length > 6) hitchStats.recent.shift();
+    post('hitch', { frame: frames + 1, ms: +ms.toFixed(1), cause, jitBlocks: jb, glSlowMs: +gs.toFixed(1) });
+  }
   frameMs.push(ms); if (frameMs.length > 240) frameMs.shift();
   frames++; if (fsched.length || frel.length) runScripted(); sum += ms; if (ms > worst) { worst = ms; worstFrame = frames; const j = Module.jit && Module.jit.impls[0]; flushesAtWorst = j ? (j.flushes || 0) : 0; } if (ms > FRAME_MS) hitches++;
   if (dbg) post('frame', { n: frames, ms: +ms.toFixed(1), ...mem() });
