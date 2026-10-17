@@ -9,7 +9,7 @@ index 2cd57e6..802dd96 100644
 -	url = https://github.com/azahar-emu/dynarmic.git
 +	url = https://github.com/gagarinyury/dynarmic.git
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2f4d9df..a309fa4 100644
+index 2f4d9df..8e93a47 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -177,7 +177,10 @@ if(ENABLE_DISCORD_RPC AND NOT ANDROID)
@@ -60,7 +60,7 @@ index 2f4d9df..a309fa4 100644
 +    target_link_libraries(AlberWeb PRIVATE AlberCore)
 +    target_link_options(AlberWeb PRIVATE -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456 -sMAXIMUM_MEMORY=2147483648 -sSTACK_SIZE=2097152 -sFORCE_FILESYSTEM=1
 +        -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sGL_TRACK_ERRORS=0 -lidbfs.js
-+        "-sEXPORTED_FUNCTIONS=_main,_web_init,_web_load,_web_frame,_web_screen,_web_key,_web_touch,_web_circle" "-sEXPORTED_RUNTIME_METHODS=FS,ccall,cwrap,HEAPU8,HEAPF32,stringToNewUTF8,ENV" --profiling-funcs)
++        "-sEXPORTED_FUNCTIONS=_main,_web_init,_web_load,_web_frame,_web_screen,_web_key,_web_touch,_web_circle,_web_layout,_web_layout_rect" "-sEXPORTED_RUNTIME_METHODS=FS,ccall,cwrap,HEAPU8,HEAPF32,stringToNewUTF8,ENV" --profiling-funcs)
 +endif()
 +
  if(NOT BUILD_HYDRA_CORE AND NOT BUILD_LIBRETRO_CORE)

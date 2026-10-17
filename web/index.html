@@ -250,10 +250,22 @@ const useGL = params.has('gl') ? params.get('gl') === '1' : !dev;               
 const side = (params.get('layout') || (dev ? (innerWidth >= 900 ? 'side' : 'stack') : (document.documentElement.classList.contains('coarse') && innerWidth > innerHeight * 1.25 ? 'side' : 'stack'))) === 'side';   // both screens next to each other (720x240) or one above the other (400x480)
 const GLW = side ? 720 : 400, GLH = side ? 240 : 480;
 if (!dev && side) document.documentElement.classList.add('ovl');
-if (!dev && side) {   // touch + landscape: fill the real visible area (CSS dvh is not reliable under Safari's moving toolbars)
-  const fit = () => { const g = document.getElementById('gl'); if (!g) return; const w = Math.floor(Math.min(innerWidth, innerHeight * GLW / GLH)); g.style.setProperty('width', w + 'px', 'important'); g.style.setProperty('height', Math.round(w * GLH / GLW) + 'px', 'important'); };
-  addEventListener('resize', fit); addEventListener('orientationchange', fit); if (window.visualViewport) visualViewport.addEventListener('resize', fit); addEventListener('DOMContentLoaded', fit); setInterval(fit, 1500);
-}   // touch + landscape: both screens side by side, controls drawn over the picture
+let bottomRect = null, lastLay = '';   // bottom screen inside the canvas (canvas pixels), once the core has laid the screens out
+function applyLayout() {   // player skin: re-lay the screens out whenever the window changes shape (rotation, resize). Needs the core's web_layout; older cores keep the layout chosen at load.
+  const g = document.getElementById('gl'), de = document.documentElement; if (!g) return;
+  const land = innerWidth > innerHeight * 1.25, touchy = de.classList.contains('coarse');
+  if (window.Module && Module._web_layout && Module._web_layout_rect) {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2); let cw, ch, layout, pct, mode;
+    if (touchy && land) { mode = 'ovl'; cw = innerWidth; ch = innerHeight; layout = 2; pct = Math.min(0.72, Math.max(0.5, 400 * (ch / 240) / cw)); }       // big top screen on the left, small bottom screen right, controls float over them
+    else if (land) { mode = 'flank'; cw = 400; ch = 480; layout = 0; pct = 0.5; }                                                                             // desktop: the CSS grid sizes the canvas; native 400x480, screens one above the other
+    else { mode = 'port'; const c = document.getElementById('ctl'), cs = c && getComputedStyle(c).display !== 'none' ? c.offsetHeight + 24 : 8; cw = innerWidth - 8; ch = Math.max(cw * 0.9, innerHeight - cs - 16); layout = 0; pct = 0.5; }   // one screen above the other, controls below
+    de.classList.toggle('ovl', mode === 'ovl');
+    if (mode === 'flank') { g.style.removeProperty('width'); g.style.removeProperty('height'); } else { g.style.setProperty('width', Math.round(cw) + 'px', 'important'); g.style.setProperty('height', Math.round(ch) + 'px', 'important'); }
+    const W = mode === 'flank' ? 400 : Math.round(cw * dpr), H = mode === 'flank' ? 480 : Math.round(ch * dpr), key = mode + W + 'x' + H + ':' + pct.toFixed(3);
+    if (key !== lastLay) { lastLay = key; g.width = W; g.height = H; Module._web_layout(W, H, layout, pct); bottomRect = [0, 1, 2, 3].map((i) => Module._web_layout_rect(i)); }
+  } else if (!dev && side) { const w = Math.floor(Math.min(innerWidth, innerHeight * GLW / GLH)); g.style.setProperty('width', w + 'px', 'important'); g.style.setProperty('height', Math.round(w * GLH / GLW) + 'px', 'important'); }
+}
+if (!dev) { addEventListener('resize', applyLayout); addEventListener('orientationchange', applyLayout); if (window.visualViewport) visualViewport.addEventListener('resize', applyLayout); addEventListener('DOMContentLoaded', applyLayout); setInterval(applyLayout, 1200); }
 if (!dev) { document.documentElement.style.setProperty('--w', GLW); document.documentElement.style.setProperty('--h', GLH); }
 const useTimer = (params.get('pace') || (innerWidth >= 900 ? 'timer' : 'raf')) === 'timer';   // emulation clock from a timer (independent of how often the browser repaints) on desktop; rAF on phones
 const scale = parseFloat(params.get('scale') || '1.5');                // on-page size of the screens relative to the 3DS native size
@@ -494,7 +506,9 @@ document.querySelectorAll('#pad b, #ctl b').forEach((b) => {
 function touchAt(e, down) {   // bottom screen (320x240) inside the GL canvas: side by side -> x 400..720, y 0..240; stacked -> x 40..360, y 240..480
   if (!Module._web_touch) return;
   const c = document.getElementById('gl'), r = c.getBoundingClientRect();
-  const x = (e.clientX - r.left) * GLW / r.width - (side ? 400 : 40), y = (e.clientY - r.top) * GLH / r.height - (side ? 0 : 240);
+  let x, y;
+  if (bottomRect) { x = ((e.clientX - r.left) * c.width / r.width - bottomRect[0]) * 320 / bottomRect[2]; y = ((e.clientY - r.top) * c.height / r.height - bottomRect[1]) * 240 / bottomRect[3]; }
+  else { x = (e.clientX - r.left) * GLW / r.width - (side ? 400 : 40); y = (e.clientY - r.top) * GLH / r.height - (side ? 0 : 240); }
   if (down && x >= 0 && x < 320 && y >= 0 && y < 240) Module._web_touch(Math.floor(x), Math.floor(y), 1); else Module._web_touch(0, 0, 0);
 }
 {
@@ -731,6 +745,7 @@ async function start() {
   { const gc = document.getElementById('gl'); if (gc) { gc.addEventListener('webglcontextlost', () => { log('[gl] CONTEXT LOST at frame ' + frames, true); post('log', { msg: '[gl] CONTEXT LOST at frame ' + frames }); }); gc.addEventListener('webglcontextrestored', () => { log('[gl] context restored', true); post('log', { msg: '[gl] context restored' }); }); } }
   if (useGL) { const g = document.getElementById('gl'); g.width = GLW; g.height = GLH; g.style.width = (phone ? Math.floor(Math.min(innerWidth, 0.54 * innerHeight * GLW / GLH)) : Math.round(GLW * (innerWidth >= 900 ? Math.min(scale, (innerWidth - 440) / GLW) : Math.min(scale, (innerWidth - 16) / GLW)))) + 'px'; g.style.display = 'block'; document.getElementById('pad').style.display = phone ? 'none' : 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
   if (!Module._web_init(useGL ? 1 : 0, GLW, GLH)) { log('[FATAL] web_init failed', true); finish(); return; }
+  if (!dev) applyLayout();
   if (useGL) { try { const x = document.getElementById('gl').getContext('webgl2').getSupportedExtensions() || []; post('log', { msg: '[gl] extensions (' + x.length + '): ' + x.join(' ') }); } catch (e) {} }
   initGpuTimer();   // after web_init: the emulator must be the one that creates the WebGL context (its attributes: no alpha, depth, stencil)
 

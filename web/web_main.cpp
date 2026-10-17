@@ -11,6 +11,7 @@
 #include "PICA/gpu.hpp"
 #include "PICA/regs.hpp"
 #include "emulator.hpp"
+#include "screen_layout.hpp"
 #include "services/hid.hpp"
 #include "opengl.hpp"
 
@@ -103,6 +104,23 @@ EMSCRIPTEN_KEEPALIVE void web_circle(int x, int y) {
 }
 
 // Fills the RGBA buffer of one screen and returns a pointer to it (or 0 if the guest has not presented anything yet)
+// Screen layout (call after the canvas has its final pixel size): layout 0 = one above the other, 2 = side by side; topPct = share of the window given to the top screen.
+// Sets the output size; the rectangle of the bottom screen inside the window (0 = x, 1 = y, 2 = width, 3 = height) is read back with web_layout_rect, so the page can map touches.
+static int layoutRect[4] = {0, 0, 320, 240};
+EMSCRIPTEN_KEEPALIVE void web_layout(int w, int h, int layout, float topPct) {
+    auto& cfg = emu->getConfig();
+    cfg.screenLayout = static_cast<ScreenLayout::Layout>(layout);
+    cfg.topScreenSize = topPct;
+    emu->setOutputSize(static_cast<u32>(w), static_cast<u32>(h));
+    ScreenLayout::WindowCoordinates c;
+    ScreenLayout::calculateCoordinates(c, static_cast<u32>(w), static_cast<u32>(h), topPct, cfg.screenLayout);
+    layoutRect[0] = static_cast<int>(c.bottomScreenX);
+    layoutRect[1] = static_cast<int>(c.bottomScreenY);
+    layoutRect[2] = static_cast<int>(c.bottomScreenWidth);
+    layoutRect[3] = static_cast<int>(c.bottomScreenHeight);
+}
+EMSCRIPTEN_KEEPALIVE int web_layout_rect(int i) { return layoutRect[i & 3]; }
+
 EMSCRIPTEN_KEEPALIVE const u8* web_screen(int top) { return convertScreen(top != 0) ? screens[top ? 0 : 1].data() : nullptr; }
 }
 
