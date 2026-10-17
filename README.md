@@ -13,10 +13,10 @@ Measured on an M-series Mac (Comet 154 and a clean Chromium 148, visible window)
 | | Result |
 |---|---|
 | Homebrew (devkitPro examples, Doom with Freedoom, Minicraft, ...) | ✅ iPhone: 53 of 58 examples at the last full device run (5 stop on a Panda `[FATAL]`); Doom and Minicraft start; 🔍 no fresh full Mac run of all examples |
-| Super Mario 3D Land (own dump, not included) | ✅ ~60 fps on the Mac, 55-63 fps on the iPhone in 3D scenes |
+| Super Mario 3D Land (own dump, not included) | ✅ playable from the title to a level with sound: ~60 fps on the Mac, 55-63 fps on the iPhone when it is cool (the phone heats up under load and then throttles to 30-37 fps) |
 | Mario Kart 7 (own dump) | ✅ ~55-60 fps on the Mac (panel readings and by eye); 🔍 gameplay not tested in depth, iPhone not tried (1 GB image) |
 | Super Smash Bros. for 3DS (2 GB dump) | ⚠ boots (image read in 1 MB pieces), then waits at an "extra data is corrupted" dialog and shows black screens after OK; being investigated |
-| Audio | ✅ works (Panda's HLE DSP + miniaudio over Web Audio, 32768 Hz): music plays in Mario 3D Land after the first click or key (browsers keep sound suspended until a gesture); the first ~500 frames stutter while the JIT compiles. ✅ iPhone Air: music plays (level meter and by ear); not checked: sound effects in other games |
+| Audio | ✅ works (Panda's HLE DSP + miniaudio over Web Audio, 32768 Hz): music plays in Mario 3D Land after the first click or key (browsers keep sound suspended until a gesture); the first ~500 frames stutter while the JIT compiles. ✅ music and sound effects (jump, coins, blocks) in Mario 3D Land levels, checked by ear on the Mac; the attract/demo scene is mostly music only; ✅ iPhone Air: music plays (level meter and by ear); not checked: other games |
 | Save data | ✅ `persist=1` keeps SD card and game saves in IndexedDB; ✗ no full save states |
 | Input | ✅ keyboard, on-screen buttons, touch on the lower screen; ✗ circle pad |
 
