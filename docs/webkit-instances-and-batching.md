@@ -72,6 +72,17 @@ Bare replay page on the phone (`probe-glreplay.html`, the recorded W1-1 frame: 3
 
 On the Mac the same test gave 43 Hz at 40 000. So the phone does **not** have the per-instance price (at least up to 40 000; the game keeps ~74 000 blocks, 70 000 was not run on the phone), which is why packing the blocks did not change W1-1 there. The 16-22 Hz of the phone in W1-1 comes from something else; the replay of the same GL stream with the same busy time holds 59 Hz, so the difference must be in what the real emulator does besides that (candidates: audio thread, uploads from the 256 MB heap, real JIT code running between the calls, memory pressure of the page). (The user agent string of the page says iOS 18_7: WebKit freezes it, ignore.)
 
+### iPhone Air, the real game in W1-1: the cost is the draw calls (17 Oct, night) ✅
+
+The route now runs on the phone without hands: `ios/prepare-site.sh` copies `web/*.txt` into the app, and `ios-watch.py` is started with `-page index.html -q "rom=/docs/sm3dl.3ds&frames=0&turbo=0&name=rp1&report=1&dbg=0&env=&gl=1&sd=&script=&shots=0&pace=&persist=1&ff=7500&fscriptfile=route-title.txt"` (the whole query is replaced by `-q`). Fast-forward to frame 7500 takes about a minute and a half on the phone (64-80 fps) and the WebContent process was not killed (78 700 blocks, packed).
+
+| run | variant | W1-1 loop | speed | emulator ms/frame |
+|---|---|---|---|---|
+| rp1 | normal | 21-22 Hz | 42.4-44 | 8.5-8.7 |
+| rp2 | `env=GL_NODRAW:1` (no draw calls at all, uploads kept) | **59-63 Hz** | 58.8-63.5 | 6.1 |
+
+So on the phone the JIT, the guest code, the sound, the 256 MB memory, the heap-view uploads (all tested in the replay page: 59 Hz with each) are not what costs the time: with the draws removed the same scene runs in real time. ~40 ms of every 50 ms frame goes into drawing (GPU / ANGLE-Metal in the WebContent and GPU processes). Which part of the drawing is not known yet (candidates 🔍: texture uploads of the real game, the many framebuffer switches with render targets, shader variety, fragment cost of the real textures). Careful with the note about `GL_NODRAW` in performance-notes (a no-draw run is not a clean test of the uploads), but here the comparison is of whole scenes. Next: take the draws away in parts (by framebuffer / by shader / small viewport / smaller textures) on the same route.
+
 ## 5. Reproducible route to World 1-1 without hands
 
 Game facts (✅ user + screenshots): StreetPass dialog #1 "OK" takes A (~frame 1600); dialog #2 "Activate StreetPass?" needs a touch on [Cancel]; "A NEW GAME" takes A; intro cutscene; the Bowser story pages need a touch on the bottom-right corner (A and Start do not work reliably); on the world map the red "!" button on the bottom screen must be tapped (twice); then World 1-1 loads (~frame 6400) and gameplay starts (~6600). `ff=7500` is enough.
@@ -83,6 +94,6 @@ Game facts (✅ user + screenshots): StreetPass dialog #1 "OK" takes A (~frame 1
 
 ## 6. Not done / open
 
-- iPhone: batching measured (above): no change in W1-1 (16-22 Hz). The ballast replay on the phone is done (no per-instance cost up to 40 000). Next: find what else separates the phone's emulator loop from the bare replay (add pieces of the emulator to the replay one at a time).
+- iPhone: batching measured (above): no change in W1-1 (16-22 Hz). The ballast replay on the phone is done (no per-instance cost up to 40 000). Found: the draw calls (see the section above, no-draw = 59-63 Hz). Next: split the drawing cost into parts.
 - Compile hitches in new areas (130-250 blocks, 30-47 ms), shader compile freezes (Mario Kart: ~1 s per program), missing shadows under characters in W1-1 (`docs/related-work-and-ios-hang.md`), Smash black screen.
 - Not tried: `persist=1` (IndexedDB game data) to shorten the route; evicting only start-up blocks.
