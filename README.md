@@ -17,9 +17,9 @@
 [![devkitPro 3ds-examples](https://img.shields.io/badge/3ds--examples_(iPhone)-53%2F58_passing-brightgreen?style=flat-square)](docs/examples-status.md)
 [![Fork Architecture](https://img.shields.io/badge/architecture-3--repo_split-informational?style=flat-square)](docs/forks.md)
 
-<img src="assets/preview-minicraft.jpg" width="360" alt="Minicraft 3DS running in the browser: both 3DS screens rendered with WebGL2">
+<img src="assets/preview-mario.png" width="560" alt="Super Mario 3D Land in a Chrome tab: both 3DS screens and the live diagnostics panel, 60 fps">
 
-<sub>Minicraft 3DS (free homebrew) in a browser tab: ARM code → WebAssembly, PICA → WebGL2</sub>
+<sub>Super Mario 3D Land (own dump, not included), World 1-1, Chrome 148 on an M-series Mac: 60 fps, 5.6 ms of emulator time per frame, GPU 1.9 ms. Built from a fresh clone of this README.</sub>
 
 </div>
 
