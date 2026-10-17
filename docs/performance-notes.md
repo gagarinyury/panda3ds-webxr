@@ -96,3 +96,20 @@ Real Safari on the Mac, one automatic route (`ff=9800` + `A` every 300 frames, `
 - In a light scene it makes no difference (49 Hz either way; phone, demo scene: 53.4 vs 53.5), which is why the first phone test said "no effect".
 - Now the default: `preserveDrawingBuffer` is only set with env `GL_PRESERVE` (the page adds it for `shots=`, `glrec` and desktop `report=1` test runs, or `preserve=1`). On the phone, `report=1` runs no longer have a readable canvas at the end (lit-pixel counts read as 0).
 - An earlier replay of a recorded frame in Safari (944 draws) gave 5 Hz only because the recorder over-estimated texture upload sizes (27 MB of zeros per frame); fixed (`texBytes`), the result was discarded.
+
+### Live WebAssembly instances cost a fixed price per frame in WebKit (17 Oct, night)
+Bare replay page (`web/probe-glreplay.html`, a recorded heavy frame of 345 draws plus 9 ms of busy work, Safari on the Mac), with ballast kept alive while the frame loop runs:
+
+| ballast | loop |
+|---|---|
+| 0 - 10 000 instances | 59 Hz |
+| 20 000 | 57.8 Hz |
+| 40 000 | 43 Hz |
+| 70 000 | 25 - 33 Hz |
+| 256 MB of memory only | no effect |
+| 70 000 separate Modules, no instances | 59 Hz |
+| 70 000 instances of ONE module | 24.8 Hz |
+
+So the cost is per live `WebAssembly.Instance`, not per module, not per byte. Our JIT makes one Module + Instance per guest block (about 44 000 at boot by frame ~230, 60 - 80 000 later), which fits the "heavy scene is slow only in WebKit" picture. ✅ measured; the mechanism (GC work after each frame) is 🔍 a guess.
+
+First attempt at a fix, `JIT_MAX_BLOCKS=N` (flush the whole block cache at N blocks, opt-in env, default off): N=12000 thrashes the heavy scene (2 Hz, 207 - 215 ms per frame), N=25000 gave 11.5 Hz in one Safari run against 28 - 31 Hz uncapped (13 - 16 earlier in the evening, the baseline moves with load). The 40 000 runs and repeats did not finish. A flush-all cap is therefore NOT a fix. Next candidates: put many blocks into one module/instance (compile in batches), or evict only the start-up blocks once.
