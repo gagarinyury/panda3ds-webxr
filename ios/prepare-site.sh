@@ -7,6 +7,7 @@ cp web/*.html ios/Site/web/
 cp web/*.wasm ios/Site/web/ 2>/dev/null || true
 cp web/*.json ios/Site/web/ 2>/dev/null || true
 cp web/*.js ios/Site/web/ 2>/dev/null || true
+cp web/*.txt ios/Site/web/ 2>/dev/null || true
 cp build-core/AlberWeb.js build-core/AlberWeb.wasm ios/Site/build-core/
 cp run/ctr-hello.3dsx ios/Site/run/ 2>/dev/null || true
 cp run/examples/*.3dsx ios/Site/run/examples/ 2>/dev/null || true
