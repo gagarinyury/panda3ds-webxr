@@ -489,6 +489,7 @@ function updateCirclePad() {
   if (held.has('Right')) cx += 156;
   if (held.has('Up')) cy += 156;
   if (held.has('Down')) cy -= 156;
+  if (cx && cy) { cx = Math.round(cx * 0.7071); cy = Math.round(cy * 0.7071); }   // a diagonal is still a full-radius push, not a corner of the square
   Module._web_circle(cx, cy);
 }
 function press(name, down) {
@@ -510,7 +511,8 @@ document.querySelectorAll('#pad b, #ctl b').forEach((b) => {
 {   // the circle pad ("mushroom") on the on-screen controller: drag the nub, the offset (-1..1) becomes -156..156 for the core
   const cp = document.getElementById('cpad'), nub = document.getElementById('nub');
   if (cp) { let id = null;
-    const move = (e) => { const r = cp.getBoundingClientRect(), R = r.width / 2; let dx = (e.clientX - (r.left + R)) / R, dy = (e.clientY - (r.top + R)) / R; const m = Math.hypot(dx, dy); if (m > 1) { dx /= m; dy /= m; }
+    const move = (e) => { const r = cp.getBoundingClientRect(), R = r.width / 2; const SAT = 0.6;   // a thumb rarely travels to the rim: full tilt (156, what the real pad reports at its edge) is reached at 60 % of the radius
+      let dx = (e.clientX - (r.left + R)) / (R * SAT), dy = (e.clientY - (r.top + R)) / (R * SAT); const m = Math.hypot(dx, dy); if (m > 1) { dx /= m; dy /= m; }
       nub.style.transform = 'translate(' + (dx * R * 0.5) + 'px,' + (dy * R * 0.5) + 'px)'; if (Module._web_circle) Module._web_circle(Math.round(dx * 156), Math.round(-dy * 156)); };
     const end = () => { id = null; cp.classList.remove('drag'); nub.style.transform = ''; if (Module._web_circle) Module._web_circle(0, 0); };
     cp.addEventListener('pointerdown', (e) => { e.preventDefault(); id = e.pointerId; cp.setPointerCapture(id); cp.classList.add('drag'); move(e); });
