@@ -61,6 +61,11 @@
   html.player #rom-drop span { display: none; }
   html.player.started #rom-drop, html.player.started #welcome { display: none !important; }
   html.player:not(.started) #gl { display: none !important; }
+  #loading { display: none; position: fixed; inset: 0; z-index: 15; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: #0d0f13; color: #cfd5de; font: 600 15px system-ui; pointer-events: none; }
+  #loading .ring { width: 54px; height: 54px; border-radius: 50%; border: 5px solid #232832; border-top-color: #3d7be0; animation: spin 0.9s linear infinite; }
+  #loading #loadtxt { max-width: 80vw; text-align: center; font-weight: 500; color: #8a93a0; font-size: 13px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  html.player.started:not(.ready) #loading { display: flex; }
   #welcome { display: none; text-align: center; max-width: 520px; padding: 8px 12px 18px; }
   html.player #welcome { display: block; }
   #welcome h1 { font-size: 30px; line-height: 1.15; margin: 0 0 10px; letter-spacing: -.02em; }
@@ -156,6 +161,7 @@
 <div id="pill"><i></i><span id="pilltxt">starting</span><u id="fsbtn" title="Full screen">⛶</u><u id="ctlbtn" title="Show or hide the on-screen buttons">🎮</u><u id="infobtn" title="Show or hide details">ⓘ</u></div>
 <main>
   <section id="stage">
+  <div id="loading"><div class="ring"></div><div id="loadtxt">Loading the game…</div></div>
   <div id="welcome">
     <h1>Nintendo 3DS in your browser</h1>
     <p>A 3DS emulator compiled to WebAssembly. It runs on your own device, nothing is uploaded. Bring your own game dump: no games are included.</p>
@@ -835,7 +841,8 @@ setInterval(renderDiag, 250);
   document.getElementById('infobtn').addEventListener('click', () => document.documentElement.classList.toggle('info'));
   document.getElementById('ctlbtn').addEventListener('click', () => document.documentElement.classList.toggle('noctl'));
   setInterval(() => {
-    if (frames < 40) { const m = (document.getElementById('stats').textContent || '').replace(/^\s+/, ''); txt.textContent = m ? (m.length > 38 ? m.slice(0, 36) + '…' : m) : 'starting'; dot.className = 'mid'; return; }
+    if (frames < 40) { const m = (document.getElementById('stats').textContent || '').replace(/^\s+/, ''); document.getElementById('loadtxt').textContent = m && m !== 'loading…' ? m : 'Loading the game…'; txt.textContent = m ? (m.length > 38 ? m.slice(0, 36) + '…' : m) : 'starting'; dot.className = 'mid'; return; }
+    document.documentElement.classList.add('ready');
     txt.textContent = Math.round(fpsNow) + ' fps'; dot.className = fpsNow >= 55 ? '' : fpsNow >= 40 ? 'mid' : 'low';
   }, 500);
 }
