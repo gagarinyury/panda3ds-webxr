@@ -11,5 +11,5 @@ const snap = () => ev('JSON.stringify({f: frames, s: Module.jit.s, b: Module.jit
 const w = async (f) => { while ((await ev('frames')) < f) await new Promise((r) => setTimeout(r, 100)); };
 await w(+start); const a = JSON.parse(await snap()); await w(+start + +n); const b = JSON.parse(await snap());
 const fr = b.f - a.f, d = b.s[0] - a.s[0], t = b.s[1] - a.s[1], runs = b.s[2] - a.s[2];
-console.log(JSON.stringify({ frames: fr, runCallsPerFrame: +(runs / fr).toFixed(1), dispatchesPerFrame: +(d / fr).toFixed(0), ticksPerFrame: +(t / fr).toFixed(0), ticksPerDispatch: +(t / d).toFixed(1), newBlocks: b.b - a.b }));
+console.log(JSON.stringify({ frames: fr, runCallsPerFrame: +(runs / fr).toFixed(1), dispatchesPerFrame: +(d / fr).toFixed(0), ticksPerFrame: +(t / fr).toFixed(0), ticksPerDispatch: +(t / d).toFixed(1), newBlocks: b.b - a.b, msInRunPerFrame: +((b.s[3] - a.s[3]) / fr).toFixed(2), msInCallbacksPerFrame: +((b.s[4] - a.s[4]) / fr).toFixed(2), guestMsPerFrame: +((b.s[3] - a.s[3] - b.s[4] + a.s[4]) / fr).toFixed(2), nsPerTick: +(1e6 * (b.s[3] - a.s[3] - b.s[4] + a.s[4]) / t).toFixed(1) }));
 await fetch(`${base}/json/close/${tab.id}`); ws.close();

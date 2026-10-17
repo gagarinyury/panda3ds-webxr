@@ -36,10 +36,10 @@ index b234cd2..9ffbb3c 100644
          target_link_libraries(dynarmic PRIVATE rt)
 diff --git a/src/dynarmic/backend/wasm/a32_interface.cpp b/src/dynarmic/backend/wasm/a32_interface.cpp
 new file mode 100644
-index 0000000..a281dde
+index 0000000..e66b163
 --- /dev/null
 +++ b/src/dynarmic/backend/wasm/a32_interface.cpp
-@@ -0,0 +1,444 @@
+@@ -0,0 +1,450 @@
 +/* This file is part of the panda3ds-wasm project.
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -131,7 +131,9 @@ index 0000000..a281dde
 +EM_JS(void, jit_js_time, (int kind, double ms), { const T = Module.jit.t || (Module.jit.t = [0, 0, 0, 0]); T[kind] += ms; });
 +EM_JS(double, jit_now_ms, (), { return performance.now(); });
 +// Dispatch statistics for the panel/probes: S[0] = jit_js_run calls (returns to the C++ dispatcher), S[1] = guest ticks executed, S[2] = Jit::Run() calls.
-+EM_JS(void, jit_js_stat, (int d, double t), { const S = Module.jit.s || (Module.jit.s = [0, 0, 0]); S[0] += d; S[1] += t; S[2]++; });
++EM_JS(void, jit_js_stat, (int d, double t), { const S = Module.jit.s || (Module.jit.s = [0, 0, 0, 0, 0]); S[0] += d; S[1] += t; S[2]++; });
++// S[3] = ms inside Jit::Run() (guest code + callbacks), S[4] = ms inside the SVC/exception/interpreter callbacks (Panda C++); guest code alone = S[3] - S[4].
++EM_JS(void, jit_js_stat_ms, (int i, double ms), { const S = Module.jit.s || (Module.jit.s = [0, 0, 0, 0, 0]); S[i] += ms; });
 +
 +// Breadcrumb for hang diagnosis: the message reaches the native app even if the page then spins forever.
 +EM_JS(void, jit_js_crumb, (int kind, int pc, int x), {
@@ -211,7 +213,9 @@ index 0000000..a281dde
 +    static void WithTicks(Impl* i, F f) {
 +        auto& s = i->st;
 +        if (i->conf.enable_cycle_counting) { jit_js_stat(0, static_cast<double>(s.cycles_to_run - s.ticks_left)); i->conf.callbacks->AddTicks(s.cycles_to_run - s.ticks_left); }
++        const double cb_t0 = jit_now_ms();
 +        f();
++        jit_js_stat_ms(4, jit_now_ms() - cb_t0);
 +        if (i->conf.enable_cycle_counting) {
 +            s.cycles_to_run = i->conf.callbacks->GetTicksRemaining();
 +            s.ticks_left = s.cycles_to_run;
@@ -414,6 +418,7 @@ index 0000000..a281dde
 +    s.ticks_left = ticks;
 +    s.chain_depth = 0;
 +    int dispatches = 0;
++    const double run_t0 = jit_now_ms();
 +
 +    while (static_cast<s64>(s.ticks_left) > 0 && s.halt == 0) {
 +        const u32 slots_before = impl->next_slot;
@@ -436,6 +441,7 @@ index 0000000..a281dde
 +            s.halt &= ~static_cast<u32>(HaltReason::CacheInvalidation);
 +        }
 +    }
++    jit_js_stat_ms(3, jit_now_ms() - run_t0);
 +    jit_js_stat(dispatches, counting ? static_cast<double>(s.cycles_to_run - s.ticks_left) : 0.0);
 +    if (counting) cb->AddTicks(s.cycles_to_run - s.ticks_left);
 +    is_executing = false;
