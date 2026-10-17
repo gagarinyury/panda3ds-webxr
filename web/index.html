@@ -63,6 +63,8 @@
   #welcome .alt { margin-top: 18px; font-size: 13px; color: #7d8695; }
   #welcome .alt a { color: #9db8ee; text-decoration: none; margin: 0 4px; }
   #welcome .alt a:hover { text-decoration: underline; }
+  #demos { display: none; margin-top: 18px; color: #7d8695; font-size: 13px; text-align: center; max-width: 520px; line-height: 1.8; } #demos a { color: #9db8ee; text-decoration: none; margin: 0 3px; } #demos a:hover { text-decoration: underline; }
+  html.player:not(.started) #demos { display: block; }
   #foot { display: none; color: #5c6471; font-size: 12px; text-align: center; margin-top: 18px; }
   #foot a { color: #7f8b9c; }
   html.player:not(.started) #foot { display: block; }
@@ -80,12 +82,13 @@
   html.player.coarse { --u: clamp(46px, 9.5vmin, 66px); }
   html.player, html.player body { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
   #ctl, #pill { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: none; }
-  #ctl { display: none; width: min(100%, 780px); margin: 10px auto 0; padding: 0 max(4px, env(safe-area-inset-left)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-right)); box-sizing: border-box; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: end; }
+  #ctl { display: none; width: min(100%, 780px); margin: 10px auto 0; padding: 0 max(4px, env(safe-area-inset-left)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-right)); box-sizing: border-box; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr auto; gap: 8px 10px; align-items: stretch; }
   html.player.started #ctl { display: grid; }
-  html.player.started { --ctlh: calc(var(--u) * 5.6 + 40px); }
+  html.player.started { --ctlh: calc(var(--u) * 7.6 + 40px); }
+  #ctl .col { align-items: center; } #ctl .left { grid-column: 1; grid-row: 1 / span 2; } #ctl .right { grid-column: 2; grid-row: 1; } #ctl .mid { grid-column: 2; grid-row: 2; justify-content: center; }
+  #ctl .left .row2 { flex-direction: column; align-items: center; gap: calc(var(--u) * .5); margin: auto 0; } #ctl .right .abxy { margin: auto 0; }
   html.player.noctl #ctl { display: none !important; } html.player.noctl { --ctlh: 0px !important; }
   #ctl .col { display: flex; flex-direction: column; gap: calc(var(--u) * .22); }
-  #ctl .left { align-items: flex-start; } #ctl .right { align-items: flex-end; }
   #ctl .mid { align-items: center; justify-content: flex-end; flex-direction: row; gap: 10px; padding-bottom: 6px; }
   #ctl b { position: relative; display: flex; align-items: center; justify-content: center; min-width: var(--u); height: var(--u); padding: 0 8px; box-sizing: border-box; border-radius: calc(var(--u) * .26); background: #232832; color: #e8ebf0; font: 700 calc(var(--u) * .36) system-ui; box-shadow: inset 0 -3px 0 rgba(0,0,0,.4); cursor: pointer; transition: background .06s, transform .06s; }
   #ctl b.on { background: #3d7be0; transform: translateY(1px) scale(.97); box-shadow: none; }
@@ -155,6 +158,11 @@
       <div class="abxy"><b data-k="X">X<em>S</em></b><b data-k="Y">Y<em>Y</em></b><b data-k="A">A<em>X</em></b><b data-k="B">B<em>Z</em></b></div>
     </div>
   </div>
+  <div id="demos">No game at hand? Try a free homebrew demo:
+    <a href="?rom=/run/examples/graphics__gpu__textured_cube.3dsx">textured cube</a> ·
+    <a href="?rom=/run/examples/graphics__gpu__toon_shading.3dsx">toon shading</a> ·
+    <a href="?rom=/run/examples/graphics__gpu__particles.3dsx">particles</a> ·
+    <a href="?rom=/run/examples/graphics__gpu__fragment_light.3dsx">lighting</a></div>
   <div id="foot">.3ds · .cci · .cxi · .3dsx &nbsp;·&nbsp; <a href="https://github.com/gagarinyury/panda3ds-wasm">source on GitHub</a> (GPL-3.0) &nbsp;·&nbsp; not affiliated with Nintendo or Apple</div>
   </section>
   <aside id="diag">
@@ -170,8 +178,8 @@
 const params = new URLSearchParams(location.search);
 const dev = params.has('dev') ? params.get('dev') === '1' : ['name', 'report', 'fscript', 'fscriptfile', 'ff', 'shots', 'rp', 'glrec', 'env', 'frames', 'turbo', 'bench'].some((k) => params.has(k)) || !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda);   // test/app launches keep the diagnostic layout
 if (!dev) document.documentElement.classList.add('player');
-if ((window.matchMedia && matchMedia('(pointer: coarse)').matches) || params.get('touch') === '1') document.documentElement.classList.add('coarse');
-const phone = params.get('ui') ? params.get('ui') === 'phone' : (innerWidth < 900 || /iPhone|iPod/.test(navigator.userAgent));   // ui=phone|desktop overrides
+if ((window.matchMedia && matchMedia('(pointer: coarse)').matches) || params.get('touch') === '1') { document.documentElement.classList.add('coarse'); addEventListener('DOMContentLoaded', () => document.querySelectorAll('input[type=file]').forEach((i) => i.removeAttribute('accept'))); }   // iOS greys out files whose type it does not know (.3ds), so no filter on touch devices
+const phone = params.get('ui') ? params.get('ui') === 'phone' : (dev && (innerWidth < 900 || /iPhone|iPod/.test(navigator.userAgent)));   // the player skin has its own responsive layout   // ui=phone|desktop overrides
 if (phone) document.documentElement.classList.add('phone');
 // test aid: rafcap=30 makes requestAnimationFrame fire at most 30 times per second (reproduces a browser that throttles the page)
 { const cap = parseFloat(new URLSearchParams(location.search).get('rafcap') || '0');
