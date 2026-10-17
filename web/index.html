@@ -5,6 +5,7 @@
 <title>Panda3DS on a WASM JIT</title>
 <script>   // a blank screen on a phone tells nothing: show the first script error on the page itself
 (function () { const show = (m) => { let d = document.getElementById('errbox'); if (!d) { d = document.createElement('pre'); d.id = 'errbox'; d.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:99;margin:0;padding:10px;background:#3a1114;color:#ffd9d6;font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;border-radius:8px;max-height:45vh;overflow:auto'; (document.body || document.documentElement).appendChild(d); } d.textContent += m + '\n'; };
+  window.__showErr = show;
   addEventListener('error', (e) => show('error: ' + e.message + ' (' + String(e.filename || '').split('/').pop() + ':' + e.lineno + ')'));
   addEventListener('unhandledrejection', (e) => show('promise: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason))); })();
 </script>
@@ -73,6 +74,9 @@
   #welcome .alt { margin-top: 18px; font-size: 13px; color: #7d8695; }
   #welcome .alt a { color: #9db8ee; text-decoration: none; margin: 0 4px; }
   #welcome .alt a:hover { text-decoration: underline; }
+  #engine { display: none; margin-top: 12px; color: #e3a008; font-size: 13px; }
+  html.player:not(.engine):not(.started) #engine { display: block; }
+  html.player:not(.engine) #rom-drop, html.player:not(.engine) #demos { opacity: .4; pointer-events: none; }
   #demos { display: none; margin-top: 18px; color: #7d8695; font-size: 13px; text-align: center; max-width: 520px; line-height: 1.8; } #demos a { color: #9db8ee; text-decoration: none; margin: 0 3px; } #demos a:hover { text-decoration: underline; }
   html.player:not(.started) #demos { display: block; }
   #foot { display: none; color: #5c6471; font-size: 12px; text-align: center; margin-top: 18px; }
@@ -195,6 +199,7 @@
       <div class="abxy"><b data-k="X">X<em>S</em></b><b data-k="Y">Y<em>Y</em></b><b data-k="A">A<em>X</em></b><b data-k="B">B<em>Z</em></b></div>
     </div>
   </div>
+  <div id="engine">Loading the emulator (9 MB)…</div>
   <div id="demos">No game at hand? Try a free homebrew demo:
     <a href="?rom=/run/examples/graphics__gpu__textured_cube.3dsx">textured cube</a> ·
     <a href="?rom=/run/examples/graphics__gpu__toon_shading.3dsx">toon shading</a> ·
@@ -286,6 +291,7 @@ const post = (type, payload) => {
   else if (liveOn && (type === 'tick' || type === 'hitch' || type === 'gpuwait' || (type === 'log' && /\[jit\]|\[gl\]|\[drawbuf\]|\[bench\]|\[audio|\[abort\]|FATAL|panic|warning|unimplemented|failed|abort/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
 };
 const log = (s, err) => {
+  if (err && window.__showErr && document.documentElement.classList.contains('player')) window.__showErr(String(s).slice(0, 400));
   const lines = logEl.textContent.split('\n');
   if (lines.length > 50) logEl.textContent = lines.slice(-40).join('\n') + '\n';
   logEl.textContent += s + '\n';
@@ -394,7 +400,7 @@ var Module = {
 let t0 = 0, frames = 0, running = true, worst = 0, sum = 0, late = 0, lastTick = 0, acc = 0, lastBeat = 0, hitches = 0;
 const ctx = ['top', 'bottom'].map((id) => document.getElementById(id).getContext('2d'));
 const imgs = [new ImageData(400, 240), new ImageData(320, 240)];
-const mem = () => { const j = Module.jit && Module.jit.impls[0]; return { wasmMB: Math.round(Module.HEAPU8.length / 1048576), blocks: j ? (j.count || 0) : 0, jitKB: j ? Math.round((j.bytes || 0) / 1024) : 0, packMs: j && Module.jit.t ? Math.round(Module.jit.t[3] || 0) : 0, batches: j ? (j.batches || 0) : 0, compMs: Module.jit && Module.jit.t ? Math.round((Module.jit.t[1] || 0) + (Module.jit.t[2] || 0)) : 0 }; };
+const mem = () => { const j = Module.jit && Module.jit.impls[0]; return { wasmMB: Module.HEAPU8 ? Math.round(Module.HEAPU8.length / 1048576) : 0, blocks: j ? (j.count || 0) : 0, jitKB: j ? Math.round((j.bytes || 0) / 1024) : 0, packMs: j && Module.jit.t ? Math.round(Module.jit.t[3] || 0) : 0, batches: j ? (j.batches || 0) : 0, compMs: Module.jit && Module.jit.t ? Math.round((Module.jit.t[1] || 0) + (Module.jit.t[2] || 0)) : 0 }; };
 
 function draw() {
   if (useGL) return;
@@ -714,6 +720,7 @@ async function runDrawBench() {
 }
 
 async function start() {
+  document.documentElement.classList.add('engine');
   if (benchDraws) { await runDrawBench(); return; }
   { const gc = document.getElementById('gl'); if (gc) { gc.addEventListener('webglcontextlost', () => { log('[gl] CONTEXT LOST at frame ' + frames, true); post('log', { msg: '[gl] CONTEXT LOST at frame ' + frames }); }); gc.addEventListener('webglcontextrestored', () => { log('[gl] context restored', true); post('log', { msg: '[gl] context restored' }); }); } }
   if (useGL) { const g = document.getElementById('gl'); g.width = GLW; g.height = GLH; g.style.width = (phone ? Math.floor(Math.min(innerWidth, 0.54 * innerHeight * GLW / GLH)) : Math.round(GLW * (innerWidth >= 900 ? Math.min(scale, (innerWidth - 440) / GLW) : Math.min(scale, (innerWidth - 16) / GLW)))) + 'px'; g.style.display = 'block'; document.getElementById('pad').style.display = phone ? 'none' : 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
