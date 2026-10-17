@@ -1,4 +1,31 @@
+<div align="center">
+
+<img src="web/icon.svg" width="88" height="88" alt="panda3ds-wasm icon">
+
 # panda3ds-wasm
+
+**Nintendo 3DS emulator ([Panda3DS](https://github.com/wheremyfoodat/Panda3DS)) running in the browser & iOS `WKWebView` with a runtime ARM → WebAssembly JIT**
+
+[![Live Demo](https://img.shields.io/badge/demo-panda.profy.top-2ea44f?style=for-the-badge&logo=googlechrome&logoColor=white)](https://panda.profy.top/)
+[![CPU JIT](https://img.shields.io/badge/JIT-ARMv6_%E2%86%92_WASM-654ff0?style=for-the-badge&logo=webassembly&logoColor=white)](docs/webkit-instances-and-batching.md)
+[![GPU](https://img.shields.io/badge/GPU-PICA200_%E2%86%92_WebGL2-990000?style=for-the-badge&logo=webgl&logoColor=white)](docs/performance-notes.md)
+[![iOS](https://img.shields.io/badge/iOS-WKWebView_(No_JIT_Entitlement)-000000?style=for-the-badge&logo=apple&logoColor=white)](docs/related-work-and-ios-hang.md)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL_3.0-blue?style=for-the-badge)](LICENSE)
+
+[![Differential JIT Tests](https://img.shields.io/badge/JIT_differential_tests-34%2F34_passing-success?style=flat-square)](tests/jit)
+[![VFP Bit-Exact](https://img.shields.io/badge/VFP_bit--exact_checks-7.4M_passing-success?style=flat-square)](tests/fp)
+[![devkitPro 3ds-examples](https://img.shields.io/badge/3ds--examples_(iPhone)-53%2F58_passing-brightgreen?style=flat-square)](docs/examples-status.md)
+[![Fork Architecture](https://img.shields.io/badge/architecture-3--repo_split-informational?style=flat-square)](docs/forks.md)
+
+<p align="center">
+  <img src="assets/gl-textured-cube-comet.jpg" width="32%" alt="Textured Cube (WebGL2)">
+  <img src="assets/doom-freedoom-comet.jpg" width="32%" alt="PrBoom+ 3DS / Freedoom (WebGL2)">
+  <img src="assets/minicraft-character-screen-comet.jpg" width="32%" alt="Minicraft 3DS (WebGL2)">
+</p>
+
+</div>
+
+---
 
 A Nintendo 3DS emulator ([Panda3DS](https://github.com/wheremyfoodat/Panda3DS)) that runs in a browser and inside `WKWebView` on an iPhone **without the JIT entitlement**: guest ARM code is recompiled to WebAssembly at run time, WebKit's own JIT compiles that, and the PICA GPU is drawn with WebGL2. Work in progress, local dev setup, no releases.
 
@@ -54,9 +81,10 @@ Known problems: no soft shadow under characters (Mario, enemies) in World 1-1 (s
 ## Run it
 
 ```sh
+git clone https://github.com/gagarinyury/panda3ds-wasm.git && cd panda3ds-wasm
 git clone --recurse-submodules -b wasm https://github.com/gagarinyury/Panda3DS.git      # the emulator core fork (see docs/forks.md)
 git clone https://github.com/emscripten-core/emsdk.git && ./emsdk/emsdk install latest && ./emsdk/emsdk activate latest
-source emsdk/emsdk_env.sh && scripts/build-core.sh && cmake --build build-core --target AlberWeb -j8
+source emsdk/emsdk_env.sh && scripts/build-core.sh
 scripts/serve-web.py 8777 &       # static server with Range support, collects /live telemetry and /report
 open "http://127.0.0.1:8777/web/index.html?rom=/run/examples/graphics__gpu__simple_tri.3dsx&gl=1"
 ```
