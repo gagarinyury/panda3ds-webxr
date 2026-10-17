@@ -42,3 +42,12 @@ Mac (same test, headless Chrome): 8.0 / 4.3 / 2.4 / 1.5 us/draw at 176 draws.
 Reading: the cost of the draw calls comes mostly from creating a buffer for every upload (6x against one upload per frame); WebGPU gains only ~30 % over the best WebGL2 mode, so a WebGPU renderer is not worth
 it for this. The buffer pool (`BufferPoolStreamBuffer` in `third_party/duckstation/gl/stream_buffer.cpp`, default in the web build; env `GL_STREAM_BUFFERDATA:1` / `GL_STREAM_SUBDATA:1` select the old paths)
 is the cheap step: 2.7x cheaper per draw in the benchmark. Not yet measured in the game on the phone.
+
+## Where the time of a frame goes (17 Oct, Mac, Chrome 148, Mario 3D Land, frames 1200+)
+
+- `probe-run.html`: `web_frame` 3.4 ms mean; JS-side WebGL calls 0.4 ms (~12 %); GPU 0.4 ms; 61 draws per frame on average. On the iPhone the WebGL share is higher (17 us x 176 draws ~ 3 ms of 15-18 ms, estimate from the micro benchmark), but still not the main part.
+- `scripts/cdp-cpuprof.mjs` (V8 sampling, 100 us): 84 % idle; of the busy 16 %, ~66 % is unnamed `wasm-function` (guest JIT blocks), ~17 % browser (`program`), ~16 % glue (`Jit::Run`, js-to-wasm, WebGL). Panda C++ functions are invisible.
+- `scripts/cdp-dispatch-stats.mjs` (counters `Module.jit.s` in dynarmic): ~1570 returns to the dispatcher (`jit_js_run`) per frame, ~182 k guest ticks per frame, ~116 ticks per return. Block chaining works; the dispatcher costs an estimated ~8 % of the busy time, so better chaining can gain at most that.
+- Open (unverified): 1.8 ms of guest code for ~182 k ticks is ~10 ns per tick. If one tick ~ one instruction, that is ~10x slower than good compiled code, i.e. the quality of the emitted code (memory access path, flags) is the likely lever. Needs a clean micro benchmark on a known guest loop.
+- Consequence: moving only the WebGL calls into a worker would gain ~12-20 % of a frame, not a factor of two.
+- A pool-buffer run on the iPhone (frames to 1805) ended with `webcontent_terminated` (iOS killed the WebContent process); the cause is not known. The pool's buffer memory is stable on the Mac (1921 buffers, 23.5 MB, `scripts/cdp-bufmem.mjs`). Not seen in ~10 earlier runs with the old buffers.

@@ -54,7 +54,7 @@ iPhone: `ios/prepare-site.sh`, then build `ios/PandaWeb.xcodeproj` for your devi
 
 ### Tools for measuring
 
-- `scripts/cdp-watch.mjs`, `cdp-trace.mjs`, `cdp-drive.mjs`, `cdp-shot.mjs`: drive a Chrome with a debug port; watch progress, record a Chromium trace, press buttons, take screenshots.
+- `scripts/cdp-watch.mjs`, `cdp-trace.mjs`, `cdp-cpuprof.mjs`, `cdp-dispatch-stats.mjs`, `cdp-bufmem.mjs`, `cdp-drive.mjs`, `cdp-shot.mjs`: drive a Chrome with a debug port; watch progress, record a Chromium trace, press buttons, take screenshots.
 - **Live telemetry:** on `127.0.0.1` the page posts its panel (fps, emulator time, JIT, time inside WebGL calls, slow WebGL calls, `[jit]`/`[abort]`/warning lines) to `/live`; the server appends it to `run/web-reports/live-<name>.jsonl`, so what the person at the screen sees can be read from a terminal.
 
 ---
