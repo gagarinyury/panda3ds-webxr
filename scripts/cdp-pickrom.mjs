@@ -1,0 +1,20 @@
+// cdp-pickrom.mjs <url> <rom file> <out.png> [waitSec=40] [port=9333]: opens the page, selects the ROM through the file input like a person would, waits, saves a screenshot
+import fs from 'node:fs';
+const [url, rom, out, waitSec = '40', port = '9333'] = process.argv.slice(2);
+const base = `http://127.0.0.1:${port}`;
+const tab = await (await fetch(`${base}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' })).json();
+const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise((r) => (ws.onopen = r));
+let id = 0; const pend = new Map();
+ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pend.has(d.id)) { pend.get(d.id)(d); pend.delete(d.id); } };
+const call = (method, params = {}) => new Promise((r) => { const i = ++id; pend.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (e) => (await call('Runtime.evaluate', { expression: e, returnByValue: true })).result.result.value;
+await call('Emulation.setDeviceMetricsOverride', { width: 1500, height: 520, deviceScaleFactor: 1, mobile: false });
+await new Promise((r) => setTimeout(r, 6000));
+const doc = (await call('DOM.getDocument')).result.root.nodeId;
+const node = (await call('DOM.querySelector', { nodeId: doc, selector: '#rom-file' })).result.nodeId;
+await call('DOM.setFileInputFiles', { nodeId: node, files: [rom] });
+await ev(`document.getElementById('rom-file').dispatchEvent(new Event('change', { bubbles: true }))`);
+await new Promise((r) => setTimeout(r, +waitSec * 1000));
+console.log(await ev(`document.getElementById('stats').textContent`));
+const shot = await call('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(out, Buffer.from(shot.result.data, 'base64'));
+await fetch(`${base}/json/close/${tab.id}`); ws.close(); process.exit(0);
