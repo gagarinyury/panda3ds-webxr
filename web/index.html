@@ -1,6 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="theme-color" content="#0d0f13">
 <title>Panda3DS on a WASM JIT</title>
 <style>
   body { margin: 0; background: #14161a; color: #cfd3da; font: 13px/1.4 ui-monospace, Menlo, monospace; }
@@ -67,43 +68,58 @@
   html.player:not(.started) #foot { display: block; }
   #pill { display: none; position: fixed; right: 10px; top: 10px; z-index: 30; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 20px; background: rgba(20,23,28,.82); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); color: #cfd5de; font: 600 13px system-ui; cursor: pointer; user-select: none; -webkit-user-select: none; }
   html.player.started #pill { display: flex; }
+  #pill { transition: opacity .35s; } #pill.idle { opacity: .28; } #pill:hover { opacity: 1; }
   #pill i { width: 9px; height: 9px; border-radius: 50%; background: #3fb950; }
   #pill i.mid { background: #e3a008; } #pill i.low { background: #f85149; }
   #pill u { text-decoration: none; opacity: .7; font-weight: 500; padding: 0 2px; }
   html.player.noctl #ctl { display: none !important; } html.player.noctl { --ctlh: 0px !important; }
-  /* on-screen controller (player skin): circle pad, D-pad, ABXY, shoulders, Start/Select; every button shows the keyboard key that does the same */
-  #ctl { display: none; width: min(100%, 760px); margin: 14px auto 0; padding: 0 4px; box-sizing: border-box; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: end; user-select: none; -webkit-user-select: none; touch-action: none; }
+  /* ---- on-screen controller (player skin) ----
+     Sizes come from one unit (--u) that follows the window; fingers get bigger targets and no key captions, a mouse gets compact buttons with the key printed on each.
+     Portrait: screens on top, controls under them in the 3DS arrangement. Landscape: screens in the middle, one column of controls on each side (shoulder at the top, the main control in the middle, Start/Select low right). */
+  html.player { --u: clamp(38px, 6.4vmin, 54px); }
+  html.player.coarse { --u: clamp(46px, 9.5vmin, 66px); }
+  html.player, html.player body { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+  #ctl, #pill { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: none; }
+  #ctl { display: none; width: min(100%, 780px); margin: 10px auto 0; padding: 0 max(4px, env(safe-area-inset-left)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-right)); box-sizing: border-box; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: end; }
   html.player.started #ctl { display: grid; }
-  html.player.started { --ctlh: 262px; }
-  #ctl .col { display: flex; flex-direction: column; gap: 10px; }
-  #ctl .left { align-items: flex-start; } #ctl .right { align-items: flex-end; } #ctl .mid { align-items: center; justify-content: flex-end; flex-direction: row; gap: 10px; padding-bottom: 8px; }
-  #ctl b { position: relative; display: flex; align-items: center; justify-content: center; min-width: 46px; height: 46px; padding: 0 10px; box-sizing: border-box; border-radius: 12px; background: #232832; color: #e8ebf0; font: 700 16px system-ui; box-shadow: inset 0 -3px 0 rgba(0,0,0,.35); cursor: pointer; }
-  #ctl b.on { background: #3d7be0; transform: translateY(1px); box-shadow: none; }
+  html.player.started { --ctlh: calc(var(--u) * 5.6 + 40px); }
+  html.player.noctl #ctl { display: none !important; } html.player.noctl { --ctlh: 0px !important; }
+  #ctl .col { display: flex; flex-direction: column; gap: calc(var(--u) * .22); }
+  #ctl .left { align-items: flex-start; } #ctl .right { align-items: flex-end; }
+  #ctl .mid { align-items: center; justify-content: flex-end; flex-direction: row; gap: 10px; padding-bottom: 6px; }
+  #ctl b { position: relative; display: flex; align-items: center; justify-content: center; min-width: var(--u); height: var(--u); padding: 0 8px; box-sizing: border-box; border-radius: calc(var(--u) * .26); background: #232832; color: #e8ebf0; font: 700 calc(var(--u) * .36) system-ui; box-shadow: inset 0 -3px 0 rgba(0,0,0,.4); cursor: pointer; transition: background .06s, transform .06s; }
+  #ctl b.on { background: #3d7be0; transform: translateY(1px) scale(.97); box-shadow: none; }
   #ctl b em { position: absolute; right: 3px; bottom: 2px; font: 600 9.5px ui-monospace, Menlo, monospace; font-style: normal; color: #9aa4b2; background: rgba(0,0,0,.35); border-radius: 4px; padding: 0 4px; line-height: 14px; }
-  #ctl .sh b { min-width: 86px; height: 34px; } #ctl .mid b { flex-direction: column; height: 44px; font-size: 12px; min-width: 70px; gap: 1px; } #ctl .mid b em { position: static; background: none; padding: 0; line-height: 12px; }
-  #ctl .abxy, #ctl .dpad { display: grid; grid-template-columns: repeat(3, 46px); grid-template-rows: repeat(3, 46px); gap: 2px; }
-  #ctl .abxy b { border-radius: 50%; } #ctl .abxy b[data-k=X] { grid-area: 1/2; } #ctl .abxy b[data-k=Y] { grid-area: 2/1; } #ctl .abxy b[data-k=A] { grid-area: 2/3; } #ctl .abxy b[data-k=B] { grid-area: 3/2; }
-  #ctl .dpad b[data-k=Up] { grid-area: 1/2; } #ctl .dpad b[data-k=Left] { grid-area: 2/1; } #ctl .dpad b[data-k=Right] { grid-area: 2/3; } #ctl .dpad b[data-k=Down] { grid-area: 3/2; } #ctl .dpad b { border-radius: 8px; }
-  #cpad { position: relative; width: 112px; height: 112px; border-radius: 50%; background: radial-gradient(circle at 50% 40%, #2b313c, #1b1f27); box-shadow: inset 0 0 0 3px #11141a; touch-action: none; }
-  #cpad #nub { position: absolute; left: 50%; top: 50%; width: 58px; height: 58px; margin: -29px 0 0 -29px; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #4a5261, #2b313c); box-shadow: 0 3px 8px rgba(0,0,0,.5); pointer-events: none; }
+  html.coarse #ctl em, html.coarse #cpad small { display: none; }   /* no keyboard on a touch screen: no key captions */
+  #ctl .sh b { min-width: calc(var(--u) * 1.9); height: calc(var(--u) * .74); font-size: calc(var(--u) * .3); }
+  #ctl .mid b { flex-direction: column; height: calc(var(--u) * .9); font-size: calc(var(--u) * .27); min-width: calc(var(--u) * 1.5); gap: 1px; } #ctl .mid b em { position: static; background: none; padding: 0; line-height: 12px; }
+  #ctl .abxy, #ctl .dpad { display: grid; grid-template-columns: repeat(3, var(--u)); grid-template-rows: repeat(3, var(--u)); gap: 2px; }
+  #ctl .abxy b { border-radius: 50%; padding: 0; } #ctl .abxy b[data-k=X] { grid-area: 1/2; } #ctl .abxy b[data-k=Y] { grid-area: 2/1; } #ctl .abxy b[data-k=A] { grid-area: 2/3; } #ctl .abxy b[data-k=B] { grid-area: 3/2; }
+  #ctl .dpad b[data-k=Up] { grid-area: 1/2; } #ctl .dpad b[data-k=Left] { grid-area: 2/1; } #ctl .dpad b[data-k=Right] { grid-area: 2/3; } #ctl .dpad b[data-k=Down] { grid-area: 3/2; } #ctl .dpad b { border-radius: calc(var(--u) * .2); padding: 0; }
+  #cpad { position: relative; width: calc(var(--u) * 2.5); height: calc(var(--u) * 2.5); border-radius: 50%; background: radial-gradient(circle at 50% 40%, #2b313c, #1b1f27); box-shadow: inset 0 0 0 3px #11141a; touch-action: none; }
+  #cpad #nub { position: absolute; left: 50%; top: 50%; width: calc(var(--u) * 1.3); height: calc(var(--u) * 1.3); margin: calc(var(--u) * -.65) 0 0 calc(var(--u) * -.65); border-radius: 50%; background: radial-gradient(circle at 40% 35%, #4a5261, #2b313c); box-shadow: 0 3px 8px rgba(0,0,0,.5); pointer-events: none; transition: transform .08s; }
+  #cpad.drag #nub { transition: none; background: radial-gradient(circle at 40% 35%, #5d79b8, #34466e); }
   #cpad small { position: absolute; left: 50%; bottom: -17px; transform: translateX(-50%); font: 600 9.5px ui-monospace, Menlo, monospace; color: #9aa4b2; white-space: nowrap; }
-  #ctl .row2 { display: flex; gap: 14px; align-items: flex-end; }
-  #ctl small.cap { font: 600 9.5px ui-monospace, Menlo, monospace; color: #7d8695; }
+  #ctl .row2 { display: flex; gap: calc(var(--u) * .3); align-items: flex-end; }
   html.player #gl { width: min(calc(100vw - 24px), calc((100dvh - 24px - var(--ctlh, 0px)) * var(--w, 400) / var(--h, 480)), calc(var(--w, 400) * 3px)) !important; }
-  /* landscape window: the two screens stacked in the middle, controls on both sides */
-  @media (min-aspect-ratio: 13/10) and (min-width: 760px) {
+  /* landscape window: the two screens in the middle, controls on both sides */
+  @media (min-aspect-ratio: 13/10) and (min-width: 700px) {
     html.player.started { --ctlh: 0px; }
     html.player.started main { justify-content: center; padding: 12px; }
-    html.player.started #stage { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: 1fr auto; align-items: center; justify-items: center; width: 100%; height: calc(100dvh - 24px); column-gap: 16px; }
-    html.player.started #gl { grid-column: 2; grid-row: 1 / span 2; width: min(calc(100vw - 580px), calc((100dvh - 24px) * var(--w, 400) / var(--h, 480))) !important; }
+    html.player.started #stage { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: 1fr auto; align-items: center; justify-items: center; width: 100%; height: calc(100dvh - 24px); column-gap: 14px; }
+    html.player.started #gl { grid-column: 2; grid-row: 1 / span 2; width: min(calc(100vw - 2 * (var(--u) * 3.6 + 28px)), calc((100dvh - 24px) * var(--w, 400) / var(--h, 480))) !important; }
     html.player.started #ctl { display: contents; }
-    html.player.started #ctl .left { grid-column: 1; grid-row: 1 / span 2; align-self: center; justify-self: end; }
-    html.player.started #ctl .right { grid-column: 3; grid-row: 1; align-self: end; justify-self: start; }
-    html.player.started #ctl .mid { grid-column: 3; grid-row: 2; justify-self: start; padding: 14px 0 0; }
+    html.player.started #ctl .left, html.player.started #ctl .right { width: calc(var(--u) * 3.6); align-self: stretch; display: flex; flex-direction: column; align-items: center; }
+    html.player.started #ctl .left { grid-column: 1; grid-row: 1 / span 2; justify-self: end; margin-left: env(safe-area-inset-left); }
+    html.player.started #ctl .right { grid-column: 3; grid-row: 1; justify-self: start; margin-right: env(safe-area-inset-right); }
+    html.player.started #ctl .left .row2 { flex-direction: column; align-items: center; gap: calc(var(--u) * .6); margin: auto 0; }
+    html.player.started #ctl .right .abxy { margin: auto 0; }
+    html.player.started #ctl .sh { margin-top: 38px; }
+    html.player.started #ctl .mid { grid-column: 3; grid-row: 2; justify-self: start; width: calc(var(--u) * 3.6); justify-content: center; padding: 0 0 6px; }
   }
 </style>
 <label id="romtiny" style="display:none">📂<input type="file" id="rom-file2" accept=".3ds,.cxi,.cci,.3dsx,.elf" style="display:none"></label>
-<div id="pill"><i></i><span id="pilltxt">starting</span><u id="ctlbtn" title="Show or hide the on-screen buttons">🎮</u><u id="infobtn" title="Show or hide details">ⓘ</u></div>
+<div id="pill"><i></i><span id="pilltxt">starting</span><u id="fsbtn" title="Full screen">⛶</u><u id="ctlbtn" title="Show or hide the on-screen buttons">🎮</u><u id="infobtn" title="Show or hide details">ⓘ</u></div>
 <main>
   <section id="stage">
   <div id="welcome">
@@ -154,6 +170,7 @@
 const params = new URLSearchParams(location.search);
 const dev = params.has('dev') ? params.get('dev') === '1' : ['name', 'report', 'fscript', 'fscriptfile', 'ff', 'shots', 'rp', 'glrec', 'env', 'frames', 'turbo', 'bench'].some((k) => params.has(k)) || !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda);   // test/app launches keep the diagnostic layout
 if (!dev) document.documentElement.classList.add('player');
+if ((window.matchMedia && matchMedia('(pointer: coarse)').matches) || params.get('touch') === '1') document.documentElement.classList.add('coarse');
 const phone = params.get('ui') ? params.get('ui') === 'phone' : (innerWidth < 900 || /iPhone|iPod/.test(navigator.userAgent));   // ui=phone|desktop overrides
 if (phone) document.documentElement.classList.add('phone');
 // test aid: rafcap=30 makes requestAnimationFrame fire at most 30 times per second (reproduces a browser that throttles the page)
@@ -396,12 +413,12 @@ function press(name, down) {
   if (name === 'Up' || name === 'Down' || name === 'Left' || name === 'Right') {
     updateCirclePad();
   }
-  document.querySelectorAll(`#pad b[data-k="${name}"]`).forEach((e) => e.classList.toggle('on', down));
+  document.querySelectorAll(`#pad b[data-k="${name}"], #ctl b[data-k="${name}"]`).forEach((e) => e.classList.toggle('on', down));
 }
 addEventListener('keydown', (e) => { const n = KEYMAP[e.code]; if (n) { e.preventDefault(); if (!e.repeat) press(n, true); } });
 addEventListener('keyup', (e) => { const n = KEYMAP[e.code]; if (n) { e.preventDefault(); press(n, false); } });
 document.querySelectorAll('#pad b, #ctl b').forEach((b) => {
-  b.addEventListener('pointerdown', (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId); press(b.dataset.k, true); });
+  b.addEventListener('pointerdown', (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId); press(b.dataset.k, true); if (navigator.vibrate) navigator.vibrate(7); });
   const up = () => press(b.dataset.k, false);
   b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up);
 });
@@ -410,8 +427,8 @@ document.querySelectorAll('#pad b, #ctl b').forEach((b) => {
   if (cp) { let id = null;
     const move = (e) => { const r = cp.getBoundingClientRect(), R = r.width / 2; let dx = (e.clientX - (r.left + R)) / R, dy = (e.clientY - (r.top + R)) / R; const m = Math.hypot(dx, dy); if (m > 1) { dx /= m; dy /= m; }
       nub.style.transform = 'translate(' + (dx * R * 0.5) + 'px,' + (dy * R * 0.5) + 'px)'; if (Module._web_circle) Module._web_circle(Math.round(dx * 156), Math.round(-dy * 156)); };
-    const end = () => { id = null; nub.style.transform = ''; if (Module._web_circle) Module._web_circle(0, 0); };
-    cp.addEventListener('pointerdown', (e) => { e.preventDefault(); id = e.pointerId; cp.setPointerCapture(id); move(e); });
+    const end = () => { id = null; cp.classList.remove('drag'); nub.style.transform = ''; if (Module._web_circle) Module._web_circle(0, 0); };
+    cp.addEventListener('pointerdown', (e) => { e.preventDefault(); id = e.pointerId; cp.setPointerCapture(id); cp.classList.add('drag'); move(e); });
     cp.addEventListener('pointermove', (e) => { if (e.pointerId === id) move(e); });
     cp.addEventListener('pointerup', end); cp.addEventListener('pointercancel', end);
   }
@@ -755,6 +772,22 @@ function renderDiag() {
   if (gpuMs.length) { g.strokeStyle = '#58a6ff'; g.lineWidth = 2; g.beginPath(); gpuMs.slice(-N).forEach((v, i) => { const px = i * bw, py = y(v); i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.stroke(); }
   g.strokeStyle = '#8b949e'; g.setLineDash([6, 4]); g.lineWidth = 1; g.beginPath(); g.moveTo(0, y(FRAME_MS)); g.lineTo(W, y(FRAME_MS)); g.stroke(); g.setLineDash([]);
   g.fillStyle = '#8b949e'; g.font = (phone ? '22px' : '16px') + ' ui-monospace, monospace'; g.fillText('16.7 ms', 6, y(FRAME_MS) - 4); g.fillText('max ' + top.toFixed(0) + ' ms' + (gpuMs.length ? '   blue = GPU' : ''), 6, 16);
+}
+{   // a Bluetooth/USB gamepad (standard mapping): the buttons by position (south = B, east = A, west = Y, north = X), the left stick = circle pad
+  const MAP = { 0: 'B', 1: 'A', 2: 'Y', 3: 'X', 4: 'L', 5: 'R', 8: 'Select', 9: 'Start', 12: 'Up', 13: 'Down', 14: 'Left', 15: 'Right' }, state = {}; let stickOn = false;
+  setInterval(() => {
+    const gp = (navigator.getGamepads ? [...navigator.getGamepads()] : []).find((g) => g && g.connected && g.mapping === 'standard'); if (!gp || !Module._web_circle) return;
+    for (const [i, name] of Object.entries(MAP)) { const d = !!(gp.buttons[i] && gp.buttons[i].pressed); if (state[name] !== d) { state[name] = d; press(name, d); } }
+    let x = gp.axes[0] || 0, y = gp.axes[1] || 0; const m = Math.hypot(x, y);
+    if (m > 0.14) { const k = Math.min(1, (m - 0.14) / 0.86) / m; Module._web_circle(Math.round(x * k * 156), Math.round(-y * k * 156)); stickOn = true; } else if (stickOn) { stickOn = false; Module._web_circle(0, 0); }
+  }, 8);
+}
+{   // fullscreen button and a pill that fades while you play
+  const fsb = document.getElementById('fsbtn'), de = document.documentElement, req = de.requestFullscreen || de.webkitRequestFullscreen;
+  if (fsb) { if (!req) fsb.style.display = 'none'; else fsb.addEventListener('click', () => { if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document); else req.call(de); }); }
+  const pill = document.getElementById('pill'); let t = 0;
+  const wake = () => { pill.classList.remove('idle'); clearTimeout(t); t = setTimeout(() => pill.classList.add('idle'), 3500); };
+  for (const ev of ['pointermove', 'pointerdown', 'keydown']) addEventListener(ev, wake, { passive: true }); wake();
 }
 setInterval(renderDiag, 250);
 {   // player skin: one small status pill (fps, or the loading message) that opens the detailed panel
