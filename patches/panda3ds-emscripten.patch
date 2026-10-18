@@ -1,5 +1,5 @@
 diff --git a/.gitmodules b/.gitmodules
-index 2cd57e6..802dd96 100644
+index 2cd57e65..802dd963 100644
 --- a/.gitmodules
 +++ b/.gitmodules
 @@ -79,4 +79,4 @@
@@ -9,7 +9,7 @@ index 2cd57e6..802dd96 100644
 -	url = https://github.com/azahar-emu/dynarmic.git
 +	url = https://github.com/gagarinyury/dynarmic.git
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2f4d9df..8e93a47 100644
+index 2f4d9df2..8e93a479 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -177,7 +177,10 @@ if(ENABLE_DISCORD_RPC AND NOT ANDROID)
@@ -67,7 +67,7 @@ index 2f4d9df..8e93a47 100644
      add_executable(Alber)
  
 diff --git a/include/PICA/gpu.hpp b/include/PICA/gpu.hpp
-index e62f41b..dd594ee 100644
+index e62f41b3..dd594ee8 100644
 --- a/include/PICA/gpu.hpp
 +++ b/include/PICA/gpu.hpp
 @@ -99,9 +99,10 @@ class GPU {
@@ -84,7 +84,7 @@ index e62f41b..dd594ee 100644
  
  	GPU(Memory& mem, EmulatorConfig& config);
 diff --git a/include/PICA/regs.hpp b/include/PICA/regs.hpp
-index 3185d35..16a2cf1 100644
+index 3185d350..16a2cf19 100644
 --- a/include/PICA/regs.hpp
 +++ b/include/PICA/regs.hpp
 @@ -72,6 +72,7 @@ namespace PICA {
@@ -96,7 +96,7 @@ index 3185d35..16a2cf1 100644
  			DepthBufferFormat = 0x116,
  			ColourBufferFormat = 0x117,
 diff --git a/include/cpu_dynarmic.hpp b/include/cpu_dynarmic.hpp
-index 2435853..24bd02f 100644
+index 24358533..24bd02f8 100644
 --- a/include/cpu_dynarmic.hpp
 +++ b/include/cpu_dynarmic.hpp
 @@ -1,4 +1,6 @@
@@ -144,7 +144,7 @@ index 2435853..24bd02f 100644
      void clearCacheRange(u32 start, u32 size) { jit->InvalidateCacheRange(start, size); }
  
 diff --git a/include/emulator.hpp b/include/emulator.hpp
-index b1191f6..5eb1dc7 100644
+index b1191f6e..5eb1dc7a 100644
 --- a/include/emulator.hpp
 +++ b/include/emulator.hpp
 @@ -117,6 +117,7 @@ class Emulator {
@@ -156,7 +156,7 @@ index b1191f6..5eb1dc7 100644
  	Scheduler& getScheduler() { return scheduler; }
  	Audio::DSPCore* getDSP() { return dsp.get(); }
 diff --git a/include/fs/archive_base.hpp b/include/fs/archive_base.hpp
-index 074f1cc..725ad48 100644
+index 074f1ccd..725ad48c 100644
 --- a/include/fs/archive_base.hpp
 +++ b/include/fs/archive_base.hpp
 @@ -234,6 +234,11 @@ class ArchiveBase {
@@ -172,7 +172,7 @@ index 074f1cc..725ad48 100644
  	virtual Rust::Result<FormatInfo, HorizonResult> getFormatInfo(const FSPath& path) {
  		Helpers::panic("Unimplemented GetFormatInfo for %s archive", name().c_str());
 diff --git a/include/fs/archive_ext_save_data.hpp b/include/fs/archive_ext_save_data.hpp
-index d2e3d97..3ac6b54 100644
+index d2e3d974..3ac6b541 100644
 --- a/include/fs/archive_ext_save_data.hpp
 +++ b/include/fs/archive_ext_save_data.hpp
 @@ -14,6 +14,7 @@ class ExtSaveDataArchive : public ArchiveBase {
@@ -184,7 +184,7 @@ index d2e3d97..3ac6b54 100644
  
  	Rust::Result<ArchiveBase*, HorizonResult> openArchive(const FSPath& path) override;
 diff --git a/include/kernel/kernel.hpp b/include/kernel/kernel.hpp
-index c6d5044..eb6b172 100644
+index c6d5044e..eb6b172f 100644
 --- a/include/kernel/kernel.hpp
 +++ b/include/kernel/kernel.hpp
 @@ -151,6 +151,7 @@ class Kernel {
@@ -196,7 +196,7 @@ index c6d5044..eb6b172 100644
  	void mapMemoryBlock();
  	void unmapMemoryBlock();
 diff --git a/include/memory.hpp b/include/memory.hpp
-index d21e4be..e5a7fca 100644
+index d21e4be2..e5a7fca5 100644
 --- a/include/memory.hpp
 +++ b/include/memory.hpp
 @@ -313,6 +313,9 @@ class Memory {
@@ -210,7 +210,7 @@ index d21e4be..e5a7fca 100644
  	u8* getDSPDataMem() { return &dspRam[DSP_DATA_MEMORY_OFFSET]; }
  	u8* getDSPCodeMem() { return &dspRam[DSP_CODE_MEMORY_OFFSET]; }
 diff --git a/include/renderer.hpp b/include/renderer.hpp
-index 27d6a43..43ca8fb 100644
+index 27d6a437..43ca8fb1 100644
 --- a/include/renderer.hpp
 +++ b/include/renderer.hpp
 @@ -32,7 +32,7 @@ class Renderer {
@@ -223,7 +223,7 @@ index 27d6a43..43ca8fb 100644
  	u32 colourBufferLoc;                // Location in 3DS VRAM for the colour buffer
  	PICA::ColorFmt colourBufferFormat;  // Format of the colours stored in the colour buffer
 diff --git a/include/renderer_gl/gl_state.hpp b/include/renderer_gl/gl_state.hpp
-index d6cbcbc..92e19f1 100644
+index d6cbcbc0..92e19f19 100644
 --- a/include/renderer_gl/gl_state.hpp
 +++ b/include/renderer_gl/gl_state.hpp
 @@ -1,4 +1,5 @@
@@ -252,7 +252,7 @@ index d6cbcbc..92e19f1 100644
  			OpenGL::setColourMask(r, g, b, a);
  		}
 diff --git a/include/renderer_gl/renderer_gl.hpp b/include/renderer_gl/renderer_gl.hpp
-index 2023966..56285f9 100644
+index 2023966f..56285f97 100644
 --- a/include/renderer_gl/renderer_gl.hpp
 +++ b/include/renderer_gl/renderer_gl.hpp
 @@ -11,6 +11,7 @@
@@ -290,7 +290,7 @@ index 2023966..56285f9 100644
  	struct CachedProgram {
  		OpenGL::Program program;
 diff --git a/include/renderer_gl/surfaces.hpp b/include/renderer_gl/surfaces.hpp
-index ad1a1f5..0482518 100644
+index ad1a1f5f..04825185 100644
 --- a/include/renderer_gl/surfaces.hpp
 +++ b/include/renderer_gl/surfaces.hpp
 @@ -47,8 +47,8 @@ struct ColourBuffer {
@@ -316,7 +316,7 @@ index ad1a1f5..0482518 100644
  	}
  
 diff --git a/include/services/am.hpp b/include/services/am.hpp
-index f72a5ef..386a467 100644
+index f72a5efc..386a4675 100644
 --- a/include/services/am.hpp
 +++ b/include/services/am.hpp
 @@ -16,6 +16,9 @@ class AMService {
@@ -330,7 +330,7 @@ index f72a5ef..386a467 100644
    public:
  	AMService(Memory& mem) : mem(mem) {}
 diff --git a/include/services/service_manager.hpp b/include/services/service_manager.hpp
-index f51ddf2..7b2834d 100644
+index f51ddf2d..7b2834d1 100644
 --- a/include/services/service_manager.hpp
 +++ b/include/services/service_manager.hpp
 @@ -108,6 +108,7 @@ class ServiceManager {
@@ -342,7 +342,7 @@ index f51ddf2..7b2834d 100644
  	void receiveNotification(u32 messagePointer);
  	void registerClient(u32 messagePointer);
 diff --git a/src/core/CPU/cpu_dynarmic.cpp b/src/core/CPU/cpu_dynarmic.cpp
-index 124647d..d6c855b 100644
+index 124647d8..d6c855b1 100644
 --- a/src/core/CPU/cpu_dynarmic.cpp
 +++ b/src/core/CPU/cpu_dynarmic.cpp
 @@ -4,6 +4,10 @@
@@ -425,7 +425,7 @@ index 124647d..d6c855b 100644
  #endif  // CPU_DYNARMIC
 \ No newline at end of file
 diff --git a/src/core/PICA/gpu.cpp b/src/core/PICA/gpu.cpp
-index e38f441..0734717 100644
+index e38f4416..07347178 100644
 --- a/src/core/PICA/gpu.cpp
 +++ b/src/core/PICA/gpu.cpp
 @@ -75,6 +75,7 @@ GPU::GPU(Memory& mem, EmulatorConfig& config) : mem(mem), config(config) {
@@ -445,7 +445,7 @@ index e38f441..0734717 100644
  	fogLUT.fill(0);
  	fogLUTDirty = true;
 diff --git a/src/core/PICA/regs.cpp b/src/core/PICA/regs.cpp
-index f63ee18..85eecc0 100644
+index f63ee186..85eecc0f 100644
 --- a/src/core/PICA/regs.cpp
 +++ b/src/core/PICA/regs.cpp
 @@ -144,8 +144,10 @@ void GPU::writeInternalReg(u32 index, u32 value, u32 mask) {
@@ -477,7 +477,7 @@ index f63ee18..85eecc0 100644
  
  			// Increment the bottom 8 bits of the lighting LUT index register
 diff --git a/src/core/PICA/shader_gen_glsl.cpp b/src/core/PICA/shader_gen_glsl.cpp
-index a9ad3a9..63141b4 100644
+index a9ad3a90..63141b4d 100644
 --- a/src/core/PICA/shader_gen_glsl.cpp
 +++ b/src/core/PICA/shader_gen_glsl.cpp
 @@ -81,6 +81,8 @@ std::string FragmentGenerator::getDefaultVertexShader() {
@@ -547,7 +547,7 @@ index a9ad3a9..63141b4 100644
  })";
  		return ret;
 diff --git a/src/core/audio/hle_core.cpp b/src/core/audio/hle_core.cpp
-index 092f94a..86100b0 100644
+index 092f94a8..86100b05 100644
 --- a/src/core/audio/hle_core.cpp
 +++ b/src/core/audio/hle_core.cpp
 @@ -1,6 +1,8 @@
@@ -588,7 +588,7 @@ index 092f94a..86100b0 100644
  			while (sampleBuffer.size() + frame.size() * 2 > sampleBuffer.Capacity()) {
  				std::this_thread::sleep_for(std::chrono::milliseconds{1});
 diff --git a/src/core/audio/miniaudio_device.cpp b/src/core/audio/miniaudio_device.cpp
-index 8e2a1e7..22242f3 100644
+index 8e2a1e71..22242f32 100644
 --- a/src/core/audio/miniaudio_device.cpp
 +++ b/src/core/audio/miniaudio_device.cpp
 @@ -1,6 +1,8 @@
@@ -652,7 +652,7 @@ index 8e2a1e7..22242f3 100644
  		// Get the last sample for underrun handling
  		if (samplesWritten != 0) {
 diff --git a/src/core/fs/archive_ext_save_data.cpp b/src/core/fs/archive_ext_save_data.cpp
-index 2aaa157..a1fe95e 100644
+index 2aaa157e..a1fe95ee 100644
 --- a/src/core/fs/archive_ext_save_data.cpp
 +++ b/src/core/fs/archive_ext_save_data.cpp
 @@ -126,6 +126,22 @@ HorizonResult ExtSaveDataArchive::renameFile(const FSPath& oldPath, const FSPath
@@ -692,7 +692,7 @@ index 2aaa157..a1fe95e 100644
  		Helpers::panic("Unimplemented ExtSaveData::CreateDirectory");
  	}
 diff --git a/src/core/fs/archive_ncch.cpp b/src/core/fs/archive_ncch.cpp
-index 5844bbd..712ca47 100644
+index 5844bbda..712ca471 100644
 --- a/src/core/fs/archive_ncch.cpp
 +++ b/src/core/fs/archive_ncch.cpp
 @@ -3,8 +3,11 @@
@@ -762,7 +762,7 @@ index 5844bbd..712ca47 100644
  
  	// Code below is for mediaType == 2 (gamecard). Currently unused
 diff --git a/src/core/fs/archive_save_data.cpp b/src/core/fs/archive_save_data.cpp
-index 35bc93e..68830c0 100644
+index 35bc93e4..68830c0c 100644
 --- a/src/core/fs/archive_save_data.cpp
 +++ b/src/core/fs/archive_save_data.cpp
 @@ -55,7 +55,9 @@ HorizonResult SaveDataArchive::createDirectory(const FSPath& path) {
@@ -777,7 +777,7 @@ index 35bc93e..68830c0 100644
  	} else {
  		Helpers::panic("Unimplemented SaveData::CreateDirectory");
 diff --git a/src/core/fs/archive_system_save_data.cpp b/src/core/fs/archive_system_save_data.cpp
-index 038b2fc..09138af 100644
+index 038b2fc8..09138afc 100644
 --- a/src/core/fs/archive_system_save_data.cpp
 +++ b/src/core/fs/archive_system_save_data.cpp
 @@ -101,7 +101,9 @@ HorizonResult SystemSaveDataArchive::createDirectory(const FSPath& path) {
@@ -792,7 +792,7 @@ index 038b2fc..09138af 100644
  	} else {
  		Helpers::panic("Unimplemented SystemSaveData::CreateDirectory");
 diff --git a/src/core/fs/archive_user_save_data.cpp b/src/core/fs/archive_user_save_data.cpp
-index dc55895..b2a16f5 100644
+index dc558954..b2a16f57 100644
 --- a/src/core/fs/archive_user_save_data.cpp
 +++ b/src/core/fs/archive_user_save_data.cpp
 @@ -52,7 +52,9 @@ HorizonResult UserSaveDataArchive::createDirectory(const FSPath& path) {
@@ -807,7 +807,7 @@ index dc55895..b2a16f5 100644
  	} else {
  		Helpers::panic("Unimplemented UserSaveData::CreateDirectory");
 diff --git a/src/core/kernel/file_operations.cpp b/src/core/kernel/file_operations.cpp
-index becf88e..693d9b7 100644
+index becf88e6..693d9b76 100644
 --- a/src/core/kernel/file_operations.cpp
 +++ b/src/core/kernel/file_operations.cpp
 @@ -109,7 +109,8 @@ void Kernel::readFile(u32 messagePointer, Handle fileHandle) {
@@ -821,7 +821,7 @@ index becf88e..693d9b7 100644
  		mem.write32(messagePointer + 4, Result::Success);
  		mem.write32(messagePointer + 8, bytesRead.value());
 diff --git a/src/core/kernel/kernel.cpp b/src/core/kernel/kernel.cpp
-index 7a0aacc..2ac9f00 100644
+index 7a0aacc0..2ac9f003 100644
 --- a/src/core/kernel/kernel.cpp
 +++ b/src/core/kernel/kernel.cpp
 @@ -33,6 +33,7 @@ void Kernel::serviceSVC(u32 svc) {
@@ -842,7 +842,7 @@ index 7a0aacc..2ac9f00 100644
 +	cpu.stop();
 +}
 diff --git a/src/core/kernel/threads.cpp b/src/core/kernel/threads.cpp
-index 5ada30e..12b1028 100644
+index 5ada30e3..12b1028f 100644
 --- a/src/core/kernel/threads.cpp
 +++ b/src/core/kernel/threads.cpp
 @@ -400,6 +400,10 @@ void Kernel::sleepThread(s64 ns) {
@@ -857,7 +857,7 @@ index 5ada30e..12b1028 100644
  		}
  	} else {  // If we're sleeping for >= 0 ns
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
-index 659a1e1..42d2446 100644
+index 659a1e1d..23642c91 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
 +++ b/src/core/renderer_gl/renderer_gl.cpp
 @@ -1,5 +1,12 @@
@@ -1040,8 +1040,8 @@ index 659a1e1..42d2446 100644
 +		static std::map<std::string, int> seen;
 +		static int drawCount = 0;
 +		char key[300];
-+		std::snprintf(key, sizeof key, "colOp=%08x stencil=%08x stencilOp=%08x depthColorMask=%08x depthWrite=%x colourWrite=%x depthRead=%x colourRead=%x alphaTest=%08x clipEn=%x logicOp=%x blendFunc=%08x vertices=%s",
-+			regs[PICA::InternalRegs::ColourOperation], regs[PICA::InternalRegs::StencilTest], regs[PICA::InternalRegs::StencilOp], regs[PICA::InternalRegs::DepthAndColorMask],
++		std::snprintf(key, sizeof key, "texCfg=%08x colOp=%08x stencil=%08x stencilOp=%08x depthColorMask=%08x depthWrite=%x colourWrite=%x depthRead=%x colourRead=%x alphaTest=%08x clipEn=%x logicOp=%x blendFunc=%08x vertices=%s",
++			regs[PICA::InternalRegs::TexUnitCfg], regs[PICA::InternalRegs::ColourOperation], regs[PICA::InternalRegs::StencilTest], regs[PICA::InternalRegs::StencilOp], regs[PICA::InternalRegs::DepthAndColorMask],
 +			regs[PICA::InternalRegs::DepthBufferWrite], regs[PICA::InternalRegs::ColourBufferWrite], regs[0x114], regs[0x112], regs[PICA::InternalRegs::AlphaTestConfig],
 +			regs[PICA::InternalRegs::ClipEnable] & 1, regs[PICA::InternalRegs::LogicOp] & 0xF, regs[PICA::InternalRegs::BlendFunc], vertices.size() <= 3 ? "<=3" : (vertices.size() <= 12 ? "<=12" : ">12"));
 +		seen[key]++;
@@ -1183,7 +1183,7 @@ index 659a1e1..42d2446 100644
  							  : PICA::IndexBuffer::subtractBaseIndex<false>((u8*)indexBufferRes.pointer, indexCount, accel->minimumIndex);
  		}
 diff --git a/src/core/services/am.cpp b/src/core/services/am.cpp
-index 507532b..0b70502 100644
+index 507532b7..0b705028 100644
 --- a/src/core/services/am.cpp
 +++ b/src/core/services/am.cpp
 @@ -4,6 +4,9 @@
@@ -1246,7 +1246,7 @@ index 507532b..0b70502 100644
  	log("AM::ListDLCOrLicenseTicketInfos\n");  // Yes this is the actual name
  	u32 ticketCount = mem.read32(messagePointer + 4);
 diff --git a/src/core/services/fs.cpp b/src/core/services/fs.cpp
-index 5d6cb44..09ecb0f 100644
+index 5d6cb44f..09ecb0fe 100644
 --- a/src/core/services/fs.cpp
 +++ b/src/core/services/fs.cpp
 @@ -336,6 +336,10 @@ void FSService::openDirectory(u32 messagePointer) {
@@ -1305,7 +1305,7 @@ index 5d6cb44..09ecb0f 100644
  
  void FSService::getFormatInfo(u32 messagePointer) {
 diff --git a/src/core/services/ir/ir_user.cpp b/src/core/services/ir/ir_user.cpp
-index 48aed95..7bfdaf1 100644
+index 48aed958..7bfdaf1e 100644
 --- a/src/core/services/ir/ir_user.cpp
 +++ b/src/core/services/ir/ir_user.cpp
 @@ -55,7 +55,12 @@ void IRUserService::handleSyncRequest(u32 messagePointer) {
@@ -1323,7 +1323,7 @@ index 48aed95..7bfdaf1 100644
  }
  
 diff --git a/src/core/services/service_manager.cpp b/src/core/services/service_manager.cpp
-index bd4488e..dfb6e92 100644
+index bd4488e9..dfb6e92c 100644
 --- a/src/core/services/service_manager.cpp
 +++ b/src/core/services/service_manager.cpp
 @@ -87,6 +87,7 @@ void ServiceManager::handleSyncRequest(u32 messagePointer) {
@@ -1387,7 +1387,7 @@ index bd4488e..dfb6e92 100644
  
  void ServiceManager::enableNotification(u32 messagePointer) {
 diff --git a/src/host_shaders/opengl_es_display.frag b/src/host_shaders/opengl_es_display.frag
-index 600ebfc..72b83e9 100644
+index 600ebfcd..72b83e9f 100644
 --- a/src/host_shaders/opengl_es_display.frag
 +++ b/src/host_shaders/opengl_es_display.frag
 @@ -1,4 +1,4 @@
@@ -1397,7 +1397,7 @@ index 600ebfc..72b83e9 100644
  
  in vec2 UV;
 diff --git a/src/host_shaders/opengl_es_display.vert b/src/host_shaders/opengl_es_display.vert
-index 04fadfc..c232e61 100644
+index 04fadfc6..c232e61e 100644
 --- a/src/host_shaders/opengl_es_display.vert
 +++ b/src/host_shaders/opengl_es_display.vert
 @@ -1,4 +1,4 @@
@@ -1407,7 +1407,7 @@ index 04fadfc..c232e61 100644
  
  out vec2 UV;
 diff --git a/third_party/duckstation/gl/stream_buffer.cpp b/third_party/duckstation/gl/stream_buffer.cpp
-index b7a4060..a83ce2e 100644
+index b7a40603..a83ce2e0 100644
 --- a/third_party/duckstation/gl/stream_buffer.cpp
 +++ b/third_party/duckstation/gl/stream_buffer.cpp
 @@ -1,6 +1,7 @@
@@ -1599,7 +1599,7 @@ index b7a4060..a83ce2e 100644
  }
 \ No newline at end of file
 diff --git a/third_party/host_memory/host_memory.cpp b/third_party/host_memory/host_memory.cpp
-index 2aaa2f1..95a17d9 100644
+index 2aaa2f10..95a17d97 100644
 --- a/third_party/host_memory/host_memory.cpp
 +++ b/third_party/host_memory/host_memory.cpp
 @@ -691,6 +691,14 @@ namespace Common {
@@ -1618,7 +1618,7 @@ index 2aaa2f1..95a17d9 100644
  			// Fastmem is disabled, just throw bad alloc and use the VirtualBuffer fallback.
  			if (!enableFastmem) {
 diff --git a/third_party/opengl/opengl.hpp b/third_party/opengl/opengl.hpp
-index 607815f..3c81a55 100644
+index 607815fa..3c81a555 100644
 --- a/third_party/opengl/opengl.hpp
 +++ b/third_party/opengl/opengl.hpp
 @@ -602,22 +602,36 @@ namespace OpenGL {
