@@ -1,1052 +1,578 @@
-<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="theme-color" content="#0d0f13">
-<title>Nintendo 3DS emulator in your browser: Panda3DS on WebAssembly</title>
-<meta name="description" content="Play your own Nintendo 3DS games in a browser or on an iPhone, no install, no JIT entitlement: the Panda3DS emulator with the guest code recompiled to WebAssembly and the GPU on WebGL2. Free and open source (GPL-3.0). No games included.">
-<link rel="canonical" href="https://panda.profy.top/">
-<link rel="icon" href="/icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="manifest" href="/manifest.webmanifest">
-<meta property="og:type" content="website"><meta property="og:site_name" content="Panda3DS in the browser">
-<meta property="og:title" content="Nintendo 3DS emulator in your browser">
-<meta property="og:description" content="Panda3DS compiled to WebAssembly: runs your own game dumps on a computer or an iPhone, nothing is uploaded. Open source, GPL-3.0.">
-<meta property="og:url" content="https://panda.profy.top/"><meta property="og:image" content="https://panda.profy.top/og.png">
-<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="Nintendo 3DS emulator in your browser"><meta name="twitter:image" content="https://panda.profy.top/og.png">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Panda3DS in the browser","applicationCategory":"GameApplication","operatingSystem":"Any (Chrome, Safari, Firefox; iPhone and iPad)","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"},"license":"https://www.gnu.org/licenses/gpl-3.0.html","url":"https://panda.profy.top/","codeRepository":"https://github.com/gagarinyury/panda3ds-wasm","description":"A Nintendo 3DS emulator (Panda3DS) running in a web browser: guest ARM code is recompiled to WebAssembly at run time and the GPU is drawn with WebGL2. No games are included."}</script>
-<script>   // a blank screen on a phone tells nothing: show the first script error on the page itself
-(function () { const show = (m) => { let d = document.getElementById('errbox'); if (!d) { d = document.createElement('pre'); d.id = 'errbox'; d.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:99;margin:0;padding:10px;background:#3a1114;color:#ffd9d6;font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;border-radius:8px;max-height:45vh;overflow:auto'; (document.body || document.documentElement).appendChild(d); } d.textContent += m + '\n'; };
-  window.__showErr = show;
-  addEventListener('error', (e) => show('error: ' + e.message + ' (' + String(e.filename || '').split('/').pop() + ':' + e.lineno + ')' + (e.error && e.error.stack ? '\n' + String(e.error.stack).split('\n').slice(1, 8).join('\n') : '')));
-  addEventListener('unhandledrejection', (e) => show('promise: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason))); })();
-</script>
-<style>
-  body { margin: 0; background: #14161a; color: #cfd3da; font: 13px/1.4 ui-monospace, Menlo, monospace; }
-  main { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 16px; padding: 8px; max-width: none; margin: 0; align-items: start; }
-  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
-  canvas { background: #000; image-rendering: pixelated; display: block; margin: 8px auto; }
-  #top { width: 800px; max-width: 100%; aspect-ratio: 400/240; }
-  #bottom { width: 640px; max-width: 80%; aspect-ratio: 320/240; }
-  #gl { max-width: 100%; height: auto; margin: 0 0 8px; }   /* CSS size is set from the scale= parameter (default 1.5x the native size) */
-  #stats { color: #8be28b; min-height: 1.4em; word-break: break-word; }
-  #diag { background: #101317; border: 1px solid #232932; border-radius: 8px; padding: 10px; position: sticky; top: 8px; }
-  #counters { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 6px 0; }
-  #counters span:nth-child(odd) { color: #8a93a0; }
-  #counters span:nth-child(even) { color: #e6edf5; text-align: right; }
-  #spark { width: 100%; height: 90px; margin: 6px 0; background: #0b0d10; image-rendering: auto; }
-  #diag small { color: #6b7480; }
-  #pad { text-align: center; user-select: none; -webkit-user-select: none; touch-action: none; }
-  #pad .row { display: flex; justify-content: center; gap: 6px; margin: 4px 0; }
-  #pad b { min-width: 46px; padding: 12px 8px; background: #2a2f38; border-radius: 8px; color: #dfe6ee; font: 600 14px system-ui; }
-  #pad b.on { background: #4b86d9; }
-  pre { background: #0d0f12; padding: 8px; max-height: 160px; overflow: auto; white-space: pre-wrap; }
-  /* phone: no scrolling, no on-screen buttons; the game on top, a dense live panel below (tap the top screen = A) */
-  html.phone, html.phone body { height: 100%; overflow: hidden; overscroll-behavior: none; }
-  html.phone body { font-size: 11px; line-height: 1.25; display: flex; flex-direction: column; padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); box-sizing: border-box; }
-  html.phone main { display: flex; flex-direction: column; padding: 0; gap: 0; flex: 1 1 auto; min-height: 0; }
-  html.phone #stage { flex: 0 0 auto; }
-  html.phone #gl { margin: 0 auto; }
-  html.phone #pad, html.phone #rom-drop, html.phone #diag > small, html.phone #log { display: none !important; }
-  html.phone #diag { position: static; border: 0; border-radius: 0; padding: 4px 6px; flex: 1 1 auto; min-height: 0; overflow: hidden; background: #0b0d10; }
-  html.phone #stats { display: none; }
-  html.phone #spark { height: 54px; margin: 3px 0; }
-  #hud { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px 6px; }
-  #hud div { background: #14181d; border-radius: 5px; padding: 2px 5px; min-width: 0; }
-  #hud small { display: block; color: #6b7480; font-size: 9px; white-space: nowrap; }
-  #hud b { font: 600 14px ui-monospace, Menlo, monospace; color: #e6edf5; white-space: nowrap; }
-  #hud b.ok { color: #3fb950; } #hud b.warn { color: #e3a008; } #hud b.bad { color: #f85149; }
-  #hudline { color: #8a93a0; font-size: 10px; margin-top: 2px; word-break: break-word; max-height: 3.8em; overflow: hidden; }
-  #romtiny { position: fixed; right: 6px; top: calc(env(safe-area-inset-top) + 4px); z-index: 5; font-size: 18px; opacity: .55; }
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Panda3DS WebXR — Nintendo 3DS in Spatial 3D</title>
+  <meta name="description" content="Play Nintendo 3DS games in real stereoscopic 3D on Meta Quest 3 and Apple Vision Pro with WebXR">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body, html {
+      width: 100%; height: 100%; overflow: hidden;
+      background: #0d0f15; color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      user-select: none; -webkit-user-select: none;
+    }
+    #ui-container {
+      position: absolute; top: 0; left: 0; width: 100%;
+      z-index: 10; pointer-events: none;
+      display: flex; flex-direction: column; justify-content: space-between;
+      height: 100%; padding: 16px;
+    }
+    .panel {
+      pointer-events: auto;
+      background: rgba(18, 22, 34, 0.75);
+      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 14px; padding: 12px 18px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+    }
+    header.panel {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      flex-wrap: wrap;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.15rem;
+      letter-spacing: -0.02em; color: #fff;
+    }
+    .brand svg { width: 28px; height: 28px; fill: #48b0f7; }
+    .status-badge {
+      font-size: 0.8rem; font-weight: 600; padding: 4px 10px; border-radius: 20px;
+      background: rgba(46, 204, 113, 0.15); color: #2ecc71; border: 1px solid rgba(46, 204, 113, 0.3);
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #2ecc71; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-  /* ---- player skin: the default for a visitor (no test parameters); dev=1 gives the diagnostic layout, dev=0 forces the player skin ---- */
-  html.player body { background: #0d0f13; color: #e8ebf0; font: 15px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif; min-height: 100dvh; }
-  html.player main { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100dvh; padding: 12px; box-sizing: border-box; gap: 0; }
-  html.player.started main { justify-content: flex-start; }
-  html.player #stage { width: 100%; display: flex; flex-direction: column; align-items: center; }
-  html.player #gl { margin: 0 auto; border-radius: 10px; box-shadow: 0 8px 40px rgba(0,0,0,.6); width: min(calc(100vw - 24px), calc((100dvh - 24px) * var(--w, 400) / var(--h, 480)), calc(var(--w, 400) * 3px)) !important; height: auto !important; }
-  html.player #diag, html.player #pad, html.player #romtiny { display: none !important; }
-  html.player.info #diag { display: block !important; position: fixed; right: 10px; top: 52px; width: min(420px, calc(100vw - 20px)); max-height: calc(100dvh - 70px); overflow: auto; z-index: 20; font: 12px/1.4 ui-monospace, Menlo, monospace; }
-  html.player.info #pad { display: block !important; position: fixed; left: 50%; bottom: 8px; transform: translateX(-50%); z-index: 20; }
-  html.player #rom-drop { margin: 0 !important; padding: 0 !important; background: none !important; border: 0 !important; }
-  html.player #rom-drop label { display: inline-block; font: 600 17px system-ui !important; padding: 14px 26px !important; border-radius: 12px !important; background: #3d7be0 !important; color: #fff !important; box-shadow: 0 2px 14px rgba(61,123,224,.45); }
-  html.player #rom-drop label:active { transform: translateY(1px); }
-  html.player #rom-drop span { display: none; }
-  html.player.started #rom-drop, html.player.started #welcome { display: none !important; }
-  html.player:not(.started) #gl { display: none !important; }
-  #set { display: none; position: fixed; right: 10px; top: 54px; z-index: 40; width: min(300px, calc(100vw - 20px)); padding: 12px 14px 10px; border-radius: 14px; background: rgba(20,23,28,.94); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); color: #cfd5de; font: 13px system-ui; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
-  html.player.sets #set { display: block; }
-  #set label { display: grid; grid-template-columns: 1fr 44px; gap: 2px 8px; margin-bottom: 10px; color: #9aa4b2; } #set label input { grid-column: 1 / 3; width: 100%; accent-color: #3d7be0; } #set output { text-align: right; color: #e8ebf0; font-weight: 600; grid-row: 1; grid-column: 2; }
-  #set button { width: 100%; padding: 8px; border: 0; border-radius: 9px; background: #232832; color: #cfd5de; font: 600 13px system-ui; }
-  #loading { display: none; position: fixed; inset: 0; z-index: 15; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: #0d0f13; color: #cfd5de; font: 600 15px system-ui; pointer-events: none; }
-  #loading .ring { width: 54px; height: 54px; border-radius: 50%; border: 5px solid #232832; border-top-color: #3d7be0; animation: spin 0.9s linear infinite; }
-  #loading #loadtxt { max-width: 80vw; text-align: center; font-weight: 500; color: #8a93a0; font-size: 13px; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  html.player.started:not(.ready) #loading { display: flex; }
-  #welcome { display: none; text-align: center; max-width: 520px; padding: 8px 12px 18px; }
-  html.player #welcome { display: block; }
-  #welcome h1 { font-size: 30px; line-height: 1.15; margin: 0 0 10px; letter-spacing: -.02em; }
-  #welcome p { color: #a6aebb; margin: 0 0 18px; }
-  #welcome .alt { margin-top: 18px; font-size: 13px; color: #7d8695; }
-  #welcome .alt a { color: #9db8ee; text-decoration: none; margin: 0 4px; }
-  #welcome .alt a:hover { text-decoration: underline; }
-  #engine { display: none; margin-top: 12px; color: #e3a008; font-size: 13px; }
-  html.player:not(.engine):not(.started) #engine { display: block; }
-  html.player:not(.engine) #rom-drop, html.player:not(.engine) #demos { opacity: .4; pointer-events: none; }
-  #demos { display: none; margin-top: 18px; color: #7d8695; font-size: 13px; text-align: center; max-width: 520px; line-height: 1.8; } #demos a { color: #9db8ee; text-decoration: none; margin: 0 3px; } #demos a:hover { text-decoration: underline; }
-  html.player:not(.started) #demos { display: block; }
-  #foot { display: none; color: #5c6471; font-size: 12px; text-align: center; margin-top: 18px; }
-  #foot a { color: #7f8b9c; }
-  html.player:not(.started) #foot { display: block; }
-  #pill { display: none; position: fixed; right: 10px; top: 10px; z-index: 30; align-items: center; gap: 12px; padding: 10px 18px; border-radius: 30px; background: rgba(20,23,28,.82); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); color: #cfd5de; font: 600 20px system-ui; cursor: pointer; user-select: none; -webkit-user-select: none; }
-  html.player.started #pill { display: flex; }
-  #pill { transition: opacity .35s; } #pill.idle { opacity: .28; } #pill:hover { opacity: 1; }
-  #pill i { width: 14px; height: 14px; border-radius: 50%; background: #3fb950; }
-  #pill i.mid { background: #e3a008; } #pill i.low { background: #f85149; }
-  #pill u { text-decoration: none; opacity: .7; font-weight: 500; padding: 0 3px; }
-  #toast { display: none; position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 40; max-width: min(92vw, 420px); padding: 12px 16px; border-radius: 14px; background: rgba(20,23,28,.94); color: #e8ebf0; font: 500 15px/1.4 system-ui; text-align: center; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
-  html.player.noctl #ctl { display: none !important; } html.player.noctl { --ctlh: 0px !important; }
-  /* ---- on-screen controller (player skin) ----
-     Sizes come from one unit (--u) that follows the window; fingers get bigger targets and no key captions, a mouse gets compact buttons with the key printed on each.
-     Portrait: screens on top, controls under them in the 3DS arrangement. Landscape: screens in the middle, one column of controls on each side (shoulder at the top, the main control in the middle, Start/Select low right). */
-  html.player { --u0: clamp(38px, 6.4vmin, 54px); --u: calc(var(--u0) * var(--us, 1)); }
-  html.player.coarse { --u0: clamp(46px, 9.5vmin, 66px); }
-  html.player, html.player body { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
-  #ctl, #pill { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: none; }
-  #ctl { display: none; width: min(100%, 780px); margin: 10px auto 0; padding: 0 max(4px, env(safe-area-inset-left)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-right)); box-sizing: border-box; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; gap: 8px 10px; align-items: stretch; }
-  html.player.started #ctl { display: grid; }
-  html.player.started { --ctlh: calc(var(--u) * 7.6 + 40px); }
-  #ctl .col { align-items: center; } #ctl .left { grid-column: 1; grid-row: 1; } #ctl .right { grid-column: 2; grid-row: 1; } #ctl .mid { grid-column: 2; grid-row: 2; justify-content: center; }
-  #ctl .left .row2 { flex-direction: column; align-items: center; gap: calc(var(--u) * .5); margin: auto 0; } #ctl .right .abxy { margin: auto 0; }
-  html.player.noctl #ctl { display: none !important; } html.player.noctl { --ctlh: 0px !important; }
-  #ctl .col { display: flex; flex-direction: column; gap: calc(var(--u) * .22); }
-  #ctl .mid { align-items: center; justify-content: flex-end; flex-direction: row; gap: 10px; padding-bottom: 6px; }
-  #ctl b { position: relative; display: flex; align-items: center; justify-content: center; min-width: var(--u); height: var(--u); padding: 0 8px; box-sizing: border-box; border-radius: calc(var(--u) * .26); background: #232832; color: #e8ebf0; font: 700 calc(var(--u) * .36) system-ui; box-shadow: inset 0 -3px 0 rgba(0,0,0,.4); cursor: pointer; transition: background .06s, transform .06s; }
-  #ctl b.on { background: #3d7be0; transform: translateY(1px) scale(.97); box-shadow: none; }
-  #ctl b em { position: absolute; right: 3px; bottom: 2px; font: 600 9.5px ui-monospace, Menlo, monospace; font-style: normal; color: #9aa4b2; background: rgba(0,0,0,.35); border-radius: 4px; padding: 0 4px; line-height: 14px; }
-  html.coarse #ctl em, html.coarse #cpad small { display: none; }   /* no keyboard on a touch screen: no key captions */
-  #ctl .sh b { min-width: calc(var(--u) * 1.9); height: calc(var(--u) * .74); font-size: calc(var(--u) * .3); }
-  #ctl b.ss { flex-direction: column; height: calc(var(--u) * .9); font-size: calc(var(--u) * .27); min-width: calc(var(--u) * 1.5); gap: 1px; } #ctl b.ss em { position: static; background: none; padding: 0; line-height: 12px; }
-  #ctl .abxy, #ctl .dpad { display: grid; grid-template-columns: repeat(3, var(--u)); grid-template-rows: repeat(3, var(--u)); gap: 2px; }
-  #ctl .abxy b { border-radius: 50%; padding: 0; } #ctl .abxy b[data-k=X] { grid-area: 1/2; } #ctl .abxy b[data-k=Y] { grid-area: 2/1; } #ctl .abxy b[data-k=A] { grid-area: 2/3; } #ctl .abxy b[data-k=B] { grid-area: 3/2; }
-  #ctl .dpad b[data-k=Up] { grid-area: 1/2; } #ctl .dpad b[data-k=Left] { grid-area: 2/1; } #ctl .dpad b[data-k=Right] { grid-area: 2/3; } #ctl .dpad b[data-k=Down] { grid-area: 3/2; } #ctl .dpad b { border-radius: calc(var(--u) * .2); padding: 0; }
-  #cpad { position: relative; width: calc(var(--u) * 2.5); height: calc(var(--u) * 2.5); border-radius: 50%; background: radial-gradient(circle at 50% 40%, #2b313c, #1b1f27); box-shadow: inset 0 0 0 3px #11141a; touch-action: none; }
-  #cpad #nub { position: absolute; left: 50%; top: 50%; width: calc(var(--u) * 1.3); height: calc(var(--u) * 1.3); margin: calc(var(--u) * -.65) 0 0 calc(var(--u) * -.65); border-radius: 50%; background: radial-gradient(circle at 40% 35%, #4a5261, #2b313c); box-shadow: 0 3px 8px rgba(0,0,0,.5); pointer-events: none; transition: transform .08s; }
-  #cpad.drag #nub { transition: none; background: radial-gradient(circle at 40% 35%, #5d79b8, #34466e); }
-  #cpad small { position: absolute; left: 50%; bottom: -17px; transform: translateX(-50%); font: 600 9.5px ui-monospace, Menlo, monospace; color: #9aa4b2; white-space: nowrap; }
-  #ctl .dpad { display: none !important; } html.dpad #ctl .dpad { display: grid !important; }   /* the circle pad already covers the arrows (the core mirrors it into the direction bits); ?dpad=1 brings the cross back */
-  #ctl .row2 { display: flex; gap: calc(var(--u) * .3); align-items: flex-end; }
-  html.player #gl { width: min(calc(100vw - 24px), calc((100dvh - 24px - var(--ctlh, 0px)) * var(--w, 400) / var(--h, 480)), calc(var(--w, 400) * 3px)) !important; }
-  /* landscape window: the two screens in the middle, controls on both sides */
-  @media (min-aspect-ratio: 13/10) and (min-width: 700px) {
-    html.player.started:not(.ovl) { --ctlh: 0px; }
-    html.player.started:not(.ovl) main { justify-content: center; padding: 12px; }
-    html.player.started:not(.ovl) #stage { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: 1fr auto; align-items: center; justify-items: center; width: 100%; height: calc(100dvh - 24px); column-gap: 14px; }
-    html.player.started:not(.ovl) #gl { grid-column: 2; grid-row: 1 / span 2; width: min(calc(100vw - 2 * (var(--u) * 3.6 + 28px)), calc((100dvh - 24px) * var(--w, 400) / var(--h, 480))) !important; }
-    html.player.started:not(.ovl) #ctl { display: contents; }
-    html.player.started:not(.ovl) #ctl .left, html.player.started:not(.ovl) #ctl .right { width: calc(var(--u) * 3.6); align-self: stretch; display: flex; flex-direction: column; align-items: center; }
-    html.player.started:not(.ovl) #ctl .left { grid-column: 1; grid-row: 1; justify-self: end; margin-left: env(safe-area-inset-left); }
-    html.player.started:not(.ovl) #ctl .right { grid-column: 3; grid-row: 1; justify-self: start; margin-right: env(safe-area-inset-right); }
-    html.player.started:not(.ovl) #ctl .left .row2 { flex-direction: column; align-items: center; gap: calc(var(--u) * .6); margin: auto 0; }
-    html.player.started:not(.ovl) #ctl .right .abxy { margin: auto 0; }
-    html.player.started:not(.ovl) #ctl .sh { margin-top: 38px; }
-    html.player.started:not(.ovl) #ctl b.ss { margin-top: calc(var(--u) * .3); }
-  }
+    .controls-row {
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+    select, button, input[type="file"]::file-selector-button {
+      background: #1f2538; color: #fff; border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 8px; padding: 8px 14px; font-size: 0.88rem; font-weight: 500;
+      cursor: pointer; transition: all 0.15s ease;
+    }
+    select:hover, button:hover { background: #2a334d; border-color: rgba(255, 255, 255, 0.3); }
+    .btn-vr {
+      background: linear-gradient(135deg, #0070f3, #00c6ff);
+      border: none; color: #fff; font-weight: 600; padding: 9px 18px;
+      border-radius: 10px; display: inline-flex; align-items: center; gap: 8px;
+      box-shadow: 0 4px 16px rgba(0, 112, 243, 0.4);
+    }
+    .btn-vr:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0, 112, 243, 0.6); }
 
-  /* portrait window: the screens as wide as possible, the controls get what is left (the unit shrinks to fit) */
-  @media (max-aspect-ratio: 13/10) {
-    html.player, html.player.coarse { --u0: clamp(30px, calc((100dvh - 100vw * 1.2 - 44px) / 7.1), 56px); }
-    html.player.started { --ctlh: calc(var(--u) * 7.1 + 44px); }
-    html.player main { padding: 4px; }
-    html.player #gl { width: min(calc(100vw - 8px), calc((100dvh - 8px - var(--ctlh, 0px)) * var(--w, 400) / var(--h, 480)), calc(var(--w, 400) * 3px)) !important; }
+    .slider-box {
+      display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: #a1b0cb;
+    }
+    .slider-box input[type="range"] {
+      width: 90px; accent-color: #0070f3; cursor: pointer;
+    }
+
+    footer.panel {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 0.82rem; color: #8899b5;
+    }
+    .keys-hint kbd {
+      background: rgba(255, 255, 255, 0.1); border-radius: 4px; padding: 2px 6px;
+      font-family: inherit; font-size: 0.75rem; border: 1px solid rgba(255, 255, 255, 0.15);
+    }
+
+    #xrCanvas {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      display: block; z-index: 1;
+    }
+    #gl { display: none; } /* Hidden 800x480 offscreen emulator canvas */
+
+    #loading-overlay {
+      position: absolute; inset: 0; background: #0d0f15;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 16px; z-index: 50; transition: opacity 0.4s ease;
+    }
+    .spinner {
+      width: 44px; height: 44px; border: 3px solid rgba(255, 255, 255, 0.1);
+      border-top-color: #0070f3; border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+
+  <!-- Import maps polyfill for ES module support -->
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
   }
-  /* touch + landscape (layout "side", class ovl): the screens fill the width, the controls float over them, semi-transparent */
-  html.player.ovl.started main { padding: 0; justify-content: center; }
-  html.player.ovl.started #stage { display: block; width: 100%; }
-  html.player.ovl.started #gl { width: min(100vw, calc(100dvh * var(--w, 720) / var(--h, 240))) !important; border-radius: 0; box-shadow: none; }
-  html.player.ovl.started { --ctlh: 0px; }
-  html.player.ovl.started #ctl { display: block; position: fixed; inset: 0; width: auto; margin: 0; padding: 0; pointer-events: none; opacity: var(--uo, .72); }
-  html.player.ovl.noctl #ctl { display: none !important; }
-  html.player.ovl #ctl .col { display: contents; }
-  html.player.ovl #ctl b, html.player.ovl #cpad { pointer-events: auto; }
-  html.player.ovl #ctl b { background: rgba(30,35,44,.62); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
-  html.player.ovl #ctl .sh, html.player.ovl #ctl .row2, html.player.ovl #ctl .abxy, html.player.ovl #ctl b.ss { position: fixed; margin: 0; }
-  html.player.ovl #ctl .left .sh { left: max(12px, env(safe-area-inset-left)); top: 10px; }
-  html.player.ovl #ctl .right .sh { right: max(12px, env(safe-area-inset-right)); top: 10px; }
-  html.player.ovl #ctl .left .row2 { left: max(14px, env(safe-area-inset-left)); bottom: max(12px, env(safe-area-inset-bottom)); flex-direction: row; align-items: flex-end; gap: calc(var(--u) * .5); }
-  html.player.ovl #ctl .abxy { right: max(14px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); }
-  html.player.ovl #ctl b.ss[data-k=Select] { left: calc(max(12px, env(safe-area-inset-left)) + var(--u) * 1.9 + 14px); top: 10px; }
-  html.player.ovl #ctl b.ss[data-k=Start] { right: calc(max(12px, env(safe-area-inset-right)) + var(--u) * 1.9 + 14px); top: 10px; }
-  html.player.ovl #pill { top: auto; bottom: 10px; right: 50%; transform: translateX(50%); }
-</style>
-<label id="romtiny" style="display:none">📂<input type="file" id="rom-file2" accept=".3ds,.cxi,.cci,.3dsx,.elf" style="display:none"></label>
-<div id="pill"><i></i><span id="pilltxt">starting</span><u id="setbtn" title="Sizes">⚙</u><u id="fsbtn" title="Full screen">⛶</u><u id="ctlbtn" title="Show or hide the on-screen buttons">🎮</u><u id="infobtn" title="Show or hide details">ⓘ</u></div>
-<div id="set">
-  <label>Main screen <input type="range" id="s-top" min="50" max="80" step="1"><output></output></label>
-  <label>Buttons size <input type="range" id="s-us" min="60" max="150" step="5"><output></output></label>
-  <label>Buttons opacity <input type="range" id="s-uo" min="25" max="100" step="5"><output></output></label>
-  <button id="s-reset" type="button">Reset</button>
-</div>
-<main>
-  <section id="stage">
-  <div id="loading"><div class="ring"></div><div id="loadtxt">Loading the game…</div></div>
-  <div id="welcome">
-    <h1>Nintendo 3DS in your browser</h1>
-    <p>A 3DS emulator compiled to WebAssembly. It runs on your own device, nothing is uploaded. Bring your own game dump: no games are included.</p>
+  </script>
+</head>
+<body>
+
+  <div id="loading-overlay">
+    <div class="spinner"></div>
+    <div style="font-weight: 500; color: #a1b0cb;">Loading Panda3DS WebAssembly Core...</div>
   </div>
-  <canvas id="gl" width="720" height="240" style="display:none"></canvas>
-  <canvas id="top" width="400" height="240"></canvas>
-  <canvas id="bottom" width="320" height="240"></canvas>
-  <div id="toast"></div>
-  <div id="pad" style="display:none">
-    <div class="row"><b data-k="L">L</b><b data-k="R">R</b><b data-k="Select">Select</b><b data-k="Start">Start</b></div>
-    <div class="row"><span><b data-k="Up">↑</b></span></div>
-    <div class="row"><b data-k="Left">←</b><b data-k="Down">↓</b><b data-k="Right">→</b><b data-k="Y">Y</b><b data-k="X">X</b><b data-k="B">B</b><b data-k="A">A</b></div>
-  </div>
-  <div id="rom-drop" style="text-align: center; margin: 8px 0; padding: 8px; background: #1c2026; border: 1px dashed #3a424e; border-radius: 8px;">
-    <label style="cursor: pointer; color: #8be28b; font-weight: 600; padding: 4px 10px; background: #2a313d; border-radius: 4px;">
-      📂 Open a game file
-      <input type="file" id="rom-file" accept=".3ds,.cxi,.cci,.3dsx,.elf" style="display: none">
-    </label>
-    <span style="color: #888; font-size: 11px; margin-left: 8px;">or drag & drop here</span>
-  </div>
-  <div id="ctl">
-    <div class="col left">
-      <div class="sh"><b data-k="L">L<em>Q</em></b></div>
-      <b class="ss" data-k="Select">Select<em>⌫</em></b>
-      <div class="row2">
-        <div id="cpad"><div id="nub"></div><small>circle pad · arrow keys</small></div>
-        <div class="dpad"><b data-k="Up">↑</b><b data-k="Left">←</b><b data-k="Right">→</b><b data-k="Down">↓</b></div>
+
+  <div id="ui-container">
+    <header class="panel">
+      <div class="brand">
+        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/></svg>
+        <span>Panda3DS WebXR</span>
       </div>
-    </div>
-    <div class="col right">
-      <div class="sh"><b data-k="R">R<em>W</em></b></div>
-      <b class="ss" data-k="Start">Start<em>Enter</em></b>
-      <div class="abxy"><b data-k="X">X<em>S</em></b><b data-k="Y">Y<em>Y</em></b><b data-k="A">A<em>X</em></b><b data-k="B">B<em>Z</em></b></div>
-    </div>
+
+      <div class="controls-row">
+        <select id="romSelect">
+          <option value="run/examples/graphics__gpu__stereoscopic_2d.3dsx">Lenny 3D (Stereoscopic Demo)</option>
+          <option value="run/examples/graphics__gpu__textured_cube.3dsx">Textured Cube 3D</option>
+          <option value="run/examples/graphics__gpu__toon_shading.3dsx">Toon Shading 3D</option>
+          <option value="run/examples/graphics__gpu__fragment_light.3dsx">Fragment Light 3D</option>
+          <option value="run/ctr-hello.3dsx">CTR Hello World</option>
+        </select>
+
+        <label style="cursor: pointer;">
+          <input type="file" id="romFileInput" accept=".3ds,.3dsx,.cia,.cxi,.app" style="display:none;">
+          <button type="button" onclick="document.getElementById('romFileInput').click()">📁 Open ROM</button>
+        </label>
+
+        <div class="slider-box">
+          <span>3D Depth:</span>
+          <input type="range" id="depthSlider" min="0" max="1" step="0.05" value="1.0">
+          <span id="depthVal">100%</span>
+        </div>
+
+        <button id="vrBtn" class="btn-vr">🥽 Enter VR</button>
+      </div>
+
+      <div class="status-badge">
+        <div class="status-dot"></div>
+        <span id="fpsBadge">60 FPS</span>
+      </div>
+    </header>
+
+    <footer class="panel">
+      <div class="keys-hint">
+        🎮 <b>VR:</b> Thumbstick = Circle Pad | Trigger = Touch / L-R | A/B/X/Y Buttons &nbsp;|&nbsp;
+        ⌨ <b>Desktop:</b> <kbd>WASD</kbd> Pad &nbsp;<kbd>Arrows</kbd> D-Pad &nbsp;<kbd>K</kbd>=A <kbd>J</kbd>=B <kbd>I</kbd>=X <kbd>U</kbd>=Y &nbsp;<kbd>Enter</kbd>=Start
+      </div>
+      <div>Panda3DS Core WebAssembly + WebGL2</div>
+    </footer>
   </div>
-  <div id="engine">Loading the emulator (9 MB)…</div>
-  <div id="demos">No game at hand? Try a free homebrew demo:
-    <a href="?rom=/run/examples/graphics__gpu__textured_cube.3dsx">textured cube</a> ·
-    <a href="?rom=/run/examples/graphics__gpu__toon_shading.3dsx">toon shading</a> ·
-    <a href="?rom=/run/examples/graphics__gpu__fragment_light.3dsx">lighting</a></div>
-  <noscript><p style="color:#a6aebb;max-width:520px;margin:12px auto;text-align:center">This page needs JavaScript and WebAssembly: it runs a Nintendo 3DS emulator (Panda3DS) in your browser. Open source: github.com/gagarinyury/panda3ds-wasm.</p></noscript>
-  <div id="foot">.3ds · .cci · .cxi · .3dsx &nbsp;·&nbsp; <a href="https://github.com/gagarinyury/panda3ds-wasm">source on GitHub</a> (GPL-3.0) &nbsp;·&nbsp; not affiliated with Nintendo or Apple</div>
-  </section>
-  <aside id="diag">
-    <div id="stats">loading…</div>
-    <div id="hud" style="display:none"></div><div id="hudline"></div>
-    <div id="counters"></div>
-    <canvas id="spark" width="720" height="180"></canvas>
-    <small>frame time (emulator), last 240 frames; bars: green ≤ 16.7 ms, orange ≤ 2×, red above; line = budget</small>
-    <pre id="log"></pre>
-  </aside>
-</main>
-<script>
-const params = new URLSearchParams(location.search);
-const dev = params.has('dev') ? params.get('dev') === '1' : ['name', 'report', 'fscript', 'fscriptfile', 'ff', 'shots', 'rp', 'glrec', 'env', 'frames', 'turbo', 'bench'].some((k) => params.has(k)) || !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda);   // test/app launches keep the diagnostic layout
-if (!dev) document.documentElement.classList.add('player');
-if (params.get('dpad') === '1') document.documentElement.classList.add('dpad');
-if ((window.matchMedia && matchMedia('(pointer: coarse)').matches) || params.get('touch') === '1') { document.documentElement.classList.add('coarse'); addEventListener('DOMContentLoaded', () => document.querySelectorAll('input[type=file]').forEach((i) => i.removeAttribute('accept'))); }   // iOS greys out files whose type it does not know (.3ds), so no filter on touch devices
-const phone = params.get('ui') ? params.get('ui') === 'phone' : (dev && (innerWidth < 900 || /iPhone|iPod/.test(navigator.userAgent)));   // the player skin has its own responsive layout   // ui=phone|desktop overrides
-if (phone) document.documentElement.classList.add('phone');
-// test aid: rafcap=30 makes requestAnimationFrame fire at most 30 times per second (reproduces a browser that throttles the page)
-{ const cap = parseFloat(new URLSearchParams(location.search).get('rafcap') || '0');
-  if (cap) { const orig = window.requestAnimationFrame.bind(window); let last = -1e9; window.requestAnimationFrame = (cb) => orig(function f(t) { if (t - last < 1000 / cap - 2) return void orig(f); last = t; cb(t); }); } }
-const rom = params.get('rom') || '/run/ctr-hello.3dsx';   // absolute path on the dev server / app scheme
-const maxFrames = parseInt(params.get('frames') || '0');   // 0 = run forever
-const report = params.get('report') === '1';               // send a result to the host (server or native app) when done
-const audioMode = params.get('turbo') === '1' || (params.get('env') || '').indexOf('AUDIO:0') >= 0 ? '0' : (params.get('audio') || 'on');   // audio=0 off; on = HLE DSP + output device; dsp = HLE DSP only; dev = output device only (debugging aids); turbo runs are silent
-const audioOn = audioMode === 'on' || audioMode === 'dev';
-const turbo = params.get('turbo') === '1';
-// rp=<frame>: from that emulated frame on, the emulator is replaced by the replay of the frame recorded in IndexedDB (glrec.js), run through the same loop, canvas and
-// telemetry: does the loop still drop to 22 Hz when the emulator is not producing the GL calls? rpcpu = ms of busy work per replayed frame (stand-in for the emulator).
-const rpFrom = parseInt(params.get('rp') || '0'), rpCpu = parseFloat(params.get('rpcpu') || '9'); let rpFrame = null, rpState = 0;   // 0 off, 1 loading, 2 replaying
-let rpData = null;
-if (rpFrom) {   // load the recorded frame in the background: IndexedDB first (recorded on the phone), else glframe.json next to the page
-  const fromFile = () => fetch('glframe.json').then((r) => r.json()).then((d) => { rpData = d; }).catch(() => {});
-  try { const rq = indexedDB.open('glrec', 1); rq.onupgradeneeded = () => rq.result.createObjectStore('frames');
-    rq.onsuccess = () => { const g = rq.result.transaction('frames').objectStore('frames').get('glframe'); g.onsuccess = () => { if (g.result) rpData = JSON.parse(g.result); else fromFile(); }; g.onerror = fromFile; }; rq.onerror = fromFile; } catch (e) { fromFile(); }
-}
-const ffTo = parseInt(params.get('ff') || '0');                // ff=6000: run flat out until that emulated frame, then at the normal speed (skips the intro of a test route)
-const fast = () => turbo || (ffTo > 0 && frames < ffTo);                 // run as fast as possible (benchmark) instead of real time
-const name = params.get('name') || 'run';
-const useGL = params.has('gl') ? params.get('gl') === '1' : !dev;                     // OpenGL ES renderer on a WebGL2 canvas instead of the Null renderer + 2D canvases
-const side = (params.get('layout') || (dev ? (innerWidth >= 900 ? 'side' : 'stack') : (document.documentElement.classList.contains('coarse') && innerWidth > innerHeight * 1.25 ? 'side' : 'stack'))) === 'side';   // both screens next to each other (720x240) or one above the other (400x480)
-const GLW = side ? 720 : 400, GLH = side ? 240 : 480;
-if (!dev && side) document.documentElement.classList.add('ovl');
-let bottomRect = null, lastLay = '';   // bottom screen inside the canvas (canvas pixels), once the core has laid the screens out
-function applyLayout() {   // player skin: re-lay the screens out whenever the window changes shape (rotation, resize). Needs the core's web_layout; older cores keep the layout chosen at load.
-  const g = document.getElementById('gl'), de = document.documentElement; if (!g) return;
-  const land = innerWidth > innerHeight * 1.25, touchy = de.classList.contains('coarse');
-  if (window.Module && Module._web_layout && Module._web_layout_rect) {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2); let cw, ch, layout, pct, mode;
-    const side2 = () => { cw = innerWidth; ch = innerHeight; layout = land ? 2 : 0; pct = window.__sizes && window.__sizes.top ? window.__sizes.top / 100 : (land ? Math.min(0.72, Math.max(0.5, 400 * (ch / 240) / cw)) : 0.5); mode = 'ovl'; };
-    if (touchy && land) side2();                                                                                                                              // big top screen on the left, small bottom screen right, controls float over them
-    else if (land && innerWidth >= 700) { mode = 'flank'; cw = 400; ch = 480; layout = 0; pct = 0.5; }                                                         // desktop: the CSS grid sizes the canvas; native 400x480, screens one above the other
-    else {   // portrait, or a window too narrow for side columns: screens on top, controls below; if there is not enough room for both, the controls float over the picture
-      const shown = !de.classList.contains('noctl'), ub = document.querySelector('#ctl .abxy b'), u = (ub && parseFloat(getComputedStyle(ub).height)) || 46, cs = shown ? u * 7.1 + 44 : 8, avail = innerHeight - cs - 8;
-      if (shown && avail < 200) side2();
-      else { mode = 'port'; ch = Math.max(140, avail); cw = Math.min(innerWidth - 8, Math.round(ch * 400 / 480)); layout = 0; pct = window.__sizes && window.__sizes.top ? window.__sizes.top / 100 : 0.5; }
-    }
-    de.classList.toggle('ovl', mode === 'ovl');
-    if (mode === 'flank') { g.style.removeProperty('width'); g.style.removeProperty('height'); } else { g.style.setProperty('width', Math.round(cw) + 'px', 'important'); g.style.setProperty('height', Math.round(ch) + 'px', 'important'); }
-    const W = mode === 'flank' ? 400 : Math.round(cw * dpr), H = mode === 'flank' ? 480 : Math.round(ch * dpr), key = mode + W + 'x' + H + ':' + pct.toFixed(3);
-    if (key !== lastLay) { lastLay = key; g.width = W; g.height = H; Module._web_layout(W, H, layout, pct); bottomRect = [0, 1, 2, 3].map((i) => Module._web_layout_rect(i)); }
-  } else if (!dev && side) { const w = Math.floor(Math.min(innerWidth, innerHeight * GLW / GLH)); g.style.setProperty('width', w + 'px', 'important'); g.style.setProperty('height', Math.round(w * GLH / GLW) + 'px', 'important'); }
-}
-if (!dev) { addEventListener('resize', applyLayout); addEventListener('orientationchange', applyLayout); if (window.visualViewport) visualViewport.addEventListener('resize', applyLayout); addEventListener('DOMContentLoaded', applyLayout); setInterval(applyLayout, 1200); }
-if (!dev) { document.documentElement.style.setProperty('--w', GLW); document.documentElement.style.setProperty('--h', GLH); }
-const useTimer = (params.get('pace') || (innerWidth >= 900 ? 'timer' : 'raf')) === 'timer';   // emulation clock from a timer (independent of how often the browser repaints) on desktop; rAF on phones
-const scale = parseFloat(params.get('scale') || '1.5');                // on-page size of the screens relative to the 3DS native size
-const dbg = params.get('dbg') === '1';                      // post every frame (find where a crash happens)
-// The WebGL canvas does NOT preserve its drawing buffer by default any more (in WebKit the copy made on every present halves the loop rate in heavy scenes: Safari, W1 world map,
-// 13-16 Hz with it, 19-46 Hz without). It is kept (GL_PRESERVE) only where something reads the picture back: shots=, glrec, and report runs in a desktop browser (tests).
-const needPreserve = params.get('preserve') === '1' || (params.get('shots') || '0') !== '0' || !!params.get('glrec') || (params.get('report') === '1' && !window.webkit);
-// ?skipcalls=bindFramebuffer,framebufferTexture2D: make those WebGL calls no-ops (a measuring aid: the picture breaks, the time of what is left is what counts)
-{ const sk = (params.get('skipcalls') || '').split(',').filter(Boolean); if (sk.length && window.WebGL2RenderingContext) for (const k of sk) { if (typeof WebGL2RenderingContext.prototype[k] === 'function') WebGL2RenderingContext.prototype[k] = function () {}; } }
-const envs = (params.get('env') || '') + (needPreserve ? ',GL_PRESERVE:1' : '');   // e.g. env=JIT_NOCHAIN:1,JIT_NOFASTMEM:1
-const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda;
-const logEl = document.getElementById('log');
-const errors = [];
-const FRAME_MS = 1000 / 59.83;                              // 3DS refresh rate
-const liveOn = !native0() && params.get('live') !== '0' && location.hostname === '127.0.0.1';   // dev server: the page reports its panel to /live once a second so the developer sees what the person at the screen sees
-if (liveOn && window.WebGL2RenderingContext) {   // dev only: report WebGL calls that block the page for more than 25 ms (shader link/first-use, big allocations)
-  const P = WebGL2RenderingContext.prototype;
-  for (const k of ['linkProgram', 'compileShader', 'useProgram', 'drawElements', 'drawArrays', 'drawRangeElements', 'texImage2D', 'texStorage2D', 'bufferData', 'getProgramParameter', 'getShaderParameter', 'validateProgram']) {
-    const orig = P[k]; if (!orig) continue;
-    P[k] = function (...a) { const t = performance.now(); const r = orig.apply(this, a); const d = performance.now() - t; if (d > 25) post('log', { msg: '[gl] slow ' + k + ' ' + d.toFixed(0) + ' ms at frame ' + (typeof frames === 'number' ? frames : '?') }); return r; };
-  }
-}
-const glProf = (params.get('env') || '').indexOf('GL_PROF') >= 0;   // env GL_PROF:1 on the phone: send the per-frame WebGL time and the costliest calls to the host
-if (glProf) {   // dev only (env GL_PROF:1): a fixed CPU benchmark (compare browsers) and the time per emulated frame spent inside WebGL calls, sent to /live
-  setTimeout(() => { const t = performance.now(); let x = 0; for (let i = 0; i < 2e7; i++) x += i % 7; post('log', { msg: '[gl] bench js 2e7 loop ' + (performance.now() - t).toFixed(0) + ' ms (x=' + x + ') ua=' + navigator.userAgent.slice(-40) }); }, 3000);
-  if (window.WebGL2RenderingContext) {
-    const P = WebGL2RenderingContext.prototype, acc = { ms: 0, n: 0 }, per = {};
-    for (const k of Object.getOwnPropertyNames(P)) {
-      let d; try { d = P[k]; } catch (e) { continue; } if (typeof d !== 'function' || k === 'constructor' || /^get|^is|^create|^delete/.test(k)) continue;
-      const orig = d; P[k] = function (...a) { const t = performance.now(); const r = orig.apply(this, a); const dt = performance.now() - t; acc.ms += dt; acc.n++; const o = per[k] || (per[k] = { n: 0, ms: 0 }); o.n++; o.ms += dt; return r; };
-    }
-    setInterval(() => { const A = window.__audio; post('log', { msg: '[audio] ' + (A.ctxs.length ? A.ctxs[0].state + ' rate ' + A.rate + ' level ' + A.rms.toFixed(4) + ' peak ' + A.peak.toFixed(3) : 'no device yet') }); }, 5000);
-    let lastF = 0;
-    setInterval(() => { const f = typeof frames === 'number' ? frames : 0, df = f - lastF; if (df < 20) return; lastF = f; const top = Object.entries(per).sort((a, b) => b[1].ms - a[1].ms).slice(0, 4).map(([k, v]) => k + ' ' + (v.ms / df).toFixed(1) + 'ms x' + Math.round(v.n / df)).join(', ');
-      post('log', { msg: '[gl] frame ' + f + ': GL calls ' + (acc.ms / df).toFixed(1) + ' ms/frame, ' + Math.round(acc.n / df) + ' calls/frame; top: ' + top }); acc.ms = 0; acc.n = 0; for (const k in per) delete per[k]; }, 4000);
-  }
-}
-function native0() { return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda); }
-const post = (type, payload) => {
-  if (native) native.postMessage(JSON.stringify({ type, name, ...payload }));
-  else if (liveOn && (type === 'tick' || type === 'hitch' || type === 'gpuwait' || (type === 'log' && /\[jit\]|\[gl\]|\[drawbuf\]|\[bench\]|\[audio|\[abort\]|FATAL|panic|warning|unimplemented|failed|abort/i.test(payload.msg || '')))) fetch('/live?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({ type, t: Date.now(), ...payload }), keepalive: true }).catch(() => {});
-};
-const log = (s, err) => {
-  if (err && window.__showErr && document.documentElement.classList.contains('player')) window.__showErr(String(s).slice(0, 400));
-  const lines = logEl.textContent.split('\n');
-  if (lines.length > 50) logEl.textContent = lines.slice(-40).join('\n') + '\n';
-  logEl.textContent += s + '\n';
-  logEl.scrollTop = logEl.scrollHeight;
-  if (err) { errors.push(s); post('error', { msg: s }); }
-};
-// Frame hitch attribution: time spent in WebGL calls that can block on shader compilation / allocation, summed per frame (see runFrame)
-window.__glSlow = { ms: 0 };
-if (window.WebGL2RenderingContext) {
-  const P = WebGL2RenderingContext.prototype;
-  for (const k of ['linkProgram', 'compileShader', 'getProgramParameter', 'getShaderParameter', 'texImage2D', 'texStorage2D']) {   // rare calls only: a wrapper on a per-draw call (useProgram) cost a few % of the CPU
-    const orig = P[k]; if (!orig) continue;
-    P[k] = function (...a) { const t = performance.now(); const r = orig.apply(this, a); const d = performance.now() - t; if (d > 4) window.__glSlow.ms += d; return r; };
-  }
-}
-const finishProbe = !!(params.get('env') || '').indexOf && (params.get('env') || '').indexOf('GL_FINISH') >= 0, finishStat = { n: 0, sum: 0, max: 0, over: 0 };
-// Frame sync (env GL_SYNC:1): wait for the GPU with a 1-pixel read at the end of every frame. OFF by default: it serialises the GPU time with the CPU time, which cost
-// 7-9 ms a frame in the heavy iPhone demo scene (35-47 fps instead of ~60). Kept as a measuring aid (how long the GPU needs per frame).
-const frameSync = (params.get('env') || '').indexOf('GL_SYNC:1') >= 0;
-let finishCtx = null; const finishPx = new Uint8Array(4);   // taken on first use: the emulator must be the one that creates the context (its attributes: depth, stencil)
-// Measuring aid (env GL_DROP:idx|vtx|ubo): skip the orphaning glBufferData of one buffer kind after its first allocations (the old contents stay): shows what the allocations cost the GPU process
-{
-  const dm = /GL_DROP:(\w+)/.exec(params.get('env') || '');
-  if (dm && window.WebGL2RenderingContext) {
-    const target = { idx: 34963, vtx: 34962, ubo: 35345 }[dm[1]], seen = {}, P = WebGL2RenderingContext.prototype, orig = P.bufferData;
-    P.bufferData = function (t, ...a) { if (t === target && (seen[t] = (seen[t] || 0) + 1) > 8) return; return orig.call(this, t, ...a); };
-  }
-}
-// Measuring aid (env GL_NODRAW:1): keep every buffer allocation and upload but skip the draw calls themselves: what is left is the cost of the uploads
-if ((params.get('env') || '').indexOf('GL_NODRAW') >= 0 && window.WebGL2RenderingContext) {
-  const P = WebGL2RenderingContext.prototype;
-  for (const k of ['drawElements', 'drawArrays', 'drawRangeElements', 'drawElementsInstanced', 'drawArraysInstanced']) if (P[k]) P[k] = function () {};
-}
-// Measuring aid (env GL_FBCACHE:1): skip bindFramebuffer / framebufferTexture2D calls that set what is already set. On tile-based GPUs (Apple) re-attaching the same
-// texture can end the render pass, so ~140 of these a frame could be what the GPU spends its time on
-if ((params.get('env') || '').indexOf('GL_FBCACHE') >= 0 && window.WebGL2RenderingContext) {
-  const P = WebGL2RenderingContext.prototype, boundFb = { 36008: null, 36009: null }, att = new Map(), stat = window.__fbcache = { binds: 0, bindsSkipped: 0, atts: 0, attsSkipped: 0 };
-  const origBind = P.bindFramebuffer, origAtt = P.framebufferTexture2D, origDelFb = P.deleteFramebuffer, origDelTex = P.deleteTexture;
-  P.bindFramebuffer = function (t, fb) { stat.binds++; if (t === 36160) { if (boundFb[36008] === fb && boundFb[36009] === fb) { stat.bindsSkipped++; return; } boundFb[36008] = boundFb[36009] = fb; } else if (boundFb[t] === fb) { stat.bindsSkipped++; return; } else boundFb[t] = fb; return origBind.call(this, t, fb); };
-  P.framebufferTexture2D = function (t, a, tt, tex, lvl) {
-    stat.atts++; const fb = t === 36008 ? boundFb[36008] : boundFb[36009]; let m = att.get(fb); if (!m) att.set(fb, m = new Map());
-    const cur = m.get(a); if (cur && cur[0] === tt && cur[1] === tex && cur[2] === lvl) { stat.attsSkipped++; return; }
-    m.set(a, [tt, tex, lvl]); return origAtt.call(this, t, a, tt, tex, lvl);
-  };
-  P.deleteFramebuffer = function (fb) { att.delete(fb); return origDelFb.call(this, fb); };
-  P.deleteTexture = function (tex) { for (const m of att.values()) for (const [a, v] of m) if (v[1] === tex) m.delete(a); return origDelTex.call(this, tex); };
-  setInterval(() => post('log', { msg: '[gl] fbcache binds ' + stat.binds + ' (skipped ' + stat.bindsSkipped + '), attachments ' + stat.atts + ' (skipped ' + stat.attsSkipped + ')' }), 5000);
-}
-// Measuring aids: env GL_TINYSCISSOR:1 clips every draw to one pixel (vertex work stays, pixel work goes); env GL_MEDIUMP:1 turns `precision highp float` into mediump in shader sources
-{
-  const e = params.get('env') || '', P = window.WebGL2RenderingContext && WebGL2RenderingContext.prototype;
-  if (P && e.indexOf('GL_TINYSCISSOR') >= 0) {
-    for (const k of ['drawElements', 'drawArrays', 'drawRangeElements']) { const o = P[k]; if (o) P[k] = function (...a) { this.enable(3089); this.scissor(0, 0, 1, 1); return o.apply(this, a); }; }
-  }
-  if (P && e.indexOf('GL_MEDIUMP') >= 0) { const o = P.shaderSource; P.shaderSource = function (sh, src) { return o.call(this, sh, src.replace(/precision\s+highp\s+float\s*;/g, 'precision mediump float;')); }; }
-}
-// Measuring aid (env GL_FEWVERTS:1): every draw call uses at most 3 vertices/indices: shows whether the GPU time depends on the vertex count
-if ((params.get('env') || '').indexOf('GL_FEWVERTS') >= 0 && window.WebGL2RenderingContext) {
-  const P = WebGL2RenderingContext.prototype;
-  const oe = P.drawElements, od = P.drawRangeElements, oa = P.drawArrays;
-  P.drawElements = function (m, c, t, o) { return oe.call(this, m, Math.min(c, 3), t, o); };
-  P.drawRangeElements = function (m, s, e, c, t, o) { return od.call(this, m, s, e, Math.min(c, 3), t, o); };
-  P.drawArrays = function (m, f, c) { return oa.call(this, m, f, Math.min(c, 3)); };
-}
-const hitchStats = { jit: 0, shader: 0, other: 0, total: 0, worst: 0, recent: [] };
-// Audio: miniaudio's Web Audio backend creates a ScriptProcessorNode. Browsers keep the context suspended until a user gesture: resume it on the first one.
-// An analyser tapped onto the node gives the output level (shown in the panel) so sound can be checked without listening.
-window.__audio = { ctxs: [], rms: 0, peak: 0, rate: 0 };
-(function () {
-  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
-  const csp = AC.prototype.createScriptProcessor, A = window.__audio;
-  AC.prototype.createScriptProcessor = function (...a) {
-    const node = csp.apply(this, a); if (A.ctxs.indexOf(this) < 0) A.ctxs.push(this); A.rate = this.sampleRate;
-    try { const an = this.createAnalyser(); an.fftSize = 2048; node.connect(an); A.analyser = an; } catch (e) {}
-    return node;
-  };
-  // iOS mutes Web Audio while the ringer switch is on silent, but not an <audio> element: a looping silent clip started in a gesture makes sound play anyway (the 'unmute' trick)
-  let unmuteEl = null;
-  const unmute = () => { if (unmuteEl) return; try { unmuteEl = document.createElement('audio'); unmuteEl.src = 'data:audio/wav;base64,UklGRpYDAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YXIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='; unmuteEl.loop = true; unmuteEl.setAttribute('playsinline', ''); unmuteEl.play().catch(() => { unmuteEl = null; }); } catch (e) { unmuteEl = null; } };
-  const resume = () => { unmute(); for (const c of A.ctxs) if (c.state !== 'running') c.resume().catch(() => {}); };
-  for (const ev of ['pointerdown', 'keydown', 'touchstart', 'click']) window.addEventListener(ev, resume, { capture: true });
-  if (new URLSearchParams(location.search).get('beep') === '1') {   // output test: a 440 Hz tone for one second on the first click or key, independent of the emulator
-    const once = () => { try { const c = new AC(), o = c.createOscillator(), g = c.createGain(); g.gain.value = 0.2; o.frequency.value = 440; o.connect(g); g.connect(c.destination); c.resume().then(() => { o.start(); setTimeout(() => o.stop(), 1000); }); } catch (e) {} for (const ev of ['pointerdown', 'keydown', 'touchstart', 'click']) window.removeEventListener(ev, once, true); };
-    for (const ev of ['pointerdown', 'keydown', 'touchstart', 'click']) window.addEventListener(ev, once, true);
-  }
-  if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.panda) setInterval(() => { try { window.webkit.messageHandlers.panda.postMessage(JSON.stringify({ type: 'audio', state: A.ctxs.length ? A.ctxs[0].state : 'none', rate: A.rate, level: +A.rms.toFixed(4), peak: +A.peak.toFixed(3) })); } catch (e) {} }, 3000);
-  setInterval(() => { if (!A.analyser) return; const d = new Float32Array(A.analyser.fftSize); A.analyser.getFloatTimeDomainData(d); let sq = 0, pk = 0; for (const v of d) { sq += v * v; if (Math.abs(v) > pk) pk = Math.abs(v); } A.rms = Math.sqrt(sq / d.length); A.peak = pk; }, 500);
-})();
-var Module = {
-  onAbort: (what) => { let st = ''; try { st = new Error().stack.split('\n').slice(2, 14).map((l) => l.trim().replace(/^at /, '')).join(' < '); } catch (e) {} log('[ABORT] ' + what + ' | ' + st, true); post('log', { msg: '[abort] ' + what + ' | ' + st.slice(0, 900) }); },
-  canvas: document.getElementById('gl'),
-  print: (s) => { if (typeof s === 'string' && s.startsWith('[state]')) { (window.__state || (window.__state = [])).push(s); if (window.__state.length > 4000) window.__state.splice(0, 2000); return; } log(s, /\[FATAL\]/.test(s)); post('log', { msg: String(s).slice(0, 300) }); },
-  printErr: (s) => { log(s, /error|fatal|abort|unsupported|failed/i.test(s)); post('log', { msg: '[err] ' + String(s).slice(0, 300) }); },
-  preRun: [() => {
-    // the clean player keeps the game's data (saves, SD card) by default, test layouts only with persist=1; persist=0 switches it off
-    if (params.has('persist') ? params.get('persist') === '1' : !dev) {   // keep the emulator's app data (SD card, game saves) in IndexedDB between runs: first-run dialogs of a game do not repeat
-      Module.FS.mkdirTree('/libsdl/Alber/rom'); Module.FS.mount(Module.FS.filesystems.IDBFS, {}, '/libsdl/Alber/rom');
-      Module.addRunDependency('idbfs'); Module.FS.syncfs(true, (err) => { if (err) log('IDBFS load failed: ' + err, true); else log('persistent app data loaded'); Module.removeRunDependency('idbfs'); });
-      let syncing = false; setInterval(() => { if (syncing) return; syncing = true; Module.FS.syncfs(false, () => { syncing = false; }); }, 4000);
-      addEventListener('pagehide', () => { try { Module.FS.syncfs(false, () => {}); } catch (e) {} }); document.addEventListener('visibilitychange', () => { if (document.hidden) { try { Module.FS.syncfs(false, () => {}); } catch (e) {} } });
-    }
-    for (const kv of envs.split(',').filter(Boolean)) { const [k, v] = kv.split(':'); Module.ENV[k] = v || '1'; }
-    // render with no GPU backend and no audio: only the presented framebuffers are shown
-    Module.FS.writeFile('/config.toml', `[GPU]\nRenderer = "${useGL ? 'opengl' : 'null'}"\nScreenLayout = "${side ? 'SideBySide' : 'Default'}"\nTopScreenSize = ${side ? 0.5556 : 0.5}\nEnableShaderJIT = false\n[Audio]\nEnableAudio = ${audioMode === 'on' || audioMode === 'dev'}\nDSPEmulation = "${audioMode === 'on' || audioMode === 'dsp' ? 'HLE' : 'Null'}"\n`);
-  }],
-  onRuntimeInitialized: () => { if (!Module._ma_device__on_notification_unlocked) Module._ma_device__on_notification_unlocked = () => {}; /* miniaudio's Web Audio code calls this C function after the first click unlocks sound; our build does not export it (it only reports 'unlocked' to the audio device, nothing uses it), so a no-op keeps the red error away */ start().catch((e) => { log('start failed: ' + e, true); finish(); }); },
-};
-let t0 = 0, frames = 0, running = true, worst = 0, sum = 0, late = 0, lastTick = 0, acc = 0, lastBeat = 0, hitches = 0;
-const ctx = ['top', 'bottom'].map((id) => document.getElementById(id).getContext('2d'));
-const imgs = [new ImageData(400, 240), new ImageData(320, 240)];
-const mem = () => { const j = Module.jit && Module.jit.impls[0]; return { wasmMB: Module.HEAPU8 ? Math.round(Module.HEAPU8.length / 1048576) : 0, blocks: j ? (j.count || 0) : 0, jitKB: j ? Math.round((j.bytes || 0) / 1024) : 0, packMs: j && Module.jit.t ? Math.round(Module.jit.t[3] || 0) : 0, batches: j ? (j.batches || 0) : 0, compMs: Module.jit && Module.jit.t ? Math.round((Module.jit.t[1] || 0) + (Module.jit.t[2] || 0)) : 0 }; };
 
-function draw() {
-  if (useGL) return;
-  [1, 0].forEach((top) => {
-    const p = Module._web_screen(top);
-    if (!p) return;
-    const n = top ? 400 * 240 * 4 : 320 * 240 * 4;
-    imgs[top ? 0 : 1].data.set(Module.HEAPU8.subarray(p, p + n));
-    ctx[top ? 0 : 1].putImageData(imgs[top ? 0 : 1], 0, 0);
-  });
-}
+  <canvas id="gl" width="800" height="480"></canvas>
+  <canvas id="xrCanvas"></canvas>
 
-// ---- WebGL redundancy filter: the PICA renderer re-sets the same state before every draw (Doom: ~170 draws per frame, ~10 GL calls each),
-// and every WebGL call costs ~10-30 us. Skip calls that would not change anything. Opt-in with filter=1. ----
-function installGLFilter() {
-  const P = WebGL2RenderingContext.prototype, wrap = (name, make) => { const o = P[name]; P[name] = make(o); };
-  let vp = null, unit = 0, bc = null;
-  const tex = new Map(), ubo = new Map(), fbTex = new Map(), bound = { 36160: null, 36009: null, 36008: null };
-  wrap('viewport', (o) => function (x, y, w, h) { if (vp && vp[0] === x && vp[1] === y && vp[2] === w && vp[3] === h) return; vp = [x, y, w, h]; return o.call(this, x, y, w, h); });
-  wrap('activeTexture', (o) => function (u) { if (u === unit) return; unit = u; return o.call(this, u); });
-  wrap('bindTexture', (o) => function (t, h) { const k = unit * 100000 + t; if (tex.get(k) === h) return; tex.set(k, h); return o.call(this, t, h); });
-  wrap('blendColor', (o) => function (r, g, b, a) { if (bc && bc[0] === r && bc[1] === g && bc[2] === b && bc[3] === a) return; bc = [r, g, b, a]; return o.call(this, r, g, b, a); });
-  wrap('bindBufferRange', (o) => function (t, i, b, off, size) { const k = t * 1000 + i, v = ubo.get(k); if (v && v[0] === b && v[1] === off && v[2] === size) return; ubo.set(k, [b, off, size]); return o.call(this, t, i, b, off, size); });
-  wrap('bindFramebuffer', (o) => function (t, f) { if (t === 36160) { bound[36160] = bound[36009] = bound[36008] = f; } else bound[t] = f; return o.call(this, t, f); });
-  wrap('framebufferTexture2D', (o) => function (t, a, tt, h, lvl) {
-    const f = t === 36008 ? bound[36008] : (t === 36009 ? bound[36009] : bound[36160]); let m = fbTex.get(f);
-    if (!m) fbTex.set(f, m = new Map());
-    const k = a + ':' + tt + ':' + lvl; if (m.get(k) === h) return; m.set(k, h); return o.call(this, t, a, tt, h, lvl);
-  });
-  // any change that could invalidate a cached binding resets the caches
-  const reset = () => { tex.clear(); ubo.clear(); fbTex.clear(); vp = null; };
-  for (const n of ['deleteTexture', 'deleteFramebuffer', 'deleteBuffer', 'deleteProgram', 'deleteVertexArray']) wrap(n, (o) => function (...a) { reset(); return o.apply(this, a); });
-  for (const n of ['texImage2D', 'texStorage2D', 'texStorage3D', 'texImage3D', 'renderbufferStorage']) wrap(n, (o) => function (...a) { fbTex.clear(); return o.apply(this, a); });   // storage (re)specification can detach it from an FBO
-}
-if (useGL && params.get('filter') === '1') installGLFilter();   // opt-in: measured no gain on Doom (the cost is per draw, not redundant state)
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-// ---- input: keyboard, touch / mouse on the bottom screen, on-screen buttons ----
-const KEYS = { A: 1, B: 2, Select: 4, Start: 8, Right: 16, Left: 32, Up: 64, Down: 128, R: 256, L: 512, X: 1024, Y: 2048 };
-const KEYMAP = {
-  KeyX: 'A', KeyA: 'A', Space: 'A',
-  KeyZ: 'B', KeyB: 'B',
-  KeyS: 'X',
-  KeyY: 'Y',
-  KeyQ: 'L', KeyW: 'R', KeyE: 'R',
-  Enter: 'Start', ShiftRight: 'Select', Backspace: 'Select',
-  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right'
-};
-const held = new Set();
-function updateCirclePad() {
-  if (!Module._web_circle) return;
-  let cx = 0, cy = 0;
-  if (held.has('Left')) cx -= 156;
-  if (held.has('Right')) cx += 156;
-  if (held.has('Up')) cy += 156;
-  if (held.has('Down')) cy -= 156;
-  if (cx && cy) { cx = Math.round(cx * 0.7071); cy = Math.round(cy * 0.7071); }   // a diagonal is still a full-radius push, not a corner of the square
-  Module._web_circle(cx, cy);
-}
-function press(name, down) {
-  if (!Module._web_key) return;
-  down ? held.add(name) : held.delete(name);
-  Module._web_key(KEYS[name], down ? 1 : 0);
-  if (name === 'Up' || name === 'Down' || name === 'Left' || name === 'Right') {
-    updateCirclePad();
-  }
-  document.querySelectorAll(`#pad b[data-k="${name}"], #ctl b[data-k="${name}"]`).forEach((e) => e.classList.toggle('on', down));
-}
-addEventListener('keydown', (e) => { const n = KEYMAP[e.code]; if (n) { e.preventDefault(); if (!e.repeat) press(n, true); } });
-addEventListener('keyup', (e) => { const n = KEYMAP[e.code]; if (n) { e.preventDefault(); press(n, false); } });
-document.querySelectorAll('#pad b, #ctl b').forEach((b) => {
-  b.addEventListener('pointerdown', (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId); press(b.dataset.k, true); if (navigator.vibrate) navigator.vibrate(7); });
-  const up = () => press(b.dataset.k, false);
-  b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up);
-});
-{   // the circle pad ("mushroom") on the on-screen controller: drag the nub, the offset (-1..1) becomes -156..156 for the core
-  const cp = document.getElementById('cpad'), nub = document.getElementById('nub');
-  if (cp) { let id = null;
-    const move = (e) => { const r = cp.getBoundingClientRect(), R = r.width / 2; const SAT = 0.6;   // a thumb rarely travels to the rim: full tilt (156, what the real pad reports at its edge) is reached at 60 % of the radius
-      let dx = (e.clientX - (r.left + R)) / (R * SAT), dy = (e.clientY - (r.top + R)) / (R * SAT); const m = Math.hypot(dx, dy); if (m > 1) { dx /= m; dy /= m; }
-      nub.style.transform = 'translate(' + (dx * R * 0.5) + 'px,' + (dy * R * 0.5) + 'px)'; if (Module._web_circle) Module._web_circle(Math.round(dx * 156), Math.round(-dy * 156)); };
-    const end = () => { id = null; cp.classList.remove('drag'); nub.style.transform = ''; if (Module._web_circle) Module._web_circle(0, 0); };
-    cp.addEventListener('pointerdown', (e) => { e.preventDefault(); id = e.pointerId; cp.setPointerCapture(id); cp.classList.add('drag'); move(e); });
-    cp.addEventListener('pointermove', (e) => { if (e.pointerId === id) move(e); });
-    cp.addEventListener('pointerup', end); cp.addEventListener('pointercancel', end);
-  }
-}
-function touchAt(e, down) {   // bottom screen (320x240) inside the GL canvas: side by side -> x 400..720, y 0..240; stacked -> x 40..360, y 240..480
-  if (!Module._web_touch) return;
-  const c = document.getElementById('gl'), r = c.getBoundingClientRect();
-  let x, y;
-  if (bottomRect) { x = ((e.clientX - r.left) * c.width / r.width - bottomRect[0]) * 320 / bottomRect[2]; y = ((e.clientY - r.top) * c.height / r.height - bottomRect[1]) * 240 / bottomRect[3]; }
-  else { x = (e.clientX - r.left) * GLW / r.width - (side ? 400 : 40); y = (e.clientY - r.top) * GLH / r.height - (side ? 0 : 240); }
-  if (down && x >= 0 && x < 320 && y >= 0 && y < 240) Module._web_touch(Math.floor(x), Math.floor(y), 1); else Module._web_touch(0, 0, 0);
-}
-{
-  const c = document.getElementById('gl'); let dragging = false;
-  let tapA = false;
-  const onTopScreen = (e) => { const r = c.getBoundingClientRect(); return !side && (e.clientY - r.top) * GLH / r.height < 240; };
-  c.addEventListener('pointerdown', (e) => { dragging = true; c.setPointerCapture(e.pointerId); if (phone && onTopScreen(e)) { tapA = true; press('A', true); } else touchAt(e, true); });
-  c.addEventListener('pointermove', (e) => { if (dragging) touchAt(e, true); });
-  const end = (e) => {
-    dragging = false;
-    if (tapA) { tapA = false; setTimeout(() => press('A', false), 120); return; }
-    // Hold touch briefly so guest HID polling always captures the tap
-    setTimeout(() => touchAt(e, false), 50);
-  };
-  c.addEventListener('pointerup', end); c.addEventListener('pointercancel', end);
-  c.style.touchAction = 'none';
-}
-
-async function loadRomBuffer(buf, filename) {
-  document.documentElement.classList.add('started');
-  const extMatch = filename.split('?')[0].split('#')[0].match(/\.([a-zA-Z0-9]+)$/);
-  const ext = extMatch ? '.' + extMatch[1].toLowerCase() : '.3dsx';
-  const guestPath = '/rom' + ext;
-  document.getElementById('stats').textContent = `mounting ${filename} (${(buf.byteLength / 1048576).toFixed(1)} MB)...`;
-  log(`loading ${filename} (${(buf.byteLength / 1048576).toFixed(1)} MB) as ${guestPath}...`);
-  try { Module.FS.unlink(guestPath); } catch (e) {}
-  Module.FS.writeFile(guestPath, new Uint8Array(buf));
-  return bootRom(guestPath, filename);
-}
-
-async function bootRom(guestPath, filename) {
-  if (params.get('dsp') !== '0') {
-    Module.FS.mkdirTree('/libsdl/Alber/rom/SDMC/3ds');
-    try { Module.FS.writeFile('/libsdl/Alber/rom/SDMC/3ds/dspfirm.cdc', new Uint8Array(262144)); } catch (e) {}
-  }
-  for (const item of (params.get('sd') || '').split(',').filter(Boolean)) {
-    const [url, dest] = item.split('@');
-    const r = await fetch(url);
-    if (!r.ok) { log('sd file ' + url + ': HTTP ' + r.status, true); continue; }
-    const full = '/libsdl/Alber/rom/SDMC/' + dest, dir = full.slice(0, full.lastIndexOf('/'));
-    Module.FS.mkdirTree(dir);
-    Module.FS.writeFile(full, new Uint8Array(await r.arrayBuffer()));
-    log('sd: ' + dest);
-  }
-
-  document.getElementById('stats').textContent = `booting ${guestPath}...`;
-  const ok = Module.ccall('web_load', 'number', ['string'], [guestPath]);
-  log('web_load ' + filename + ' -> ' + ok);
-  post('loaded', { rom: filename, ok, ...mem(), ua: navigator.userAgent });
-  if (!ok) {
-    log('[FATAL] web_load failed for ' + filename, true);
-    finish();
-    return;
-  }
-  frames = 0; sum = 0; worst = 0; late = 0; hitches = 0;
-  running = true;
-  t0 = performance.now(); lastTick = t0;
-  // unattended runs: script=A@30,A@39,B@48 presses a button for 250 ms at the given seconds after boot; shots=10 posts a canvas screenshot every 10 s
-  for (const item of (params.get('script') || '').split(',').filter(Boolean)) { const [b, sec] = item.split('@'); setTimeout(() => { press(b, true); setTimeout(() => press(b, false), 250); }, +sec * 1000); }
-  const shotEvery = +params.get('shots') || 0;
-  if (shotEvery && useGL) setInterval(() => { try { post('shot', { png: document.getElementById('gl').toDataURL('image/png') }); } catch (e) {} }, shotEvery * 1000);
-  schedule();
-}
-
-// Big game images (Smash Bros is 2 GB) cannot live in the page's memory: expose the file through MEMFS with a lazy content object that fetches 1 MB pieces
-// with synchronous Range requests on demand and keeps the most recently used ones (cache=<pieces>, default 160).
-async function loadRomLazy(url, total) {
-  const CH = 1 << 20, MAXC = +(params.get('cache') || 160), cache = new Map();
-  const piece = (i) => {
-    let c = cache.get(i); if (c) { cache.delete(i); cache.set(i, c); return c; }
-    const a = i * CH, b = Math.min(total, a + CH) - 1, x = new XMLHttpRequest();
-    x.open('GET', url, false); x.setRequestHeader('Range', `bytes=${a}-${b}`); x.overrideMimeType('text/plain; charset=x-user-defined'); x.send();
-    if (x.status !== 206) throw new Error('range request failed: HTTP ' + x.status);
-    const t = x.responseText; c = new Uint8Array(b - a + 1); for (let k = 0; k < c.length; k++) c[k] = t.charCodeAt(k) & 255;
-    cache.set(i, c); if (cache.size > MAXC) cache.delete(cache.keys().next().value);
-    return c;
-  };
-  const target = {
-    length: total,
-    subarray(s, e) { const out = new Uint8Array(e - s); let o = 0; while (s + o < e) { const pos = s + o, c = piece(Math.floor(pos / CH)), off = pos % CH, n = Math.min(c.length - off, e - pos); out.set(c.subarray(off, off + n), o); o += n; } return out; },
-  };
-  const contents = new Proxy(target, { get(t, p) { if (typeof p === 'string' && /^[0-9]+$/.test(p)) { const pos = +p; return piece(Math.floor(pos / CH))[pos % CH]; } return t[p]; } });
-  const extMatch = url.split('?')[0].match(/\.([a-zA-Z0-9]+)$/), guestPath = '/rom' + (extMatch ? '.' + extMatch[1].toLowerCase() : '.3dsx');
-  try { Module.FS.unlink(guestPath); } catch (e) {}
-  const stream = Module.FS.open(guestPath, 'w+'); Module.FS.write(stream, new Uint8Array(1), 0, 1, 0);
-  stream.node.contents = contents; stream.node.usedBytes = total; Module.FS.close(stream);
-  log(`mounted ${url} (${(total / 1048576).toFixed(0)} MB) as ${guestPath}: read in 1 MB pieces on demand, up to ${MAXC} kept`);
-  return bootRom(guestPath, url);
-}
-
-async function loadRomUrl(url) {
-  document.documentElement.classList.add('started');
-  document.getElementById('stats').textContent = `fetching ${url}...`;
-  const lazyParam = params.get('lazy');
-  if (lazyParam !== '0') {   // images over 700 MB (and lazy=1) are read in pieces; the app serves HEAD and Range for Documents files too
-    const head = await fetch(url, { method: 'HEAD' }).catch(() => null), headTotal = head && head.ok ? parseInt(head.headers.get('content-length') || '0') : 0;
-    if (headTotal && (lazyParam === '1' || headTotal > 700 * 1048576)) return loadRomLazy(url, headTotal);
-  }
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error('cannot fetch ' + url + ': HTTP ' + resp.status);
-  const total = parseInt(resp.headers.get('content-length') || '0');
-  const extMatch = url.split('?')[0].split('#')[0].match(/\.([a-zA-Z0-9]+)$/);
-  const guestPath = '/rom' + (extMatch ? '.' + extMatch[1].toLowerCase() : '.3dsx');
-  if (total && resp.body) {
-    // Stream straight into the emulator's in-memory file system. The whole file is allocated once up front (MEMFS would otherwise grow it in steps
-    // and briefly hold several copies, which a 512 MB game cannot afford on a phone) and no list of chunks is kept.
-    try { Module.FS.unlink(guestPath); } catch (e) {}
-    const stream = Module.FS.open(guestPath, 'w+');
-    Module.FS.write(stream, new Uint8Array(1), 0, 1, total - 1);
-    const reader = resp.body.getReader(); let pos = 0, lastShown = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      Module.FS.write(stream, value, 0, value.length, pos); pos += value.length;
-      if (pos - lastShown > 16 * 1048576 || pos === total) { lastShown = pos; document.getElementById('stats').textContent = `loading game: ${(pos / 1048576).toFixed(0)} / ${(total / 1048576).toFixed(0)} MB (${Math.round(pos * 100 / total)}%)`; }
-    }
-    Module.FS.close(stream);
-    log(`loaded ${url} (${(total / 1048576).toFixed(1)} MB) as ${guestPath}`);
-    return bootRom(guestPath, url);
-  }
-  return loadRomBuffer(await resp.arrayBuffer(), url);
-}
-
-
-// ---- draw-call micro benchmark (env BENCH_DRAWS:1): the same scene (N draws a frame, each with its own vertices, indices and a uniform block) through
-// WebGL2 as Panda does it (new buffers per draw), WebGL2 with one upload per frame, and WebGPU. Results go to the host as '[bench]' lines.
-const benchDraws = (params.get('env') || '').indexOf('BENCH_DRAWS') >= 0;
-async function runDrawBench() {
-  const say = (m) => { log('[bench] ' + m); post('log', { msg: '[bench] ' + m }); };
-  const NV = 300, NI = 450, VSZ = 36, ISZ = 904, USZ = 256, FR = 120, WARM = 30;
-  const mk = (N) => {   // data for one frame
-    const v = new Float32Array(N * NV * 9), idx = new Uint16Array(N * ISZ / 2), u = new Float32Array(N * USZ / 4);
-    for (let d = 0; d < N; d++) {
-      for (let k = 0; k < NV; k++) { const o = (d * NV + k) * 9, gx = (k % 20) / 20, gy = Math.floor(k / 20) / 15; v[o] = gx; v[o + 1] = gy; v[o + 2] = 0.5; v[o + 3] = gx; v[o + 4] = gy; v[o + 5] = 0.5; v[o + 6] = 1; v[o + 7] = gx; v[o + 8] = gy; }
-      for (let k = 0; k < NI; k++) idx[d * ISZ / 2 + k] = (k * 7 + (k % 3)) % NV;
-      const o = d * USZ / 4; u[o] = 1; u[o + 1] = 1; u[o + 2] = 1; u[o + 3] = 1; u[o + 4] = 0.04; u[o + 5] = 0.05; u[o + 6] = -0.95 + (d % 22) * 0.086; u[o + 7] = -0.9 + Math.floor(d / 22) * 0.2;
-    }
-    return { v, idx, u };
-  };
-  const results = {};
-  for (const N of [88, 176, 352]) {
-    const D = mk(N);
-    // ---- WebGL2
-    const cv = document.createElement('canvas'); cv.width = 400; cv.height = 240; document.body.appendChild(cv);
-    const gl = cv.getContext('webgl2', { antialias: false, alpha: false, depth: true, stencil: true });
-    const vs = '#version 300 es\nlayout(location=0) in vec3 a_pos; layout(location=1) in vec4 a_col; layout(location=2) in vec2 a_uv;\nlayout(std140) uniform U { vec4 tint; vec4 xf; };\nout vec4 v_col;\nvoid main() { v_col = a_col * tint; gl_Position = vec4(a_pos.xy * xf.xy + xf.zw, a_pos.z, 1.0); }';
-    const fs = '#version 300 es\nprecision mediump float;\nin vec4 v_col;\nout vec4 o;\nvoid main() { o = v_col; }';
-    const sh = (t, src) => { const x = gl.createShader(t); gl.shaderSource(x, src); gl.compileShader(x); return x; };
-    const pr = gl.createProgram(); gl.attachShader(pr, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(pr);
-    if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) { say('WebGL program failed: ' + gl.getProgramInfoLog(pr)); return; }
-    gl.useProgram(pr); gl.uniformBlockBinding(pr, gl.getUniformBlockIndex(pr, 'U'), 0); gl.disable(gl.DEPTH_TEST);
-    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
-    const bV = gl.createBuffer(), bI = gl.createBuffer(), bU = gl.createBuffer(), px = new Uint8Array(4);
-    const orphanFrame = () => {   // Panda: every draw gets fresh buffers
-      for (let d = 0; d < N; d++) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, bV); gl.bufferData(gl.ARRAY_BUFFER, D.v.subarray(d * NV * 9, (d + 1) * NV * 9), gl.STREAM_DRAW);
-        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, VSZ, 0); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, VSZ, 12); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, VSZ, 28);
-        gl.enableVertexAttribArray(0); gl.enableVertexAttribArray(1); gl.enableVertexAttribArray(2);
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bI); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, D.idx.subarray(d * ISZ / 2, d * ISZ / 2 + NI), gl.STREAM_DRAW);
-        gl.bindBuffer(gl.UNIFORM_BUFFER, bU); gl.bufferData(gl.UNIFORM_BUFFER, D.u.subarray(d * USZ / 4, (d + 1) * USZ / 4), gl.STREAM_DRAW); gl.bindBufferRange(gl.UNIFORM_BUFFER, 0, bU, 0, USZ);
-        gl.drawElements(gl.TRIANGLES, NI, gl.UNSIGNED_SHORT, 0);
-      }
+    // -------------------------------------------------------------
+    // Global State & 3DS Keys Bitmask
+    // -------------------------------------------------------------
+    const KEYS = {
+      A: 1 << 0, B: 1 << 1, Select: 1 << 2, Start: 1 << 3,
+      Right: 1 << 4, Left: 1 << 5, Up: 1 << 6, Down: 1 << 7,
+      R: 1 << 8, L: 1 << 9, X: 1 << 10, Y: 1 << 11
     };
-    const rV = gl.createBuffer(), rI = gl.createBuffer(), rU = gl.createBuffer(); let ringInit = false;
-    const ringFrame = () => {   // one upload per buffer, draws use offsets
-      if (!ringInit) { gl.bindBuffer(gl.ARRAY_BUFFER, rV); gl.bufferData(gl.ARRAY_BUFFER, D.v.byteLength, gl.DYNAMIC_DRAW); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, rI); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, D.idx.byteLength, gl.DYNAMIC_DRAW); gl.bindBuffer(gl.UNIFORM_BUFFER, rU); gl.bufferData(gl.UNIFORM_BUFFER, D.u.byteLength, gl.DYNAMIC_DRAW); ringInit = true; }
-      gl.bindBuffer(gl.ARRAY_BUFFER, rV); gl.bufferSubData(gl.ARRAY_BUFFER, 0, D.v); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, rI); gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, D.idx); gl.bindBuffer(gl.UNIFORM_BUFFER, rU); gl.bufferSubData(gl.UNIFORM_BUFFER, 0, D.u);
-      gl.bindBuffer(gl.ARRAY_BUFFER, rV); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, rI);
-      for (let d = 0; d < N; d++) {
-        const vo = d * NV * VSZ;
-        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, VSZ, vo); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, VSZ, vo + 12); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, VSZ, vo + 28);
-        gl.bindBufferRange(gl.UNIFORM_BUFFER, 0, rU, d * USZ, USZ);
-        gl.drawElements(gl.TRIANGLES, NI, gl.UNSIGNED_SHORT, d * ISZ);
-      }
+
+    let emuReady = false;
+    let emuRunning = false;
+    let currentRomName = '';
+    let lastTime = performance.now();
+    let frameCount = 0;
+    let fps = 60;
+
+    const glCanvas = document.getElementById('gl');
+    const xrCanvas = document.getElementById('xrCanvas');
+
+    // -------------------------------------------------------------
+    // Three.js Scene & Stereoscopic WebXR Setup
+    // -------------------------------------------------------------
+    const renderer = new THREE.WebGLRenderer({ canvas: xrCanvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0c12);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 50);
+    camera.position.set(0, 1.35, 1.4);
+    camera.layers.enable(1); // Left eye
+    camera.layers.enable(2); // Right eye
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 1.25, 0);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    // Ambient light
+    const ambient = new THREE.AmbientLight(0xffffff, 1.2);
+    scene.add(ambient);
+
+    // -------------------------------------------------------------
+    // Virtual 3DS Floating Console Meshes
+    // -------------------------------------------------------------
+    // Canvas texture sharing the offscreen WebGL2 canvas (800x480)
+    const canvasTexture = new THREE.CanvasTexture(glCanvas);
+    canvasTexture.minFilter = THREE.NearestFilter;
+    canvasTexture.magFilter = THREE.NearestFilter;
+    canvasTexture.generateMipmaps = false;
+
+    // Top Left eye texture: UV [0.0..0.5, 0.5..1.0]
+    const texLeft = canvasTexture.clone();
+    texLeft.offset.set(0.0, 0.5);
+    texLeft.repeat.set(0.5, 0.5);
+
+    // Top Right eye texture: UV [0.5..1.0, 0.5..1.0]
+    const texRight = canvasTexture.clone();
+    texRight.offset.set(0.5, 0.5);
+    texRight.repeat.set(0.5, 0.5);
+
+    // Bottom screen texture: UV [0.3..0.7, 0.0..0.5] (centered horizontally: 320px in 800px)
+    const texBottom = canvasTexture.clone();
+    texBottom.offset.set(0.3, 0.0);
+    texBottom.repeat.set(0.4, 0.5);
+
+    const consoleGroup = new THREE.Group();
+    consoleGroup.position.set(0, 1.2, 0); // At comfortable eye height
+    scene.add(consoleGroup);
+
+    // Frame styling (dark metallic 3DS housing)
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x181c26, roughness: 0.4, metalness: 0.6 });
+
+    // Top Screen (Stereoscopic): Aspect ratio 400x240 -> 1.0m x 0.6m
+    const topGeo = new THREE.PlaneGeometry(1.0, 0.6);
+    const matTopLeft = new THREE.MeshBasicMaterial({ map: texLeft });
+    const matTopRight = new THREE.MeshBasicMaterial({ map: texRight });
+
+    const meshTopLeft = new THREE.Mesh(topGeo, matTopLeft);
+    meshTopLeft.position.set(0, 0.35, 0);
+    meshTopLeft.layers.set(1); // Visible ONLY to Left Eye in WebXR
+    consoleGroup.add(meshTopLeft);
+
+    const meshTopRight = new THREE.Mesh(topGeo, matTopRight);
+    meshTopRight.position.set(0, 0.35, 0);
+    meshTopRight.layers.set(2); // Visible ONLY to Right Eye in WebXR
+    consoleGroup.add(meshTopRight);
+
+    // Top Bezel frame
+    const topBezel = new THREE.Mesh(new THREE.BoxGeometry(1.08, 0.68, 0.02), bodyMat);
+    topBezel.position.set(0, 0.35, -0.012);
+    topBezel.layers.set(0);
+    consoleGroup.add(topBezel);
+
+    // Bottom Screen (Touch): Aspect ratio 320x240 -> 0.8m x 0.6m
+    const botGeo = new THREE.PlaneGeometry(0.8, 0.6);
+    const matBottom = new THREE.MeshBasicMaterial({ map: texBottom });
+    const meshBottom = new THREE.Mesh(botGeo, matBottom);
+    meshBottom.position.set(0, -0.32, 0.08);
+    meshBottom.rotation.x = -0.35; // Tilted upward toward player
+    meshBottom.layers.set(0); // Visible to BOTH eyes
+    consoleGroup.add(meshBottom);
+
+    // Bottom Bezel frame
+    const botBezel = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.68, 0.02), bodyMat);
+    botBezel.position.set(0, -0.32, 0.07);
+    botBezel.rotation.x = -0.35;
+    botBezel.layers.set(0);
+    consoleGroup.add(botBezel);
+
+    // Touch Laser Pointer Indicator
+    const dotGeo = new THREE.SphereGeometry(0.012, 16, 16);
+    const dotMat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
+    const touchDot = new THREE.Mesh(dotGeo, dotMat);
+    touchDot.visible = false;
+    scene.add(touchDot);
+
+    // -------------------------------------------------------------
+    // WebXR Controllers & Interaction
+    // -------------------------------------------------------------
+    const raycaster = new THREE.Raycaster();
+    const tempMatrix = new THREE.Matrix4();
+
+    const controller0 = renderer.xr.getController(0);
+    scene.add(controller0);
+    const controller1 = renderer.xr.getController(1);
+    scene.add(controller1);
+
+    // Controller laser line
+    const laserMat = new THREE.LineBasicMaterial({ color: 0x00c6ff, transparent: true, opacity: 0.6 });
+    const laserGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -2)]);
+    const laser0 = new THREE.Line(laserGeo, laserMat);
+    controller0.add(laser0);
+    const laser1 = new THREE.Line(laserGeo, laserMat);
+    controller1.add(laser1);
+
+    // -------------------------------------------------------------
+    // Emscripten Module Definition
+    // -------------------------------------------------------------
+    window.Module = {
+      canvas: glCanvas,
+      locateFile: (path) => path.endsWith('.wasm') ? '../build-core/' + path : path,
+      onRuntimeInitialized: async () => {
+        console.log('[Panda3DS] WebAssembly runtime initialized');
+        Module.FS.writeFile('/config.toml', `[GPU]\nRenderer = "opengl"\nScreenLayout = "Default"\nTopScreenSize = 0.5\nEnableShaderJIT = false\n[Audio]\nEnableAudio = true\nDSPEmulation = "HLE"\n`);
+        
+        // Initialize OpenGL ES on 800x480 canvas for Side-by-Side stereo
+        if (!Module._web_init(1, 800, 480)) {
+          alert('WebGL2 initialization failed inside emulator core');
+          return;
+        }
+
+        // Set 3D depth to 1.0 (Full stereo)
+        if (Module._web_set_3d_slider) {
+          Module._web_set_3d_slider(1.0);
+        }
+
+        emuReady = true;
+        document.getElementById('loading-overlay').style.opacity = '0';
+        setTimeout(() => document.getElementById('loading-overlay').remove(), 400);
+
+        // Auto-load default stereoscopic demo
+        await loadRom(document.getElementById('romSelect').value);
+      },
+      print: (s) => console.log(s),
+      printErr: (s) => console.error(s)
     };
-    // pool: every draw writes into the next buffer of a pool (bufferSubData, no new allocation); the pool is big enough that a buffer is not in use by the GPU when it comes round again
-    const POOL = 3 * N, pV = [], pI = [], pU = []; let pc = 0;
-    for (let k = 0; k < POOL; k++) { for (const [arr, tg, sz] of [[pV, gl.ARRAY_BUFFER, NV * VSZ], [pI, gl.ELEMENT_ARRAY_BUFFER, ISZ], [pU, gl.UNIFORM_BUFFER, USZ]]) { const b = gl.createBuffer(); gl.bindBuffer(tg, b); gl.bufferData(tg, sz, gl.DYNAMIC_DRAW); arr.push(b); } }
-    const poolFrame = () => {
-      for (let d = 0; d < N; d++) {
-        const k = pc++ % POOL;
-        gl.bindBuffer(gl.ARRAY_BUFFER, pV[k]); gl.bufferSubData(gl.ARRAY_BUFFER, 0, D.v.subarray(d * NV * 9, (d + 1) * NV * 9));
-        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, VSZ, 0); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, VSZ, 12); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, VSZ, 28);
-        gl.enableVertexAttribArray(0); gl.enableVertexAttribArray(1); gl.enableVertexAttribArray(2);
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, pI[k]); gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, D.idx.subarray(d * ISZ / 2, d * ISZ / 2 + NI));
-        gl.bindBuffer(gl.UNIFORM_BUFFER, pU[k]); gl.bufferSubData(gl.UNIFORM_BUFFER, 0, D.u.subarray(d * USZ / 4, (d + 1) * USZ / 4)); gl.bindBufferRange(gl.UNIFORM_BUFFER, 0, pU[k], 0, USZ);
-        gl.drawElements(gl.TRIANGLES, NI, gl.UNSIGNED_SHORT, 0);
+
+    // -------------------------------------------------------------
+    // ROM Loading Logic
+    // -------------------------------------------------------------
+    async function loadRom(pathOrUrl) {
+      if (!emuReady) return;
+      try {
+        currentRomName = pathOrUrl.split('/').pop();
+        console.log('[Panda3DS] Loading ROM:', currentRomName);
+        const resp = await fetch(pathOrUrl);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const buf = await resp.arrayBuffer();
+        Module.FS.writeFile('/' + currentRomName, new Uint8Array(buf));
+        
+        if (Module._web_load('/' + currentRomName)) {
+          emuRunning = true;
+          console.log('[Panda3DS] ROM loaded successfully!');
+        } else {
+          alert('Failed to load ROM: ' + currentRomName);
+        }
+      } catch (err) {
+        console.error('[Panda3DS] Error loading ROM:', err);
       }
-    };
-    for (const [name, fn] of [['gl-orphan', orphanFrame], ['gl-pool', poolFrame], ['gl-oneupload', ringFrame]]) {
-      for (let f = 0; f < WARM; f++) { gl.clear(gl.COLOR_BUFFER_BIT); fn(); } gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-      const t0 = performance.now(); let cpu = 0;
-      for (let f = 0; f < FR; f++) { const c0 = performance.now(); gl.clear(gl.COLOR_BUFFER_BIT); fn(); cpu += performance.now() - c0; }
-      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); const tot = performance.now() - t0;
-      results[name + ' N=' + N] = { frameMs: +(tot / FR).toFixed(2), cpuMs: +(cpu / FR).toFixed(2), perDrawUs: +(tot / FR / N * 1000).toFixed(1) };
-      say(name + ' N=' + N + ': ' + (tot / FR).toFixed(2) + ' ms/frame (JS ' + (cpu / FR).toFixed(2) + ' ms), ' + (tot / FR / N * 1000).toFixed(1) + ' us/draw');
-      await new Promise((r) => setTimeout(r, 50));
     }
-    cv.remove();
-    // ---- WebGPU
-    if (!navigator.gpu) { say('no navigator.gpu here'); continue; }
-    try {
-      const ad = await navigator.gpu.requestAdapter(), dev = await ad.requestDevice();
-      const c2 = document.createElement('canvas'); c2.width = 400; c2.height = 240; document.body.appendChild(c2);
-      const ctx = c2.getContext('webgpu'), fmt = navigator.gpu.getPreferredCanvasFormat(); ctx.configure({ device: dev, format: fmt, alphaMode: 'opaque' });
-      const code = 'struct U { tint: vec4f, xf: vec4f };\n@group(0) @binding(0) var<uniform> u: U;\nstruct VIn { @location(0) pos: vec3f, @location(1) col: vec4f, @location(2) uv: vec2f };\nstruct VOut { @builtin(position) p: vec4f, @location(0) col: vec4f };\n@vertex fn vs(i: VIn) -> VOut { var o: VOut; o.p = vec4f(i.pos.xy * u.xf.xy + u.xf.zw, i.pos.z, 1.0); o.col = i.col * u.tint; return o; }\n@fragment fn fs(i: VOut) -> @location(0) vec4f { return i.col; }';
-      const mod = dev.createShaderModule({ code });
-      const pipe = dev.createRenderPipeline({ layout: 'auto', vertex: { module: mod, entryPoint: 'vs', buffers: [{ arrayStride: VSZ, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x4' }, { shaderLocation: 2, offset: 28, format: 'float32x2' }] }] }, fragment: { module: mod, entryPoint: 'fs', targets: [{ format: fmt }] }, primitive: { topology: 'triangle-list' } });
-      const gV = dev.createBuffer({ size: D.v.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }), gI = dev.createBuffer({ size: D.idx.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST }), gU = dev.createBuffer({ size: D.u.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: gU, offset: 0, size: USZ } }] });
-      const gpuFrame = () => {
-        dev.queue.writeBuffer(gV, 0, D.v); dev.queue.writeBuffer(gI, 0, D.idx); dev.queue.writeBuffer(gU, 0, D.u);
-        const enc = dev.createCommandEncoder(), pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
-        pass.setPipeline(pipe);
-        for (let d = 0; d < N; d++) { pass.setBindGroup(0, bg, [d * USZ]); pass.setVertexBuffer(0, gV, d * NV * VSZ, NV * VSZ); pass.setIndexBuffer(gI, 'uint16', d * ISZ, NI * 2); pass.drawIndexed(NI); }
-        pass.end(); dev.queue.submit([enc.finish()]);
+
+    document.getElementById('romSelect').addEventListener('change', (e) => loadRom(e.target.value));
+
+    document.getElementById('romFileInput').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const data = new Uint8Array(reader.result);
+        const fname = file.name;
+        Module.FS.writeFile('/' + fname, data);
+        if (Module._web_load('/' + fname)) {
+          emuRunning = true;
+          currentRomName = fname;
+          console.log('[Panda3DS] Custom ROM started:', fname);
+        } else {
+          alert('Failed to load custom ROM: ' + fname);
+        }
       };
-      for (let f = 0; f < WARM; f++) gpuFrame(); await dev.queue.onSubmittedWorkDone();
-      const t0 = performance.now(); let cpu = 0;
-      for (let f = 0; f < FR; f++) { const c0 = performance.now(); gpuFrame(); cpu += performance.now() - c0; }
-      await dev.queue.onSubmittedWorkDone(); const tot = performance.now() - t0;
-      results['webgpu N=' + N] = { frameMs: +(tot / FR).toFixed(2), cpuMs: +(cpu / FR).toFixed(2), perDrawUs: +(tot / FR / N * 1000).toFixed(1) };
-      say('webgpu N=' + N + ': ' + (tot / FR).toFixed(2) + ' ms/frame (JS ' + (cpu / FR).toFixed(2) + ' ms), ' + (tot / FR / N * 1000).toFixed(1) + ' us/draw');
-      c2.remove(); dev.destroy();
-    } catch (e) { say('webgpu failed: ' + e); }
-  }
-  say('RESULT ' + JSON.stringify(results));
-  say('DONE');
-}
+      reader.readAsArrayBuffer(file);
+    });
 
-async function start() {
-  document.documentElement.classList.add('engine');
-  if (benchDraws) { await runDrawBench(); return; }
-  { const gc = document.getElementById('gl'); if (gc) { gc.addEventListener('webglcontextlost', () => { log('[gl] CONTEXT LOST at frame ' + frames, true); post('log', { msg: '[gl] CONTEXT LOST at frame ' + frames }); }); gc.addEventListener('webglcontextrestored', () => { log('[gl] context restored', true); post('log', { msg: '[gl] context restored' }); }); } }
-  if (useGL) { const g = document.getElementById('gl'); g.width = GLW; g.height = GLH; g.style.width = (phone ? Math.floor(Math.min(innerWidth, 0.54 * innerHeight * GLW / GLH)) : Math.round(GLW * (innerWidth >= 900 ? Math.min(scale, (innerWidth - 440) / GLW) : Math.min(scale, (innerWidth - 16) / GLW)))) + 'px'; g.style.display = 'block'; document.getElementById('pad').style.display = phone ? 'none' : 'block'; document.getElementById('top').style.display = 'none'; document.getElementById('bottom').style.display = 'none'; }
-  if (!Module._web_init(useGL ? 1 : 0, GLW, GLH)) { log('[FATAL] web_init failed', true); finish(); return; }
-  if (!dev) applyLayout();
-  if (useGL) { try { const x = document.getElementById('gl').getContext('webgl2').getSupportedExtensions() || []; post('log', { msg: '[gl] extensions (' + x.length + '): ' + x.join(' ') }); } catch (e) {} }
-  initGpuTimer();   // after web_init: the emulator must be the one that creates the WebGL context (its attributes: no alpha, depth, stencil)
+    // 3D Slider event
+    const depthSlider = document.getElementById('depthSlider');
+    const depthVal = document.getElementById('depthVal');
+    depthSlider.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      depthVal.textContent = Math.round(val * 100) + '%';
+      if (Module._web_set_3d_slider) Module._web_set_3d_slider(val);
+    });
 
-  // Drag-and-drop & file input bindings
-  document.getElementById('rom-file')?.addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      document.getElementById('stats').textContent = `reading ${file.name}...`;
-      await loadRomBuffer(await file.arrayBuffer(), file.name);
+    // -------------------------------------------------------------
+    // WebXR Session Management
+    // -------------------------------------------------------------
+    const vrBtn = document.getElementById('vrBtn');
+    if ('xr' in navigator) {
+      navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
+        if (!supported) {
+          vrBtn.textContent = '❌ WebXR not supported';
+          vrBtn.disabled = true;
+        }
+      });
+    } else {
+      vrBtn.textContent = '❌ WebXR not available';
+      vrBtn.disabled = true;
     }
-  });
-  if (phone && !(params.has('rom') || native)) document.getElementById('romtiny').style.display = 'block';
-  document.getElementById('rom-file2')?.addEventListener('change', async (e) => { const file = e.target.files[0]; if (file) await loadRomBuffer(await file.arrayBuffer(), file.name); });
-  window.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
-  window.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (file) {
-      document.getElementById('stats').textContent = `reading ${file.name}...`;
-      await loadRomBuffer(await file.arrayBuffer(), file.name);
+
+    vrBtn.addEventListener('click', async () => {
+      if (!navigator.xr) return;
+      try {
+        const session = await navigator.xr.requestSession('immersive-vr', {
+          requiredFeatures: ['local-floor'],
+          optionalFeatures: ['bounded-floor', 'hand-tracking']
+        });
+        renderer.xr.setSession(session);
+        vrBtn.textContent = 'Exit VR';
+        session.addEventListener('end', () => { vrBtn.textContent = '🥽 Enter VR'; });
+      } catch (err) {
+        console.error('[WebXR] Failed to start VR session:', err);
+        alert('Could not start WebXR session: ' + err.message);
+      }
+    });
+
+    // -------------------------------------------------------------
+    // Desktop Touch Screen Interaction (Mouse click & drag)
+    // -------------------------------------------------------------
+    const mouse = new THREE.Vector2();
+    let isMouseDown = false;
+
+    function handleScreenTouch(clientX, clientY, down) {
+      mouse.x = (clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const hits = raycaster.intersectObject(meshBottom);
+      if (hits.length > 0 && hits[0].uv) {
+        const uv = hits[0].uv;
+        const tx = Math.max(0, Math.min(319, Math.floor(uv.x * 320)));
+        const ty = Math.max(0, Math.min(239, Math.floor((1.0 - uv.y) * 240)));
+        if (Module._web_touch) Module._web_touch(tx, ty, down ? 1 : 0);
+        touchDot.position.copy(hits[0].point);
+        touchDot.visible = true;
+      } else if (!down) {
+        if (Module._web_touch) Module._web_touch(0, 0, 0);
+        touchDot.visible = false;
+      }
     }
-  });
 
-  if (params.has('rom') || native) {
-    await loadRomUrl(rom);
-  } else {
-    document.getElementById('stats').textContent = 'Ready. Select or drag & drop a .3ds, .cxi, or .3dsx file.';
-  }
-}
+    window.addEventListener('mousedown', (e) => { isMouseDown = true; handleScreenTouch(e.clientX, e.clientY, true); });
+    window.addEventListener('mousemove', (e) => { if (isMouseDown) handleScreenTouch(e.clientX, e.clientY, true); });
+    window.addEventListener('mouseup', () => { isMouseDown = false; handleScreenTouch(0, 0, false); });
 
-// ---- live diagnostics (right column) ----
-const frameMs = [], gpuMs = [];            // ring buffers: emulator time per frame, GPU time per frame (when the browser has EXT_disjoint_timer_query_webgl2)
-let jitT0 = [0, 0, 0], jitRate = [0, 0, 0], presentCount = 0, presentHz = 0, battery = null, rafCount = 0, rafHz = 0, rafT = performance.now(), tickMsAvg = 0, lastTickAt = 0, maxGapMs = 0, gapWin = 0;
-let jitS = [0, 0, 0, 0, 0], jitSF = 0; const jitStat = { guestMsFr: null, retFr: null, ticksFr: null };
-let glx = null, tq = null, pendingQ = [], diagF = 0, diagT = performance.now(), fpsNow = 0, drawsPerFrame = null, lastCompiled = 0, compileRate = 0, worstFrame = 0, flushesAtWorst = 0;
-function initGpuTimer() {   // only when the page is opened on its own (my probe pages embed it in an iframe and use the same query slot)
-  if (!useGL || window !== window.top || params.get('gpu') === '0') return;
-  glx = document.getElementById('gl').getContext('webgl2'); tq = glx && glx.getExtension('EXT_disjoint_timer_query_webgl2');
-}
-function pollGpu() {
-  while (pendingQ.length && glx.getQueryParameter(pendingQ[0], glx.QUERY_RESULT_AVAILABLE)) {
-    const q = pendingQ.shift(), v = glx.getQueryParameter(q, glx.QUERY_RESULT) / 1e6; glx.deleteQuery(q);
-    if (!glx.getParameter(tq.GPU_DISJOINT_EXT)) { gpuMs.push(v); if (gpuMs.length > 240) gpuMs.shift(); }
-  }
-  while (pendingQ.length > 8) glx.deleteQuery(pendingQ.shift());
-}
-const fmt = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v)) ? '–' : v.toFixed(d);
-// ?ping=1: a MessageChannel ping-pong tells how long the main thread was NOT available to other tasks, and whether that was inside our tick or between ticks
-const pingOn = params.get('ping') === '1', tickSpans = []; let pingLast = performance.now(), pingOut = 0, pingOutMax = 0, pingIn = 0, pingGaps = 0, pingWin = performance.now(), pingStat = { outMsS: null, outMax: null, inMsS: null, gaps: null };
-if (pingOn) {
-  const ch = new MessageChannel();
-  ch.port1.onmessage = () => {
-    const n = performance.now(), a = pingLast, gap = n - a; pingLast = n;
-    if (gap > 3) {
-      let ov = 0; for (const [ts, te] of tickSpans) { const lo = Math.max(a, ts), hi = Math.min(n, te || n); if (hi > lo) ov += hi - lo; }
-      const out = Math.max(0, gap - ov); pingIn += ov; pingOut += out; pingGaps++; if (out > pingOutMax) pingOutMax = out;
+    // -------------------------------------------------------------
+    // Keyboard Controls Mapping
+    // -------------------------------------------------------------
+    const keyMap = {
+      'KeyK': KEYS.A, 'KeyJ': KEYS.B, 'KeyI': KEYS.X, 'KeyU': KEYS.Y,
+      'ArrowRight': KEYS.Right, 'ArrowLeft': KEYS.Left, 'ArrowUp': KEYS.Up, 'ArrowDown': KEYS.Down,
+      'KeyQ': KEYS.L, 'KeyE': KEYS.R, 'Enter': KEYS.Start, 'Space': KEYS.Select
+    };
+
+    let circleX = 0, circleY = 0;
+    window.addEventListener('keydown', (e) => {
+      if (keyMap[e.code] && Module._web_key) Module._web_key(keyMap[e.code], 1);
+      if (e.code === 'KeyD') circleX = 156;
+      if (e.code === 'KeyA') circleX = -156;
+      if (e.code === 'KeyW') circleY = 156;
+      if (e.code === 'KeyS') circleY = -156;
+      if (Module._web_circle) Module._web_circle(circleX, circleY);
+    });
+    window.addEventListener('keyup', (e) => {
+      if (keyMap[e.code] && Module._web_key) Module._web_key(keyMap[e.code], 0);
+      if (e.code === 'KeyD' || e.code === 'KeyA') circleX = 0;
+      if (e.code === 'KeyW' || e.code === 'KeyS') circleY = 0;
+      if (Module._web_circle) Module._web_circle(circleX, circleY);
+    });
+
+    // -------------------------------------------------------------
+    // WebXR Controller Poll & Raycast Touch Loop
+    // -------------------------------------------------------------
+    function pollXRControllers() {
+      const session = renderer.xr.getSession();
+      if (!session) return;
+
+      for (const source of session.inputSources) {
+        if (!source.gamepad) continue;
+        const gp = source.gamepad;
+        const handedness = source.handedness;
+
+        // Thumbstick -> 3DS Circle Pad
+        if (gp.axes.length >= 4) {
+          const stickX = Math.round(gp.axes[2] * 156);
+          const stickY = Math.round(-gp.axes[3] * 156);
+          if (Math.abs(stickX) > 20 || Math.abs(stickY) > 20) {
+            Module._web_circle(stickX, stickY);
+          } else if (handedness === 'left') {
+            Module._web_circle(0, 0);
+          }
+        }
+
+        // Face buttons & triggers
+        if (handedness === 'right') {
+          if (gp.buttons[4]) Module._web_key(KEYS.A, gp.buttons[4].pressed ? 1 : 0);
+          if (gp.buttons[5]) Module._web_key(KEYS.B, gp.buttons[5].pressed ? 1 : 0);
+          if (gp.buttons[1]) Module._web_key(KEYS.R, gp.buttons[1].pressed ? 1 : 0);
+        } else if (handedness === 'left') {
+          if (gp.buttons[4]) Module._web_key(KEYS.X, gp.buttons[4].pressed ? 1 : 0);
+          if (gp.buttons[5]) Module._web_key(KEYS.Y, gp.buttons[5].pressed ? 1 : 0);
+          if (gp.buttons[1]) Module._web_key(KEYS.L, gp.buttons[1].pressed ? 1 : 0);
+        }
+      }
+
+      // Laser Raycast from Right Controller (1) to Bottom Screen
+      tempMatrix.identity().extractRotation(controller1.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(controller1.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+      const hits = raycaster.intersectObject(meshBottom);
+      if (hits.length > 0 && hits[0].uv) {
+        touchDot.position.copy(hits[0].point);
+        touchDot.visible = true;
+
+        const uv = hits[0].uv;
+        const tx = Math.max(0, Math.min(319, Math.floor(uv.x * 320)));
+        const ty = Math.max(0, Math.min(239, Math.floor((1.0 - uv.y) * 240)));
+
+        const session = renderer.xr.getSession();
+        const rSource = session.inputSources.find(s => s.handedness === 'right');
+        const triggerPressed = rSource && rSource.gamepad && rSource.gamepad.buttons[0] && rSource.gamepad.buttons[0].pressed;
+        if (Module._web_touch) Module._web_touch(tx, ty, triggerPressed ? 1 : 0);
+      } else {
+        touchDot.visible = false;
+      }
     }
-    if (n - pingWin >= 1000) { const dt = (n - pingWin) / 1000; pingStat = { outMsS: +(pingOut / dt).toFixed(0), outMax: +pingOutMax.toFixed(0), inMsS: +(pingIn / dt).toFixed(0), gaps: +(pingGaps / dt).toFixed(0) }; pingOut = 0; pingIn = 0; pingOutMax = 0; pingGaps = 0; pingWin = n; }
-    ch.port2.postMessage(0);   // straight back, no timer: WebKit clamps nested timers to 4 ms, which looked like a busy thread
-  };
-  ch.port2.postMessage(0);
-}
-let hudOff = false;
-function renderDiag() {
-  if (hudOff) return;
-  const now = performance.now(), dt = (now - diagT) / 1000;
-  if (dt > 0) { fpsNow = (frames - diagF) / dt; diagF = frames; diagT = now; rafHz = rafCount / dt; rafCount = 0; presentHz = presentCount / dt; presentCount = 0;
-    { const T = (Module.jit && Module.jit.t) || [0, 0, 0]; for (let i = 0; i < 3; i++) { jitRate[i] = (T[i] - jitT0[i]) / dt; jitT0[i] = T[i]; } } maxGapMs = gapWin; gapWin = 0; }
-  { const S = (Module.jit && Module.jit.s) || [0, 0, 0, 0, 0], df = frames - jitSF; if (dt > 0 && df > 0) { jitStat.guestMsFr = ((S[3] - S[4]) - (jitS[3] - jitS[4])) / df; jitStat.retFr = (S[0] - jitS[0]) / df; jitStat.ticksFr = (S[1] - jitS[1]) / df; } jitS = S.slice(); jitSF = frames; }
-  const jit0 = Module.jit && Module.jit.impls[0], flushes = jit0 ? (jit0.flushes || 0) : 0;
-  if (dt > 0 && jit0) { compileRate = ((jit0.count || 0) - lastCompiled) / dt; lastCompiled = jit0.count || 0; }
-  const m = mem(), last = frameMs.slice(-60), avg = last.length ? last.reduce((a, b) => a + b, 0) / last.length : 0;
-  const gpuRender = gpuMs.slice(-60).filter((x) => x > 0.05), gAvg = gpuRender.length ? gpuRender.reduce((a, b) => a + b, 0) / gpuRender.length : null;
-  const rows = [['frame', frames], ['speed (real)', fmt(fpsNow) + ' fps' + (fpsNow >= 58 ? '' : '  (target 59.8)')], ['our loop ticks (' + (useTimer ? 'timer' : 'rAF') + ')', fmt(rafHz, 0) + ' per s  (longest gap ' + fmt(maxGapMs, 0) + ' ms)'], ['browser repaints (rAF)', fmt(presentHz, 0) + ' per s'], ['browser state', document.visibilityState + ', ' + (document.hasFocus() ? 'focused' : 'NOT focused') + (battery ? ', battery ' + Math.round(battery.level * 100) + '% ' + (battery.charging ? 'charging' : 'on battery') : '')], ['one tick takes (JS)', fmt(tickMsAvg) + ' ms'], ['emulator, avg 60 fr', fmt(avg) + ' ms'], ['emulator, worst', fmt(worst, 0) + ' ms'],
-    ['GPU / rendered frame', tq ? (gAvg === null ? '…' : fmt(gAvg) + ' ms') : 'n/a in this browser'], ['audio', audioOn ? (window.__audio.ctxs.length ? window.__audio.ctxs[0].state + ', level ' + window.__audio.rms.toFixed(3) + ' (peak ' + window.__audio.peak.toFixed(2) + ')' : 'no device') : 'off'], ['slow frames >30 ms', hitchStats.total ? hitchStats.total + ' (shader ' + hitchStats.shader + ', jit ' + hitchStats.jit + ', other ' + hitchStats.other + ')' : '0'], ['last slow frames', hitchStats.recent.join('; ') || '-'], ['late (dropped)', late], ['worst frame at', worstFrame ? '#' + worstFrame + '  (flushes by then: ' + flushesAtWorst + ')' : '–'], ['JIT cache flushes', flushes + (jit0 && jit0.droppedBlocks ? '  (' + jit0.droppedBlocks + ' blocks thrown away)' : '')], ['compiling now', fmt(compileRate, 0) + ' blocks/s'], ['  JIT cost: translate+emit', fmt(jitRate[0], 0) + ' ms/s'], ['  JIT cost: wasm compile', fmt(jitRate[1], 0) + ' ms/s'], ['  JIT cost: instantiate', fmt(jitRate[2], 0) + ' ms/s'], ['JIT modules (total compiled)', m.blocks], ['JIT wasm code', m.jitKB + ' KB'], ['wasm memory', m.wasmMB + ' MB'],
-    ['layout', (side ? 'side by side' : 'stacked') + (useGL ? ', WebGL2' : ', no GPU')]];
-  if (phone) {
-    const nat = window.__native || {}, th = ['nominal', 'fair', 'SERIOUS', 'CRITICAL'][nat.thermal] || '–';
-    const lv = (v, ok, warn) => v === null || v === undefined || Number.isNaN(v) ? '' : (v <= ok ? 'ok' : v <= warn ? 'warn' : 'bad');
-    const hi = (v, ok, warn) => v === null || v === undefined || Number.isNaN(v) ? '' : (v >= ok ? 'ok' : v >= warn ? 'warn' : 'bad');
-    const jitMs = jitRate[0] + jitRate[1] + jitRate[2];
-    const cells = [
-      ['speed fps', fmt(fpsNow, 0), hi(fpsNow, 56, 45)], ['loop Hz', fmt(rafHz, 0), ''], ['emu avg ms', fmt(avg), lv(avg, 12, 16.7)], ['emu worst ms', fmt(worst, 0), lv(worst, 33, 100)],
-      ['thermal', th, nat.thermal === undefined ? '' : nat.thermal === 0 ? 'ok' : nat.thermal === 1 ? 'warn' : 'bad'], ['free MB (app)', nat.availMB === undefined ? '–' : nat.availMB, ''], ['battery', battery ? Math.round(battery.level * 100) + '%' + (battery.charging ? '+' : '') : '–', ''], ['GPU ms', tq ? fmt(gAvg) : 'n/a', ''],
-      ['guest ms/fr', fmt(jitStat.guestMsFr, 1), ''], ['returns/fr', fmt(jitStat.retFr, 0), ''], ['paint Hz (shown)', fmt(presentHz, 0), hi(presentHz, 56, 40)], ['wasm MB', m.wasmMB, ''],
-      ['slow >30ms', hitchStats.total, hitchStats.total ? 'warn' : 'ok'], ['shader/jit/other', hitchStats.shader + '/' + hitchStats.jit + '/' + hitchStats.other, ''], ['JIT blk/s', fmt(compileRate, 0), lv(compileRate, 5, 50)], ['JIT cost ms/s', fmt(jitMs, 0), lv(jitMs, 20, 100)],
-    ];
-    const hud = document.getElementById('hud'); hud.style.display = 'grid';
-    hud.innerHTML = cells.map(([k, v, c]) => `<div><small>${k}</small><b class="${c}">${v}</b></div>`).join('');
-    document.getElementById('hudline').textContent = 'frame ' + frames + ' · ' + (useTimer ? 'timer' : 'rAF') + ' loop · tick ' + fmt(tickMsAvg) + ' ms' + (pingOn ? ' · main thread busy outside tick ' + pingStat.outMsS + ' ms/s (max ' + pingStat.outMax + '), in tick ' + pingStat.inMsS + ' ms/s' : '') + ' · late ' + late + ' · audio ' + (audioOn ? (window.__audio.ctxs.length ? window.__audio.ctxs[0].state + ' ' + window.__audio.rms.toFixed(2) : 'no device') : 'off') + (nat.lowPower ? ' · LOW POWER' : '') + (hitchStats.recent.length ? ' · ' + hitchStats.recent.slice(-3).join('; ') : '');
-  } else
-  document.getElementById('counters').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
-  const c = document.getElementById('spark'); if (phone && c.height !== 80) c.height = 80;
-  const g = c.getContext('2d'), W = c.width, H = c.height, N = 240, bw = W / N;
-  g.fillStyle = '#0b0d10'; g.fillRect(0, 0, W, H);
-  const top = Math.max(40, ...frameMs.slice(-N)), y = (v) => H - (Math.min(v, top) / top) * (H - 4) - 2;
-  frameMs.slice(-N).forEach((v, i) => { g.fillStyle = v <= FRAME_MS ? '#3fb950' : (v <= 2 * FRAME_MS ? '#e3a008' : '#f85149'); g.fillRect(i * bw, y(v), Math.max(1, bw - 1), H - y(v)); });
-  if (gpuMs.length) { g.strokeStyle = '#58a6ff'; g.lineWidth = 2; g.beginPath(); gpuMs.slice(-N).forEach((v, i) => { const px = i * bw, py = y(v); i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.stroke(); }
-  g.strokeStyle = '#8b949e'; g.setLineDash([6, 4]); g.lineWidth = 1; g.beginPath(); g.moveTo(0, y(FRAME_MS)); g.lineTo(W, y(FRAME_MS)); g.stroke(); g.setLineDash([]);
-  g.fillStyle = '#8b949e'; g.font = (phone ? '22px' : '16px') + ' ui-monospace, monospace'; g.fillText('16.7 ms', 6, y(FRAME_MS) - 4); g.fillText('max ' + top.toFixed(0) + ' ms' + (gpuMs.length ? '   blue = GPU' : ''), 6, 16);
-}
-{   // a Bluetooth/USB gamepad (standard mapping): the buttons by position (south = B, east = A, west = Y, north = X), the left stick = circle pad
-  const MAP = { 0: 'B', 1: 'A', 2: 'Y', 3: 'X', 4: 'L', 5: 'R', 8: 'Select', 9: 'Start', 12: 'Up', 13: 'Down', 14: 'Left', 15: 'Right' }, state = {}; let stickOn = false;
-  setInterval(() => {
-    const gp = (navigator.getGamepads ? [...navigator.getGamepads()] : []).find((g) => g && g.connected && g.mapping === 'standard'); if (!gp || !Module._web_circle) return;
-    for (const [i, name] of Object.entries(MAP)) { const d = !!(gp.buttons[i] && gp.buttons[i].pressed); if (state[name] !== d) { state[name] = d; press(name, d); } }
-    let x = gp.axes[0] || 0, y = gp.axes[1] || 0; const m = Math.hypot(x, y);
-    if (m > 0.14) { const k = Math.min(1, (m - 0.14) / 0.86) / m; Module._web_circle(Math.round(x * k * 156), Math.round(-y * k * 156)); stickOn = true; } else if (stickOn) { stickOn = false; Module._web_circle(0, 0); }
-  }, 8);
-}
-{   // fullscreen button and a pill that fades while you play
-  const fsb = document.getElementById('fsbtn'), de = document.documentElement, req = de.requestFullscreen || de.webkitRequestFullscreen;
-  if (fsb) { if (!req) { fsb.title = 'Full screen'; fsb.addEventListener('click', () => { const t = document.getElementById('toast'); t.textContent = 'This browser has no full screen for web pages (iPhone). Tap Share, then Add to Home Screen, and open the page from the icon: no browser bars.'; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => { t.style.display = 'none'; }, 7000); }); } else fsb.addEventListener('click', () => { if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document); else req.call(de); }); }
-  const pill = document.getElementById('pill'); let t = 0;
-  const wake = () => { pill.classList.remove('idle'); clearTimeout(t); t = setTimeout(() => pill.classList.add('idle'), 3500); };
-  for (const ev of ['pointermove', 'pointerdown', 'keydown']) addEventListener(ev, wake, { passive: true }); wake();
-}
-{   // sizes the player can change: main screen share, buttons size and opacity (kept on the device)
-  const KEY = 'panda3ds.sizes', def = { top: 0, us: 100, uo: 72 }; let st = { ...def };
-  try { Object.assign(st, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) {}
-  window.__sizes = st;
-  const el = (id) => document.getElementById(id), de = document.documentElement;
-  const apply = () => {
-    de.style.setProperty('--us', st.us / 100); de.style.setProperty('--uo', st.uo / 100);
-    el('s-top').value = st.top || 60; el('s-us').value = st.us; el('s-uo').value = st.uo;
-    el('s-top').nextElementSibling.textContent = (st.top || 'auto') + (st.top ? '%' : ''); el('s-us').nextElementSibling.textContent = st.us + '%'; el('s-uo').nextElementSibling.textContent = st.uo + '%';
-    lastLay = ''; if (typeof applyLayout === 'function') applyLayout();
-  };
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} apply(); };
-  el('s-top').addEventListener('input', (e) => { st.top = +e.target.value; save(); });
-  el('s-us').addEventListener('input', (e) => { st.us = +e.target.value; save(); });
-  el('s-uo').addEventListener('input', (e) => { st.uo = +e.target.value; save(); });
-  el('s-reset').addEventListener('click', () => { st = { ...def }; window.__sizes = st; save(); });
-  el('setbtn').addEventListener('click', () => de.classList.toggle('sets'));
-  apply();
-}
-setInterval(renderDiag, 250);
-{   // player skin: one small status pill (fps, or the loading message) that opens the detailed panel
-  const pill = document.getElementById('pill'), txt = document.getElementById('pilltxt'), dot = pill.querySelector('i');
-  document.getElementById('infobtn').addEventListener('click', () => document.documentElement.classList.toggle('info'));
-  document.getElementById('ctlbtn').addEventListener('click', () => document.documentElement.classList.toggle('noctl'));
-  setInterval(() => {
-    if (frames < 40) { const m = (document.getElementById('stats').textContent || '').replace(/^\s+/, ''); document.getElementById('loadtxt').textContent = m && m !== 'loading…' ? m : 'Loading the game…'; txt.textContent = m ? (m.length > 38 ? m.slice(0, 36) + '…' : m) : 'starting'; dot.className = 'mid'; return; }
-    document.documentElement.classList.add('ready');
-    txt.textContent = Math.round(fpsNow) + ' fps'; dot.className = fpsNow >= 55 ? '' : fpsNow >= 40 ? 'mid' : 'low';
-  }, 500);
-}
-(function presentProbe() { presentCount++; requestAnimationFrame(presentProbe); })();   // how often the browser actually repaints this page
-if (navigator.getBattery) navigator.getBattery().then((b) => { battery = b; }).catch(() => {});
 
-// tog=px@150,hud@200,gl@250 (seconds): switch a part of the page off while the game runs and log it, to see what the browser's own page work costs
-for (const item of (params.get('tog') || '').split(',').filter(Boolean)) {
-  const [what, sec] = item.split('@');
-  setTimeout(() => {
-    if (what === 'px') document.getElementById('gl').style.imageRendering = 'auto';
-    else if (what === 'hud') { hudOff = true; document.getElementById('diag').style.display = 'none'; }
-    else if (what === 'spark') document.getElementById('spark').style.display = 'none';
-    post('log', { msg: '[tog] ' + what + ' off at frame ' + frames });
-  }, +sec * 1000);
-}
-// fscript=A:2100,A:2660,B:3780: press a button (held for 6 frames) when the emulated frame counter reaches the given number - independent of machine speed
-// T:frame:hold:x:y touches the bottom screen at x,y (0..319, 0..239), e.g. the button in the lower right corner of the title screen
-const fsched = (params.get('fscript') || '').split(',').filter(Boolean).map((x) => { const [b, f, h, tx, ty] = x.split(':'); return [b, +f, +(h || 6), +tx, +ty]; }).sort((p, q) => p[1] - q[1]), frel = [];
-// fscriptfile=route-title.txt: the same list read from a file next to the page (a long route does not fit in the address)
-{ const ff = params.get('fscriptfile'); if (ff) fetch(ff).then((r) => r.text()).then((t) => { t.trim().split(',').filter(Boolean).forEach((x) => { const [b, f, h, tx, ty] = x.split(':'); fsched.push([b, +f, +(h || 6), +tx, +ty]); }); fsched.sort((p, q) => p[1] - q[1]); }).catch(() => {}); }
-function runScripted() {
-  while (fsched.length && frames >= fsched[0][1]) { const [b, , hold, tx, ty] = fsched.shift(); if (b === 'T') { if (Module._web_touch) Module._web_touch(tx, ty, 1); } else press(b, true); frel.push([frames + hold, b]); frel.sort((p, q) => p[0] - q[0]); }
-  while (frel.length && frames >= frel[0][0]) { const b = frel.shift()[1]; if (b === 'T') { if (Module._web_touch) Module._web_touch(0, 0, 0); } else press(b, false); }
-}
+    // -------------------------------------------------------------
+    // Main Render Loop
+    // -------------------------------------------------------------
+    renderer.setAnimationLoop(() => {
+      // 1. Advance Panda3DS Emulator Frame
+      if (emuReady && emuRunning) {
+        Module._web_frame();
+        canvasTexture.needsUpdate = true;
+      }
 
-function runFrame() {
-  const a = performance.now();
-  let qo = null; if (tq) { pollGpu(); qo = glx.createQuery(); glx.beginQuery(tq.TIME_ELAPSED_EXT, qo); }
-  const jb0 = Module.jit ? Module.jit.impls[0].count || 0 : 0, gs0 = window.__glSlow.ms;
-  if (window.__glrec) window.__glrec.begin(frames);
-  if (rpFrom && rpState === 0 && frames >= rpFrom && window.makeReplayer && rpData) {   // switch: build the replayer from the recorded frame (takes a while: shaders are compiled)
-    rpState = 1;
-    const data = rpData;
-    const gl = document.getElementById('gl').getContext('webgl2'); rpFrame = makeReplayer(gl, data, new Set(), rpCpu, false); rpState = 2;
-    post('log', { msg: '[rp] replay mode from frame ' + frames + ' (' + data.draws + ' draws, ' + data.calls.length + ' calls)' });
-  }
-  const alive = rpState === 2 ? (rpFrame(), 1) : Module._web_frame();
-  if (window.__glrec) window.__glrec.end(frames);
-  if (finishProbe || frameSync) {   // wait until the GPU has executed this frame's commands (a 1-pixel read); GL_FINISH:1 also records how long that took
-    if (!finishCtx) finishCtx = glx || document.getElementById('gl').getContext('webgl2');
-    const f0 = performance.now(); finishCtx.readPixels(0, 0, 1, 1, finishCtx.RGBA, finishCtx.UNSIGNED_BYTE, finishPx); const fd = performance.now() - f0;   // finish() returns at once on WebKit; reading a pixel really waits for the GPU
-    if (finishProbe) { finishStat.n++; finishStat.sum += fd; if (fd > finishStat.max) finishStat.max = fd; if (fd > 16) finishStat.over++;
-    if (finishStat.n >= 120) { post('gpuwait', { avgMs: +(finishStat.sum / finishStat.n).toFixed(1), maxMs: +finishStat.max.toFixed(1), over16: finishStat.over, frames: finishStat.n, frame: frames }); finishStat.n = 0; finishStat.sum = 0; finishStat.max = 0; finishStat.over = 0; } }
-  }
-  if (qo) { glx.endQuery(tq.TIME_ELAPSED_EXT); pendingQ.push(qo); }
-  const ms = performance.now() - a;
-  if (ms > 30) {   // a slow frame: say what it was spent on
-    const jb = (Module.jit ? Module.jit.impls[0].count || 0 : 0) - jb0, gs = window.__glSlow.ms - gs0;
-    const cause = gs > ms * 0.4 ? 'shader' : (jb > 15 ? 'jit' : 'other');
-    hitchStats[cause]++; hitchStats.total++; if (ms > hitchStats.worst) hitchStats.worst = ms;
-    hitchStats.recent.push(`#${frames + 1} ${ms.toFixed(0)}ms ${cause}${cause === 'shader' ? ' ' + gs.toFixed(0) + 'ms' : cause === 'jit' ? ' ' + jb + ' blocks' : ''}`); if (hitchStats.recent.length > 6) hitchStats.recent.shift();
-    post('hitch', { frame: frames + 1, ms: +ms.toFixed(1), cause, jitBlocks: jb, glSlowMs: +gs.toFixed(1) });
-  }
-  frameMs.push(ms); if (frameMs.length > 240) frameMs.shift();
-  frames++; if (fsched.length || frel.length) runScripted(); sum += ms; if (ms > worst) { worst = ms; worstFrame = frames; const j = Module.jit && Module.jit.impls[0]; flushesAtWorst = j ? (j.flushes || 0) : 0; } if (ms > FRAME_MS) hitches++;
-  if (dbg) post('frame', { n: frames, ms: +ms.toFixed(1), ...mem() });
-  return alive;
-}
+      // 2. Poll WebXR Input if in VR session
+      if (renderer.xr.isPresenting) {
+        pollXRControllers();
+      } else {
+        controls.update();
+      }
 
-function schedule() { if (fast()) setTimeout(() => tick(performance.now()), 0); else if (useTimer) setTimeout(() => tick(performance.now()), Math.max(0, FRAME_MS - acc - 1)); else requestAnimationFrame(tick); }
+      // 3. Render Three.js Scene
+      renderer.render(scene, camera);
 
-function tick(now) {
-  if (!running) return;
-  const tickStart = performance.now(); rafCount++; if (pingOn) { tickSpans.push([tickStart, 0]); if (tickSpans.length > 6) tickSpans.shift(); } if (lastTickAt) { const gap = now - lastTickAt; if (gap > gapWin) gapWin = gap; } lastTickAt = now;
-  let alive = 1, ran = 0;
-  if (fast()) {
-    const tt0 = performance.now(); for (; ran < 16 && alive && !(maxFrames && frames >= maxFrames) && (ran === 0 || performance.now() - tt0 < 12); ran++) alive = runFrame();
-    if (!fast()) { acc = 0; lastTick = performance.now(); }   // fast-forward is over: restart the real-time clock
-  } else {
-    acc += Math.min(now - lastTick, 100); lastTick = now;     // fixed time step: the display may refresh at 60 or 120 Hz
-    // The browser may call us less often than 60 times a second (Comet on battery / low-power / occluded: ~30 per second, measured), so run as many
-    // emulated frames as the elapsed time asks for, but never more than 3 and never once this tick has already used 10 ms (a spiral of death
-    // when frames are expensive is what the old one-frame-per-tick cap was for; the time guard keeps that protection).
-    const tickT0 = performance.now();
-    while (acc >= FRAME_MS && alive && !(maxFrames && frames >= maxFrames) && ran < 3 && (ran === 0 || performance.now() - tickT0 < 10)) {
-      alive = runFrame();
-      acc -= FRAME_MS;
-      ran++;
-    }
-    // Drop lag debt immediately when falling behind:
-    if (acc > FRAME_MS) {
-      late += Math.floor(acc / FRAME_MS);
-      acc = 0;
-    }
-  }
-  if (ran) draw();
-  if (now - lastBeat > 1000) {
-    lastBeat = now;
-    const st = `frame ${frames}  avg ${(sum / Math.max(frames, 1)).toFixed(2)} ms  worst ${worst.toFixed(0)} ms  late ${late}  ${mem().wasmMB} MB  (budget 16.7)`;
-    document.getElementById('stats').textContent = st;
-    post('tick', { speed: +fpsNow.toFixed(1), loopHz: +rafHz.toFixed(0), paintHz: +presentHz.toFixed(0), tickMs: +tickMsAvg.toFixed(1), emuMs: +(frameMs.slice(-60).reduce((x, y) => x + y, 0) / Math.max(1, frameMs.slice(-60).length)).toFixed(1), frames, avgMs: sum / Math.max(frames, 1), worstMs: worst, late, hitches, ...(pingOn ? { pingOutMsS: pingStat.outMsS, pingOutMax: pingStat.outMax, pingInMsS: pingStat.inMsS, pingGapsS: pingStat.gaps } : {}), guestMsFr: jitStat.guestMsFr === null ? null : +jitStat.guestMsFr.toFixed(2), retFr: jitStat.retFr === null ? null : Math.round(jitStat.retFr), ticksFr: jitStat.ticksFr === null ? null : Math.round(jitStat.ticksFr), ...mem(), fps: frames / ((performance.now() - t0) / 1000) });
-  }
-  tickMsAvg = tickMsAvg * 0.95 + (performance.now() - tickStart) * 0.05; if (pingOn) tickSpans[tickSpans.length - 1][1] = performance.now();
-  if (!alive || (maxFrames && frames >= maxFrames)) { finish(); return; }
-  schedule();
-}
+      // 4. Update FPS Counter
+      frameCount++;
+      const now = performance.now();
+      if (now - lastTime >= 1000) {
+        fps = Math.round((frameCount * 1000) / (now - lastTime));
+        document.getElementById('fpsBadge').textContent = `${fps} FPS`;
+        frameCount = 0;
+        lastTime = now;
+      }
+    });
 
-// GL mode: count non-black pixels in the canvas halves (top screen = upper 240 rows, bottom screen = lower 240 rows)
-function litGL() {
-  const gl = document.getElementById('gl').getContext('webgl2');
-  const w = GLW, h = GLH, d = new Uint8Array(w * h * 4);
-  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, d);
-  let topLit = 0, bottomLit = 0;
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4; if (d[i] | d[i + 1] | d[i + 2]) { if (side ? x < 400 : y >= 240) topLit++; else bottomLit++; } }   // GL rows run bottom to top
-  return { topLit, bottomLit };
-}
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
 
-async function finish() {
-  running = false;
-  const lit = (c, w) => { const d = c.getImageData(0, 0, w, 240).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] | d[i + 1] | d[i + 2]) n++; return n; };
-  const wall = (performance.now() - t0) / 1000;
-  const result = { rom, frames, avgMs: frames ? sum / frames : 0, worstMs: worst, late, hitches, fps: wall > 0 ? frames / wall : 0, wallSec: wall, ...mem(),
-                   ...(useGL ? litGL() : { topLit: lit(ctx[0], 400), bottomLit: lit(ctx[1], 320) }), errors, userAgent: navigator.userAgent, turbo, done: true };
-  if (useGL && report) { try { post('shot', { png: document.getElementById('gl').toDataURL('image/png') }); } catch (e) { log('shot failed: ' + e); } }
-  document.getElementById('stats').textContent = `done: ${frames} frames, avg ${result.avgMs.toFixed(2)} ms, worst ${worst.toFixed(0)} ms, ${result.fps.toFixed(1)} fps, lit px top ${result.topLit} / bottom ${result.bottomLit}`;
-  window.__result = result;
-  if (report) {
-    if (native) { post('done', result); return; }
-    const png = await new Promise((r) => document.getElementById(useGL ? 'gl' : 'top').toBlob(r, 'image/png'));
-    await fetch('/report?name=' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify(result) });
-    await fetch('/report-png?name=' + encodeURIComponent(name), { method: 'POST', body: png });
-  }
-}
-</script>
-<script>if (new URLSearchParams(location.search).get('rp')) document.write('<script src="glreplay.js"><\/script>');</script>
-<script>if (new URLSearchParams(location.search).get('glrec')) document.write('<script src="glrec.js"><\/script>');</script>
-<script src="../build-core/AlberWeb.js"></script>
+  <!-- Load Panda3DS Core WebAssembly -->
+  <script src="../build-core/AlberWeb.js"></script>
+</body>
+</html>

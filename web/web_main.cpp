@@ -16,19 +16,36 @@
 #include "opengl.hpp"
 
 static std::unique_ptr<Emulator> emu;
-static std::vector<u8> screens[2];  // [0] top 400x240, [1] bottom 320x240, RGBA8
+static std::vector<u8> screens[3];  // [0] top-left 400x240, [1] top-right 400x240, [2] bottom 320x240, RGBA8
 
 // Converts the screen the guest last presented into RGBA (framebuffers are stored rotated: column major, y flipped).
-static int convertScreen(bool top) {
+// screenIndex: 0 = Top Left, 1 = Top Right, 2 = Bottom
+static int convertScreen(int screenIndex) {
     using namespace PICA::ExternalRegs;
-    auto& out = screens[top ? 0 : 1];
-    const u32 w = top ? 400 : 320, h = 240;
+    if (screenIndex < 0 || screenIndex > 2) return 0;
+    auto& out = screens[screenIndex];
+    const bool isTop = (screenIndex != 2);
+    const u32 w = isTop ? 400 : 320, h = 240;
     out.resize(w * h * 4);
     GPU& gpu = emu->getGPU();
     auto& r = gpu.getExtRegisters();
-    const u32 sel = r[top ? Framebuffer0Select : Framebuffer1Select] & 1;
-    const u32 addr = r[top ? (sel ? Framebuffer0ASecondAddr : Framebuffer0AFirstAddr) : (sel ? Framebuffer1ASecondAddr : Framebuffer1AFirstAddr)];
-    const u32 fmt = r[top ? Framebuffer0Config : Framebuffer1Config] & 7;
+
+    u32 addr = 0;
+    u32 fmt = 0;
+    if (screenIndex == 0) {
+        const u32 sel = r[Framebuffer0Select] & 1;
+        addr = r[sel ? Framebuffer0ASecondAddr : Framebuffer0AFirstAddr];
+        fmt = r[Framebuffer0Config] & 7;
+    } else if (screenIndex == 1) {
+        const u32 sel = r[Framebuffer0Select] & 1;
+        addr = r[sel ? Framebuffer0BSecondAddr : Framebuffer0BFirstAddr];
+        fmt = r[Framebuffer0Config] & 7;
+    } else {
+        const u32 sel = r[Framebuffer1Select] & 1;
+        addr = r[sel ? Framebuffer1ASecondAddr : Framebuffer1AFirstAddr];
+        fmt = r[Framebuffer1Config] & 7;
+    }
+
     static const int bpp[] = {4, 3, 2, 2, 2, 2, 2, 2};
     const u8* fb = gpu.getPointerPhys<u8>(addr, w * h * bpp[fmt]);
     if (!fb) { std::fill(out.begin(), out.end(), 0); return 0; }
@@ -121,7 +138,10 @@ EMSCRIPTEN_KEEPALIVE void web_layout(int w, int h, int layout, float topPct) {
 }
 EMSCRIPTEN_KEEPALIVE int web_layout_rect(int i) { return layoutRect[i & 3]; }
 
-EMSCRIPTEN_KEEPALIVE const u8* web_screen(int top) { return convertScreen(top != 0) ? screens[top ? 0 : 1].data() : nullptr; }
+EMSCRIPTEN_KEEPALIVE const u8* web_screen(int top) { return convertScreen(top ? 0 : 2) ? screens[top ? 0 : 2].data() : nullptr; }
+EMSCRIPTEN_KEEPALIVE const u8* web_screen_stereo(int eye) { return convertScreen(eye) ? screens[eye].data() : nullptr; }
+EMSCRIPTEN_KEEPALIVE void web_set_3d_slider(float val) { if (emu) emu->getConfig().slider3D = val; }
+EMSCRIPTEN_KEEPALIVE float web_get_3d_slider() { return emu ? emu->getConfig().slider3D : 0.0f; }
 }
 
 int main() { return 0; }

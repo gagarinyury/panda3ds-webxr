@@ -1,3 +1,4 @@
+emsdk
 emsdk/
 Panda3DS/
 probe/build/
@@ -17,10 +18,12 @@ run/web-reports/
 run/*/
 !run/examples/
 run/examples/*
+!run/examples/graphics__gpu__stereoscopic_2d.3dsx
 !run/examples/graphics__gpu__simple_tri.3dsx
 !run/examples/graphics__gpu__textured_cube.3dsx
 !run/examples/graphics__gpu__toon_shading.3dsx
 !run/examples/graphics__gpu__fragment_light.3dsx
+web/*.original.html
 ios/Site/
 ios/*.xcodeproj/
 ios/build/
