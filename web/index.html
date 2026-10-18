@@ -270,7 +270,9 @@
     // Top Bezel frame
     const topBezel = new THREE.Mesh(new THREE.BoxGeometry(1.08, 0.68, 0.02), bodyMat);
     topBezel.position.set(0, 0.35, -0.012);
-    topBezel.layers.set(0);
+    topBezel.layers.enable(0);
+    topBezel.layers.enable(1);
+    topBezel.layers.enable(2);
     consoleGroup.add(topBezel);
 
     // Bottom Screen (Touch): Aspect ratio 320x240 -> 0.8m x 0.6m
@@ -279,20 +281,27 @@
     const meshBottom = new THREE.Mesh(botGeo, matBottom);
     meshBottom.position.set(0, -0.32, 0.08);
     meshBottom.rotation.x = -0.35; // Tilted upward toward player
-    meshBottom.layers.set(0); // Visible to BOTH eyes
+    meshBottom.layers.enable(0);
+    meshBottom.layers.enable(1); // Visible to Left eye in WebXR
+    meshBottom.layers.enable(2); // Visible to Right eye in WebXR
     consoleGroup.add(meshBottom);
 
     // Bottom Bezel frame
     const botBezel = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.68, 0.02), bodyMat);
     botBezel.position.set(0, -0.32, 0.07);
     botBezel.rotation.x = -0.35;
-    botBezel.layers.set(0);
+    botBezel.layers.enable(0);
+    botBezel.layers.enable(1);
+    botBezel.layers.enable(2);
     consoleGroup.add(botBezel);
 
     // Touch Laser Pointer Indicator
     const dotGeo = new THREE.SphereGeometry(0.012, 16, 16);
     const dotMat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
     const touchDot = new THREE.Mesh(dotGeo, dotMat);
+    touchDot.layers.enable(0);
+    touchDot.layers.enable(1);
+    touchDot.layers.enable(2);
     touchDot.visible = false;
     scene.add(touchDot);
 
@@ -303,16 +312,24 @@
     const tempMatrix = new THREE.Matrix4();
 
     const controller0 = renderer.xr.getController(0);
+    controller0.layers.enable(1);
+    controller0.layers.enable(2);
     scene.add(controller0);
     const controller1 = renderer.xr.getController(1);
+    controller1.layers.enable(1);
+    controller1.layers.enable(2);
     scene.add(controller1);
 
     // Controller laser line
     const laserMat = new THREE.LineBasicMaterial({ color: 0x00c6ff, transparent: true, opacity: 0.6 });
     const laserGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -2)]);
     const laser0 = new THREE.Line(laserGeo, laserMat);
+    laser0.layers.enable(1);
+    laser0.layers.enable(2);
     controller0.add(laser0);
     const laser1 = new THREE.Line(laserGeo, laserMat);
+    laser1.layers.enable(1);
+    laser1.layers.enable(2);
     controller1.add(laser1);
 
     // -------------------------------------------------------------
