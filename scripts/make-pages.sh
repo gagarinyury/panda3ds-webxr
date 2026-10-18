@@ -8,6 +8,7 @@ sed 's|\.\./build-core/|/build-core/|g' web/index.html > dist/index.html   # the
 cp build-core/AlberWeb.js build-core/AlberWeb.wasm dist/build-core/
 for d in graphics__gpu__lenny graphics__gpu__stereoscopic_2d graphics__gpu__textured_cube graphics__gpu__toon_shading graphics__gpu__fragment_light; do cp run/examples/$d.3dsx dist/run/examples/; done
 cp run/ctr-hello.3dsx dist/run/
+[ -f run/sm3dl.3ds ] && cp run/sm3dl.3ds dist/run/ || true
 cp web/icon.svg web/og.png web/apple-touch-icon.png web/icon-192.png web/icon-512.png web/manifest.webmanifest dist/
 cat > dist/_headers <<'H'
 /*
