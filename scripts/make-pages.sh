@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 rm -rf dist && mkdir -p dist/build-core dist/run/examples
 sed 's|\.\./build-core/|/build-core/|g' web/index.html > dist/index.html   # the page sits at the root of the site
 cp build-core/AlberWeb.js build-core/AlberWeb.wasm dist/build-core/
-for d in graphics__gpu__stereoscopic_2d graphics__gpu__textured_cube graphics__gpu__toon_shading graphics__gpu__fragment_light; do cp run/examples/$d.3dsx dist/run/examples/; done
+for d in graphics__gpu__lenny graphics__gpu__stereoscopic_2d graphics__gpu__textured_cube graphics__gpu__toon_shading graphics__gpu__fragment_light; do cp run/examples/$d.3dsx dist/run/examples/; done
 cp run/ctr-hello.3dsx dist/run/
 cp web/icon.svg web/og.png web/apple-touch-icon.png web/icon-192.png web/icon-512.png web/manifest.webmanifest dist/
 cat > dist/_headers <<'H'
