@@ -16,7 +16,7 @@
 <script>   // a blank screen on a phone tells nothing: show the first script error on the page itself
 (function () { const show = (m) => { let d = document.getElementById('errbox'); if (!d) { d = document.createElement('pre'); d.id = 'errbox'; d.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:99;margin:0;padding:10px;background:#3a1114;color:#ffd9d6;font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;border-radius:8px;max-height:45vh;overflow:auto'; (document.body || document.documentElement).appendChild(d); } d.textContent += m + '\n'; };
   window.__showErr = show;
-  addEventListener('error', (e) => show('error: ' + e.message + ' (' + String(e.filename || '').split('/').pop() + ':' + e.lineno + ')'));
+  addEventListener('error', (e) => show('error: ' + e.message + ' (' + String(e.filename || '').split('/').pop() + ':' + e.lineno + ')' + (e.error && e.error.stack ? '\n' + String(e.error.stack).split('\n').slice(1, 8).join('\n') : '')));
   addEventListener('unhandledrejection', (e) => show('promise: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason))); })();
 </script>
 <style>
@@ -96,12 +96,13 @@
   #foot { display: none; color: #5c6471; font-size: 12px; text-align: center; margin-top: 18px; }
   #foot a { color: #7f8b9c; }
   html.player:not(.started) #foot { display: block; }
-  #pill { display: none; position: fixed; right: 10px; top: 10px; z-index: 30; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 20px; background: rgba(20,23,28,.82); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); color: #cfd5de; font: 600 13px system-ui; cursor: pointer; user-select: none; -webkit-user-select: none; }
+  #pill { display: none; position: fixed; right: 10px; top: 10px; z-index: 30; align-items: center; gap: 12px; padding: 10px 18px; border-radius: 30px; background: rgba(20,23,28,.82); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); color: #cfd5de; font: 600 20px system-ui; cursor: pointer; user-select: none; -webkit-user-select: none; }
   html.player.started #pill { display: flex; }
   #pill { transition: opacity .35s; } #pill.idle { opacity: .28; } #pill:hover { opacity: 1; }
-  #pill i { width: 9px; height: 9px; border-radius: 50%; background: #3fb950; }
+  #pill i { width: 14px; height: 14px; border-radius: 50%; background: #3fb950; }
   #pill i.mid { background: #e3a008; } #pill i.low { background: #f85149; }
-  #pill u { text-decoration: none; opacity: .7; font-weight: 500; padding: 0 2px; }
+  #pill u { text-decoration: none; opacity: .7; font-weight: 500; padding: 0 3px; }
+  #toast { display: none; position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 40; max-width: min(92vw, 420px); padding: 12px 16px; border-radius: 14px; background: rgba(20,23,28,.94); color: #e8ebf0; font: 500 15px/1.4 system-ui; text-align: center; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
   html.player.noctl #ctl { display: none !important; } html.player.noctl { --ctlh: 0px !important; }
   /* ---- on-screen controller (player skin) ----
      Sizes come from one unit (--u) that follows the window; fingers get bigger targets and no key captions, a mouse gets compact buttons with the key printed on each.
@@ -110,10 +111,10 @@
   html.player.coarse { --u0: clamp(46px, 9.5vmin, 66px); }
   html.player, html.player body { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
   #ctl, #pill { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: none; }
-  #ctl { display: none; width: min(100%, 780px); margin: 10px auto 0; padding: 0 max(4px, env(safe-area-inset-left)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-right)); box-sizing: border-box; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr auto; gap: 8px 10px; align-items: stretch; }
+  #ctl { display: none; width: min(100%, 780px); margin: 10px auto 0; padding: 0 max(4px, env(safe-area-inset-left)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-right)); box-sizing: border-box; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; gap: 8px 10px; align-items: stretch; }
   html.player.started #ctl { display: grid; }
   html.player.started { --ctlh: calc(var(--u) * 7.6 + 40px); }
-  #ctl .col { align-items: center; } #ctl .left { grid-column: 1; grid-row: 1 / span 2; } #ctl .right { grid-column: 2; grid-row: 1; } #ctl .mid { grid-column: 2; grid-row: 2; justify-content: center; }
+  #ctl .col { align-items: center; } #ctl .left { grid-column: 1; grid-row: 1; } #ctl .right { grid-column: 2; grid-row: 1; } #ctl .mid { grid-column: 2; grid-row: 2; justify-content: center; }
   #ctl .left .row2 { flex-direction: column; align-items: center; gap: calc(var(--u) * .5); margin: auto 0; } #ctl .right .abxy { margin: auto 0; }
   html.player.noctl #ctl { display: none !important; } html.player.noctl { --ctlh: 0px !important; }
   #ctl .col { display: flex; flex-direction: column; gap: calc(var(--u) * .22); }
@@ -123,7 +124,7 @@
   #ctl b em { position: absolute; right: 3px; bottom: 2px; font: 600 9.5px ui-monospace, Menlo, monospace; font-style: normal; color: #9aa4b2; background: rgba(0,0,0,.35); border-radius: 4px; padding: 0 4px; line-height: 14px; }
   html.coarse #ctl em, html.coarse #cpad small { display: none; }   /* no keyboard on a touch screen: no key captions */
   #ctl .sh b { min-width: calc(var(--u) * 1.9); height: calc(var(--u) * .74); font-size: calc(var(--u) * .3); }
-  #ctl .mid b { flex-direction: column; height: calc(var(--u) * .9); font-size: calc(var(--u) * .27); min-width: calc(var(--u) * 1.5); gap: 1px; } #ctl .mid b em { position: static; background: none; padding: 0; line-height: 12px; }
+  #ctl b.ss { flex-direction: column; height: calc(var(--u) * .9); font-size: calc(var(--u) * .27); min-width: calc(var(--u) * 1.5); gap: 1px; } #ctl b.ss em { position: static; background: none; padding: 0; line-height: 12px; }
   #ctl .abxy, #ctl .dpad { display: grid; grid-template-columns: repeat(3, var(--u)); grid-template-rows: repeat(3, var(--u)); gap: 2px; }
   #ctl .abxy b { border-radius: 50%; padding: 0; } #ctl .abxy b[data-k=X] { grid-area: 1/2; } #ctl .abxy b[data-k=Y] { grid-area: 2/1; } #ctl .abxy b[data-k=A] { grid-area: 2/3; } #ctl .abxy b[data-k=B] { grid-area: 3/2; }
   #ctl .dpad b[data-k=Up] { grid-area: 1/2; } #ctl .dpad b[data-k=Left] { grid-area: 2/1; } #ctl .dpad b[data-k=Right] { grid-area: 2/3; } #ctl .dpad b[data-k=Down] { grid-area: 3/2; } #ctl .dpad b { border-radius: calc(var(--u) * .2); padding: 0; }
@@ -142,12 +143,12 @@
     html.player.started:not(.ovl) #gl { grid-column: 2; grid-row: 1 / span 2; width: min(calc(100vw - 2 * (var(--u) * 3.6 + 28px)), calc((100dvh - 24px) * var(--w, 400) / var(--h, 480))) !important; }
     html.player.started:not(.ovl) #ctl { display: contents; }
     html.player.started:not(.ovl) #ctl .left, html.player.started:not(.ovl) #ctl .right { width: calc(var(--u) * 3.6); align-self: stretch; display: flex; flex-direction: column; align-items: center; }
-    html.player.started:not(.ovl) #ctl .left { grid-column: 1; grid-row: 1 / span 2; justify-self: end; margin-left: env(safe-area-inset-left); }
+    html.player.started:not(.ovl) #ctl .left { grid-column: 1; grid-row: 1; justify-self: end; margin-left: env(safe-area-inset-left); }
     html.player.started:not(.ovl) #ctl .right { grid-column: 3; grid-row: 1; justify-self: start; margin-right: env(safe-area-inset-right); }
     html.player.started:not(.ovl) #ctl .left .row2 { flex-direction: column; align-items: center; gap: calc(var(--u) * .6); margin: auto 0; }
     html.player.started:not(.ovl) #ctl .right .abxy { margin: auto 0; }
     html.player.started:not(.ovl) #ctl .sh { margin-top: 38px; }
-    html.player.started:not(.ovl) #ctl .mid { grid-column: 3; grid-row: 2; justify-self: start; width: calc(var(--u) * 3.6); justify-content: center; padding: 0 0 6px; }
+    html.player.started:not(.ovl) #ctl b.ss { margin-top: calc(var(--u) * .3); }
   }
 
   /* portrait window: the screens as wide as possible, the controls get what is left (the unit shrinks to fit) */
@@ -167,13 +168,13 @@
   html.player.ovl #ctl .col { display: contents; }
   html.player.ovl #ctl b, html.player.ovl #cpad { pointer-events: auto; }
   html.player.ovl #ctl b { background: rgba(30,35,44,.62); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
-  html.player.ovl #ctl .sh, html.player.ovl #ctl .row2, html.player.ovl #ctl .abxy, html.player.ovl #ctl .mid b { position: fixed; margin: 0; }
+  html.player.ovl #ctl .sh, html.player.ovl #ctl .row2, html.player.ovl #ctl .abxy, html.player.ovl #ctl b.ss { position: fixed; margin: 0; }
   html.player.ovl #ctl .left .sh { left: max(12px, env(safe-area-inset-left)); top: 10px; }
   html.player.ovl #ctl .right .sh { right: max(12px, env(safe-area-inset-right)); top: 10px; }
   html.player.ovl #ctl .left .row2 { left: max(14px, env(safe-area-inset-left)); bottom: max(12px, env(safe-area-inset-bottom)); flex-direction: row; align-items: flex-end; gap: calc(var(--u) * .5); }
   html.player.ovl #ctl .abxy { right: max(14px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); }
-  html.player.ovl #ctl .mid b[data-k=Select] { left: calc(max(12px, env(safe-area-inset-left)) + var(--u) * 1.9 + 14px); top: 10px; }
-  html.player.ovl #ctl .mid b[data-k=Start] { right: calc(max(12px, env(safe-area-inset-right)) + var(--u) * 1.9 + 14px); top: 10px; }
+  html.player.ovl #ctl b.ss[data-k=Select] { left: calc(max(12px, env(safe-area-inset-left)) + var(--u) * 1.9 + 14px); top: 10px; }
+  html.player.ovl #ctl b.ss[data-k=Start] { right: calc(max(12px, env(safe-area-inset-right)) + var(--u) * 1.9 + 14px); top: 10px; }
   html.player.ovl #pill { top: auto; bottom: 10px; right: 50%; transform: translateX(50%); }
 </style>
 <label id="romtiny" style="display:none">📂<input type="file" id="rom-file2" accept=".3ds,.cxi,.cci,.3dsx,.elf" style="display:none"></label>
@@ -194,6 +195,7 @@
   <canvas id="gl" width="720" height="240" style="display:none"></canvas>
   <canvas id="top" width="400" height="240"></canvas>
   <canvas id="bottom" width="320" height="240"></canvas>
+  <div id="toast"></div>
   <div id="pad" style="display:none">
     <div class="row"><b data-k="L">L</b><b data-k="R">R</b><b data-k="Select">Select</b><b data-k="Start">Start</b></div>
     <div class="row"><span><b data-k="Up">↑</b></span></div>
@@ -209,14 +211,15 @@
   <div id="ctl">
     <div class="col left">
       <div class="sh"><b data-k="L">L<em>Q</em></b></div>
+      <b class="ss" data-k="Select">Select<em>⌫</em></b>
       <div class="row2">
         <div id="cpad"><div id="nub"></div><small>circle pad · arrow keys</small></div>
         <div class="dpad"><b data-k="Up">↑</b><b data-k="Left">←</b><b data-k="Right">→</b><b data-k="Down">↓</b></div>
       </div>
     </div>
-    <div class="col mid"><b data-k="Select">Select<em>⌫</em></b><b data-k="Start">Start<em>Enter</em></b></div>
     <div class="col right">
       <div class="sh"><b data-k="R">R<em>W</em></b></div>
+      <b class="ss" data-k="Start">Start<em>Enter</em></b>
       <div class="abxy"><b data-k="X">X<em>S</em></b><b data-k="Y">Y<em>Y</em></b><b data-k="A">A<em>X</em></b><b data-k="B">B<em>Z</em></b></div>
     </div>
   </div>
@@ -440,7 +443,7 @@ var Module = {
     // render with no GPU backend and no audio: only the presented framebuffers are shown
     Module.FS.writeFile('/config.toml', `[GPU]\nRenderer = "${useGL ? 'opengl' : 'null'}"\nScreenLayout = "${side ? 'SideBySide' : 'Default'}"\nTopScreenSize = ${side ? 0.5556 : 0.5}\nEnableShaderJIT = false\n[Audio]\nEnableAudio = ${audioMode === 'on' || audioMode === 'dev'}\nDSPEmulation = "${audioMode === 'on' || audioMode === 'dsp' ? 'HLE' : 'Null'}"\n`);
   }],
-  onRuntimeInitialized: () => start().catch((e) => { log('start failed: ' + e, true); finish(); }),
+  onRuntimeInitialized: () => { if (!Module._ma_device__on_notification_unlocked) Module._ma_device__on_notification_unlocked = () => {}; /* miniaudio's Web Audio code calls this C function after the first click unlocks sound; our build does not export it (it only reports 'unlocked' to the audio device, nothing uses it), so a no-op keeps the red error away */ start().catch((e) => { log('start failed: ' + e, true); finish(); }); },
 };
 let t0 = 0, frames = 0, running = true, worst = 0, sum = 0, late = 0, lastTick = 0, acc = 0, lastBeat = 0, hitches = 0;
 const ctx = ['top', 'bottom'].map((id) => document.getElementById(id).getContext('2d'));
@@ -887,7 +890,7 @@ function renderDiag() {
 }
 {   // fullscreen button and a pill that fades while you play
   const fsb = document.getElementById('fsbtn'), de = document.documentElement, req = de.requestFullscreen || de.webkitRequestFullscreen;
-  if (fsb) { if (!req) fsb.style.display = 'none'; else fsb.addEventListener('click', () => { if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document); else req.call(de); }); }
+  if (fsb) { if (!req) { fsb.title = 'Full screen'; fsb.addEventListener('click', () => { const t = document.getElementById('toast'); t.textContent = 'This browser has no full screen for web pages (iPhone). Tap Share, then Add to Home Screen, and open the page from the icon: no browser bars.'; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => { t.style.display = 'none'; }, 7000); }); } else fsb.addEventListener('click', () => { if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document); else req.call(de); }); }
   const pill = document.getElementById('pill'); let t = 0;
   const wake = () => { pill.classList.remove('idle'); clearTimeout(t); t = setTimeout(() => pill.classList.add('idle'), 3500); };
   for (const ev of ['pointermove', 'pointerdown', 'keydown']) addEventListener(ev, wake, { passive: true }); wake();

@@ -865,7 +865,7 @@ index 5ada30e3..12b1028f 100644
  		}
  	} else {  // If we're sleeping for >= 0 ns
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
-index 659a1e1d..68635ca3 100644
+index 659a1e1d..775be017 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
 +++ b/src/core/renderer_gl/renderer_gl.cpp
 @@ -1,5 +1,12 @@
@@ -1058,8 +1058,8 @@ index 659a1e1d..68635ca3 100644
 +		static std::map<std::string, int> seen;
 +		static int drawCount = 0;
 +		char key[300];
-+		std::snprintf(key, sizeof key, "blendCol=%08x texCfg=%08x colOp=%08x stencil=%08x stencilOp=%08x depthColorMask=%08x depthWrite=%x colourWrite=%x depthRead=%x colourRead=%x alphaTest=%08x clipEn=%x logicOp=%x blendFunc=%08x vertices=%s",
-+			regs[PICA::InternalRegs::BlendColour], regs[PICA::InternalRegs::TexUnitCfg], regs[PICA::InternalRegs::ColourOperation], regs[PICA::InternalRegs::StencilTest], regs[PICA::InternalRegs::StencilOp], regs[PICA::InternalRegs::DepthAndColorMask],
++		std::snprintf(key, sizeof key, "cull=%x blendCol=%08x texCfg=%08x colOp=%08x stencil=%08x stencilOp=%08x depthColorMask=%08x depthWrite=%x colourWrite=%x depthRead=%x colourRead=%x alphaTest=%08x clipEn=%x logicOp=%x blendFunc=%08x vertices=%s",
++			regs[PICA::InternalRegs::FaceCulling] & 3, regs[PICA::InternalRegs::BlendColour], regs[PICA::InternalRegs::TexUnitCfg], regs[PICA::InternalRegs::ColourOperation], regs[PICA::InternalRegs::StencilTest], regs[PICA::InternalRegs::StencilOp], regs[PICA::InternalRegs::DepthAndColorMask],
 +			regs[PICA::InternalRegs::DepthBufferWrite], regs[PICA::InternalRegs::ColourBufferWrite], regs[0x114], regs[0x112], regs[PICA::InternalRegs::AlphaTestConfig],
 +			regs[PICA::InternalRegs::ClipEnable] & 1, regs[PICA::InternalRegs::LogicOp] & 0xF, regs[PICA::InternalRegs::BlendFunc], vertices.size() <= 3 ? "<=3" : (vertices.size() <= 12 ? "<=12" : ">12"));
 +		seen[key]++;
@@ -1093,7 +1093,7 @@ index 659a1e1d..68635ca3 100644
  
  	static constexpr std::array<GLenum, 8> depthModes = {
  		GL_NEVER, GL_ALWAYS, GL_EQUAL, GL_NOTEQUAL, GL_LESS, GL_LEQUAL, GL_GREATER, GL_GEQUAL,
-@@ -503,6 +614,21 @@ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> v
+@@ -503,6 +614,37 @@ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> v
  
  	setupStencilTest(stencilEnable);
  
@@ -1103,7 +1103,23 @@ index 659a1e1d..68635ca3 100644
 +	static const bool noCull = std::getenv("GL_NOCULL") != nullptr;
 +	static const bool reverseCull = std::getenv("GL_CULL") && std::atoi(std::getenv("GL_CULL")) == 2;
 +	const u32 cullMode = regs[PICA::InternalRegs::FaceCulling] & 3;
-+	if (noCull || cullMode == 0 || cullMode == 3) {
++	// Only the stencil passes that count shadow volumes (an INCR / DECR operation) are culled for now: with the winding used below, the main geometry of some
++	// homebrew (a citro3d cube, mode 2) disappears completely while Super Mario 3D Land's (also mode 2) is fine, so the general rule is not understood yet.
++	// Env GL_CULL_ALL=1 applies the culling to every draw (experiment).
++	static const bool cullAll = std::getenv("GL_CULL_ALL") != nullptr;
++	bool countsStencil = false;
++	if (stencilEnable) {
++		const u32 stencilOps = regs[PICA::InternalRegs::StencilOp];
++		for (u32 shift : {0u, 4u, 8u}) {
++			const u32 op = (stencilOps >> shift) & 7;
++			countsStencil |= (op == 3 || op == 4 || op == 6 || op == 7);
++		}
++	}
++	// The stencil shadow volumes need the main geometry culled as well (its depth values decide where the volumes count), so once a game has issued such a
++	// pass, culling stays on for all its draws. Games that never do (the citro3d cube) keep drawing without culling.
++	static bool shadowVolumesSeen = false;
++	if (countsStencil && cullMode != 0 && cullMode != 3) shadowVolumesSeen = true;
++	if (noCull || cullMode == 0 || cullMode == 3 || !(cullAll || shadowVolumesSeen)) {
 +		glDisable(GL_CULL_FACE);
 +	} else {
 +		glEnable(GL_CULL_FACE);
@@ -1115,7 +1131,7 @@ index 659a1e1d..68635ca3 100644
  	if (!usingAcceleratedShader) {
  		vbo.bufferVertsSub(vertices);
  		OpenGL::draw(primitiveTopology, GLsizei(vertices.size()));
-@@ -563,7 +689,8 @@ void RendererGL::display() {
+@@ -563,7 +705,8 @@ void RendererGL::display() {
  	const u32 bottomScreenAddr = externalRegs[bottomActiveFb == 0 ? Framebuffer1AFirstAddr : Framebuffer1ASecondAddr];
  	auto bottomScreen = colourBufferCache.findFromAddress(bottomScreenAddr);
  
@@ -1125,7 +1141,7 @@ index 659a1e1d..68635ca3 100644
  		bottomScreen->get().texture.bind();
  		OpenGL::setViewport(40, 0, 320, 240);
  		OpenGL::draw(OpenGL::TriangleStrip, 4);
-@@ -722,7 +849,12 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
+@@ -722,7 +865,12 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
  			return blankTexture;
  		}
  
@@ -1139,7 +1155,7 @@ index 659a1e1d..68635ca3 100644
  		Texture& newTex = textureCache.add(tex);
  		newTex.decodeTexture(textureData);
  
-@@ -938,6 +1070,7 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -938,6 +1086,7 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  
  	// Upload uniform data to our shader's UBO
  	PICA::FragmentUniforms uniforms;
@@ -1147,7 +1163,7 @@ index 659a1e1d..68635ca3 100644
  	uniforms.alphaReference = Helpers::getBits<8, 8>(regs[InternalRegs::AlphaTestConfig]);
  
  	// Set up the texenv buffer color
-@@ -955,6 +1088,9 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -955,6 +1104,9 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  		uniforms.clipCoords[1] = f24::fromRaw(regs[PICA::InternalRegs::ClipData1] & 0xffffff).toFloat32();
  		uniforms.clipCoords[2] = f24::fromRaw(regs[PICA::InternalRegs::ClipData2] & 0xffffff).toFloat32();
  		uniforms.clipCoords[3] = f24::fromRaw(regs[PICA::InternalRegs::ClipData3] & 0xffffff).toFloat32();
@@ -1157,7 +1173,7 @@ index 659a1e1d..68635ca3 100644
  	}
  
  	// Set up the constant color for the 6 TEV stages
-@@ -1018,16 +1154,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -1018,16 +1170,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  		}
  	}
  
@@ -1189,7 +1205,7 @@ index 659a1e1d..68635ca3 100644
  
  	if (usingAcceleratedShader) {
  		glBindBufferRange(
-@@ -1248,17 +1390,27 @@ void RendererGL::accelerateVertexUpload(ShaderUnit& shaderUnit, PICA::DrawAccele
+@@ -1248,17 +1406,27 @@ void RendererGL::accelerateVertexUpload(ShaderUnit& shaderUnit, PICA::DrawAccele
  
  	// Update index buffer if necessary
  	if (accel->indexed) {
