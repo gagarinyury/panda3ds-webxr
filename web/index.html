@@ -590,14 +590,51 @@
     document.body.appendChild(coreScript);
 
     // -------------------------------------------------------------
+    // In-VR 3D Activity / Loading Overlay
+    // -------------------------------------------------------------
+    const loadingCanvas = document.createElement('canvas');
+    loadingCanvas.width = 1024;
+    loadingCanvas.height = 256;
+    const loadingCtx = loadingCanvas.getContext('2d');
+    const loadingTex = new THREE.CanvasTexture(loadingCanvas);
+    const loadingMat = new THREE.MeshBasicMaterial({ map: loadingTex, transparent: true });
+    const loadingMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.92, 0.23), loadingMat);
+    loadingMesh.position.set(0, 0.32, 0.05); // Floats directly in front of the top screen
+    loadingMesh.layers.set(0);
+    consoleGroup.add(loadingMesh);
+
+    function update3DLoadingIndicator(text, visible = true) {
+      if (!visible || !text) {
+        loadingMesh.visible = false;
+        return;
+      }
+      loadingMesh.visible = true;
+      loadingCtx.clearRect(0, 0, 1024, 256);
+      loadingCtx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+      loadingCtx.beginPath();
+      loadingCtx.roundRect(16, 16, 992, 224, 28);
+      loadingCtx.fill();
+      loadingCtx.lineWidth = 6;
+      loadingCtx.strokeStyle = '#38bdf8';
+      loadingCtx.stroke();
+      loadingCtx.fillStyle = '#ffffff';
+      loadingCtx.font = 'bold 44px system-ui, sans-serif';
+      loadingCtx.textAlign = 'center';
+      loadingCtx.textBaseline = 'middle';
+      loadingCtx.fillText(text, 512, 128);
+      loadingTex.needsUpdate = true;
+    }
+
+    // -------------------------------------------------------------
     // ROM Loading Logic with Direct MEMFS Streaming & Zero JS Heap Overhead
     // -------------------------------------------------------------
     function setRomLoadingStatus(pathOrUrl, status) {
+      update3DLoadingIndicator(status, true);
       const idx = ROM_LIST.findIndex(r => r.path === pathOrUrl || pathOrUrl.endsWith(r.path.split('/').pop()));
       if (idx !== -1 && romButtonMeshes[idx]) {
         romButtonMeshes[idx].userData.setText(status);
       }
-      if (marioTopBtn && (pathOrUrl.includes('sm3dl') || idx === 1)) {
+      if (marioTopBtn && (pathOrUrl.includes('sm3dl') || idx === 0)) {
         marioTopBtn.userData.setText(status);
       }
       const st = document.getElementById('status');
@@ -605,6 +642,7 @@
     }
 
     function restoreRomLabels() {
+      setTimeout(() => update3DLoadingIndicator('', false), 1500);
       ROM_LIST.forEach((rom, i) => {
         if (romButtonMeshes[i]) romButtonMeshes[i].userData.setText(rom.name);
       });
@@ -629,10 +667,29 @@
         const selectEl = document.getElementById('romSelect');
         if (selectEl) selectEl.value = pathOrUrl;
 
-        setRomLoadingStatus(pathOrUrl, '⏳ Fetching...');
+        setRomLoadingStatus(pathOrUrl, '⏳ Checking cache...');
 
-        const resp = await fetch(pathOrUrl);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        let resp = null;
+        let cache = null;
+        if (window.caches) {
+          try {
+            cache = await caches.open('panda3ds-rom-cache-v1');
+            resp = await cache.match(pathOrUrl);
+            if (resp) {
+              console.log('[Panda3DS] Loaded instantly from local cache:', pathOrUrl);
+              setRomLoadingStatus(pathOrUrl, '⚡ Reading local cache...');
+            }
+          } catch(e) {}
+        }
+
+        if (!resp) {
+          setRomLoadingStatus(pathOrUrl, '⏳ Fetching...');
+          resp = await fetch(pathOrUrl);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          if (cache) {
+            try { cache.put(pathOrUrl, resp.clone()).catch(() => {}); } catch(e) {}
+          }
+        }
 
         const total = parseInt(resp.headers.get('content-length') || '0', 10);
         const extMatch = pathOrUrl.split('?')[0].split('#')[0].match(/\.([a-zA-Z0-9]+)$/);
@@ -888,27 +945,6 @@
               Module._web_circle(stickX, stickY);
             } else if (handedness === 'left') {
               Module._web_circle(0, 0);
-            }
-          }
-        }
-
-        // Grip / Squeeze -> Cycle ROMs!
-        if (gp.buttons && gp.buttons.length > 1 && gp.buttons[1]) {
-          if (handedness === 'right') {
-            if (gp.buttons[1].pressed && !gripRDown) {
-              gripRDown = true;
-              currentRomIndex = (currentRomIndex + 1) % ROM_LIST.length;
-              loadRom(ROM_LIST[currentRomIndex].path);
-            } else if (!gp.buttons[1].pressed) {
-              gripRDown = false;
-            }
-          } else if (handedness === 'left') {
-            if (gp.buttons[1].pressed && !gripLDown) {
-              gripLDown = true;
-              currentRomIndex = (currentRomIndex - 1 + ROM_LIST.length) % ROM_LIST.length;
-              loadRom(ROM_LIST[currentRomIndex].path);
-            } else if (!gp.buttons[1].pressed) {
-              gripLDown = false;
             }
           }
         }
