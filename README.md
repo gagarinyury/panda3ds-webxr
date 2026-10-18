@@ -58,7 +58,6 @@ Measured on an M-series Mac (Comet 154 and a clean Chromium 148, visible window)
 - **Super Smash Bros. for 3DS** shows black screens; **Mario Kart 7** was not tried on the iPhone; only Mario 3D Land and Mario Kart 7 have been played through, other commercial games are untested.
 - **Sound** comes from Panda3DS's HLE DSP, which upstream calls work in progress. It was checked only in Mario 3D Land (music and effects, Mac and iPhone); other games are untested, and it crackles whenever the emulator runs slower than real time (the iPhone in heavy scenes).
 - **Freezes** of 0.3-1 s when a new shader or a new region of game code is compiled; the first ~500 frames of a big game stutter.
-- **No soft shadow** under characters in Mario 3D Land (trees and islands have them).
 - **No save states** (game saves persist, `persist=1`); a few homebrew examples stop on a Panda `[FATAL]` (for example sockets) and five render suspiciously.
 
 Audio notes: on iOS Web Audio is muted by the ringer switch, so the app declares a playback audio session and the page starts a looping silent `<audio>` clip on the first touch; the sound only starts after the first tap. The page used to switch sound off whenever the URL had `turbo=0` (the iOS app always passes it): fixed.

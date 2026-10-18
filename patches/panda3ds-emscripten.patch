@@ -84,10 +84,18 @@ index e62f41b3..dd594ee8 100644
  
  	GPU(Memory& mem, EmulatorConfig& config);
 diff --git a/include/PICA/regs.hpp b/include/PICA/regs.hpp
-index 3185d350..16a2cf19 100644
+index 3185d350..5e7c1d2e 100644
 --- a/include/PICA/regs.hpp
 +++ b/include/PICA/regs.hpp
-@@ -72,6 +72,7 @@ namespace PICA {
+@@ -5,6 +5,7 @@ namespace PICA {
+ 	namespace InternalRegs {
+ 		enum : u32 {
+ 			// Rasterizer registers
++			FaceCulling = 0x40,
+ 			ViewportWidth = 0x41,
+ 			ViewportInvw = 0x42,
+ 			ViewportHeight = 0x43,
+@@ -72,6 +73,7 @@ namespace PICA {
  			StencilTest = 0x105,
  			StencilOp = 0x106,
  			DepthAndColorMask = 0x107,
@@ -857,7 +865,7 @@ index 5ada30e3..12b1028f 100644
  		}
  	} else {  // If we're sleeping for >= 0 ns
 diff --git a/src/core/renderer_gl/renderer_gl.cpp b/src/core/renderer_gl/renderer_gl.cpp
-index 659a1e1d..23642c91 100644
+index 659a1e1d..68635ca3 100644
 --- a/src/core/renderer_gl/renderer_gl.cpp
 +++ b/src/core/renderer_gl/renderer_gl.cpp
 @@ -1,5 +1,12 @@
@@ -936,7 +944,7 @@ index 659a1e1d..23642c91 100644
  		gl.enableBlend();
  		gl.disableLogicOp();
  
-@@ -275,10 +301,11 @@ void RendererGL::setupStencilTest(bool stencilEnable) {
+@@ -275,14 +301,20 @@ void RendererGL::setupStencilTest(bool stencilEnable) {
  
  	const u32 stencilConfig = regs[PICA::InternalRegs::StencilTest];
  	const u32 stencilFunc = getBits<4, 3>(stencilConfig);
@@ -950,7 +958,17 @@ index 659a1e1d..23642c91 100644
  	const u32 stencilBufferMask = stencilWrite ? getBits<8, 8>(stencilConfig) : 0;
  
  	// TODO: Throw stencilFunc/stencilOp to the GL state manager
-@@ -381,16 +408,48 @@ void RendererGL::bindTexturesToSlots() {
+-	glStencilFunc(stencilFuncs[stencilFunc], reference, stencilRefMask);
++	// Debug aid (env GL_SHADOW_FORCE=1): the shadow darkening pass of Super Mario 3D Land (stencil != 0, reference 0) ignores the stencil buffer, to see whether the
++	// pass itself is drawn (the whole quad darkens) or the stencil counts are what stays at zero
++	static const bool shadowForce = std::getenv("GL_SHADOW_FORCE") != nullptr;
++	GLenum stencilFuncGL = stencilFuncs[stencilFunc];
++	if (shadowForce && stencilFunc == 3 && reference == 0) stencilFuncGL = GL_ALWAYS;
++	glStencilFunc(stencilFuncGL, reference, stencilRefMask);
+ 	gl.setStencilMask(stencilBufferMask);
+ 
+ 	static constexpr std::array<GLenum, 8> stencilOps = {
+@@ -381,16 +413,48 @@ void RendererGL::bindTexturesToSlots() {
  
  void RendererGL::updateLightingLUT() {
  	gpu.lightingLUTDirty = false;
@@ -1006,7 +1024,7 @@ index 659a1e1d..23642c91 100644
  	glActiveTexture(GL_TEXTURE0);
  }
  
-@@ -422,6 +481,51 @@ void RendererGL::updateFogLUT() {
+@@ -422,6 +486,51 @@ void RendererGL::updateFogLUT() {
  }
  
  void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> vertices) {
@@ -1040,8 +1058,8 @@ index 659a1e1d..23642c91 100644
 +		static std::map<std::string, int> seen;
 +		static int drawCount = 0;
 +		char key[300];
-+		std::snprintf(key, sizeof key, "texCfg=%08x colOp=%08x stencil=%08x stencilOp=%08x depthColorMask=%08x depthWrite=%x colourWrite=%x depthRead=%x colourRead=%x alphaTest=%08x clipEn=%x logicOp=%x blendFunc=%08x vertices=%s",
-+			regs[PICA::InternalRegs::TexUnitCfg], regs[PICA::InternalRegs::ColourOperation], regs[PICA::InternalRegs::StencilTest], regs[PICA::InternalRegs::StencilOp], regs[PICA::InternalRegs::DepthAndColorMask],
++		std::snprintf(key, sizeof key, "blendCol=%08x texCfg=%08x colOp=%08x stencil=%08x stencilOp=%08x depthColorMask=%08x depthWrite=%x colourWrite=%x depthRead=%x colourRead=%x alphaTest=%08x clipEn=%x logicOp=%x blendFunc=%08x vertices=%s",
++			regs[PICA::InternalRegs::BlendColour], regs[PICA::InternalRegs::TexUnitCfg], regs[PICA::InternalRegs::ColourOperation], regs[PICA::InternalRegs::StencilTest], regs[PICA::InternalRegs::StencilOp], regs[PICA::InternalRegs::DepthAndColorMask],
 +			regs[PICA::InternalRegs::DepthBufferWrite], regs[PICA::InternalRegs::ColourBufferWrite], regs[0x114], regs[0x112], regs[PICA::InternalRegs::AlphaTestConfig],
 +			regs[PICA::InternalRegs::ClipEnable] & 1, regs[PICA::InternalRegs::LogicOp] & 0xF, regs[PICA::InternalRegs::BlendFunc], vertices.size() <= 3 ? "<=3" : (vertices.size() <= 12 ? "<=12" : ">12"));
 +		seen[key]++;
@@ -1058,7 +1076,7 @@ index 659a1e1d..23642c91 100644
  	// The fourth type is meant to be "Geometry primitive". TODO: Find out what that is
  	static constexpr std::array<OpenGL::Primitives, 4> primTypes = {
  		OpenGL::Triangle,
-@@ -449,12 +553,14 @@ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> v
+@@ -449,12 +558,14 @@ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> v
  	poop->fbo.bind(OpenGL::DrawAndReadFramebuffer);
  
  	const u32 depthControl = regs[PICA::InternalRegs::DepthAndColorMask];
@@ -1075,7 +1093,29 @@ index 659a1e1d..23642c91 100644
  
  	static constexpr std::array<GLenum, 8> depthModes = {
  		GL_NEVER, GL_ALWAYS, GL_EQUAL, GL_NOTEQUAL, GL_LESS, GL_LEQUAL, GL_GREATER, GL_GEQUAL,
-@@ -563,7 +669,8 @@ void RendererGL::display() {
+@@ -503,6 +614,21 @@ void RendererGL::drawVertices(PICA::PrimType primType, std::span<const Vertex> v
+ 
+ 	setupStencilTest(stencilEnable);
+ 
++	// GPUREG_FACECULLING_CONFIG: 0 keep all, 1 keep clockwise, 2 keep counter-clockwise. Without it the stencil shadow volumes of Super Mario 3D Land
++	// (one pass INCR on the front faces, one DECR on the back faces) count every face twice and cancel out: no shadow under the characters.
++	// Env GL_NOCULL=1 switches this off (A/B aid), GL_CULL=2 reverses the winding (experiment).
++	static const bool noCull = std::getenv("GL_NOCULL") != nullptr;
++	static const bool reverseCull = std::getenv("GL_CULL") && std::atoi(std::getenv("GL_CULL")) == 2;
++	const u32 cullMode = regs[PICA::InternalRegs::FaceCulling] & 3;
++	if (noCull || cullMode == 0 || cullMode == 3) {
++		glDisable(GL_CULL_FACE);
++	} else {
++		glEnable(GL_CULL_FACE);
++		glCullFace(GL_BACK);
++		const bool keepClockwise = (cullMode == 1) != reverseCull;
++		glFrontFace(keepClockwise ? GL_CW : GL_CCW);
++	}
++
+ 	if (!usingAcceleratedShader) {
+ 		vbo.bufferVertsSub(vertices);
+ 		OpenGL::draw(primitiveTopology, GLsizei(vertices.size()));
+@@ -563,7 +689,8 @@ void RendererGL::display() {
  	const u32 bottomScreenAddr = externalRegs[bottomActiveFb == 0 ? Framebuffer1AFirstAddr : Framebuffer1ASecondAddr];
  	auto bottomScreen = colourBufferCache.findFromAddress(bottomScreenAddr);
  
@@ -1085,7 +1125,7 @@ index 659a1e1d..23642c91 100644
  		bottomScreen->get().texture.bind();
  		OpenGL::setViewport(40, 0, 320, 240);
  		OpenGL::draw(OpenGL::TriangleStrip, 4);
-@@ -722,7 +829,12 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
+@@ -722,7 +849,12 @@ OpenGL::Texture RendererGL::getTexture(Texture& tex) {
  			return blankTexture;
  		}
  
@@ -1099,7 +1139,7 @@ index 659a1e1d..23642c91 100644
  		Texture& newTex = textureCache.add(tex);
  		newTex.decodeTexture(textureData);
  
-@@ -938,6 +1050,7 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -938,6 +1070,7 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  
  	// Upload uniform data to our shader's UBO
  	PICA::FragmentUniforms uniforms;
@@ -1107,7 +1147,7 @@ index 659a1e1d..23642c91 100644
  	uniforms.alphaReference = Helpers::getBits<8, 8>(regs[InternalRegs::AlphaTestConfig]);
  
  	// Set up the texenv buffer color
-@@ -955,6 +1068,9 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -955,6 +1088,9 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  		uniforms.clipCoords[1] = f24::fromRaw(regs[PICA::InternalRegs::ClipData1] & 0xffffff).toFloat32();
  		uniforms.clipCoords[2] = f24::fromRaw(regs[PICA::InternalRegs::ClipData2] & 0xffffff).toFloat32();
  		uniforms.clipCoords[3] = f24::fromRaw(regs[PICA::InternalRegs::ClipData3] & 0xffffff).toFloat32();
@@ -1117,7 +1157,7 @@ index 659a1e1d..23642c91 100644
  	}
  
  	// Set up the constant color for the 6 TEV stages
-@@ -1018,16 +1134,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
+@@ -1018,16 +1154,22 @@ OpenGL::Program& RendererGL::getSpecializedShader() {
  		}
  	}
  
@@ -1149,7 +1189,7 @@ index 659a1e1d..23642c91 100644
  
  	if (usingAcceleratedShader) {
  		glBindBufferRange(
-@@ -1248,17 +1370,27 @@ void RendererGL::accelerateVertexUpload(ShaderUnit& shaderUnit, PICA::DrawAccele
+@@ -1248,17 +1390,27 @@ void RendererGL::accelerateVertexUpload(ShaderUnit& shaderUnit, PICA::DrawAccele
  
  	// Update index buffer if necessary
  	if (accel->indexed) {
