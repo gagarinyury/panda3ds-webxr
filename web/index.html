@@ -6,6 +6,7 @@
 <meta name="description" content="Play your own Nintendo 3DS games in a browser or on an iPhone, no install, no JIT entitlement: the Panda3DS emulator with the guest code recompiled to WebAssembly and the GPU on WebGL2. Free and open source (GPL-3.0). No games included.">
 <link rel="canonical" href="https://panda.profy.top/">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="manifest" href="/manifest.webmanifest">
 <meta property="og:type" content="website"><meta property="og:site_name" content="Panda3DS in the browser">
 <meta property="og:title" content="Nintendo 3DS emulator in your browser">
 <meta property="og:description" content="Panda3DS compiled to WebAssembly: runs your own game dumps on a computer or an iPhone, nothing is uploaded. Open source, GPL-3.0.">
@@ -428,10 +429,12 @@ var Module = {
   print: (s) => { if (typeof s === 'string' && s.startsWith('[state]')) { (window.__state || (window.__state = [])).push(s); if (window.__state.length > 4000) window.__state.splice(0, 2000); return; } log(s, /\[FATAL\]/.test(s)); post('log', { msg: String(s).slice(0, 300) }); },
   printErr: (s) => { log(s, /error|fatal|abort|unsupported|failed/i.test(s)); post('log', { msg: '[err] ' + String(s).slice(0, 300) }); },
   preRun: [() => {
-    if (params.get('persist') === '1') {   // keep the emulator's app data (SD card, game saves) in IndexedDB between runs: first-run dialogs of a game do not repeat
+    // the clean player keeps the game's data (saves, SD card) by default, test layouts only with persist=1; persist=0 switches it off
+    if (params.has('persist') ? params.get('persist') === '1' : !dev) {   // keep the emulator's app data (SD card, game saves) in IndexedDB between runs: first-run dialogs of a game do not repeat
       Module.FS.mkdirTree('/libsdl/Alber/rom'); Module.FS.mount(Module.FS.filesystems.IDBFS, {}, '/libsdl/Alber/rom');
       Module.addRunDependency('idbfs'); Module.FS.syncfs(true, (err) => { if (err) log('IDBFS load failed: ' + err, true); else log('persistent app data loaded'); Module.removeRunDependency('idbfs'); });
       let syncing = false; setInterval(() => { if (syncing) return; syncing = true; Module.FS.syncfs(false, () => { syncing = false; }); }, 4000);
+      addEventListener('pagehide', () => { try { Module.FS.syncfs(false, () => {}); } catch (e) {} }); document.addEventListener('visibilitychange', () => { if (document.hidden) { try { Module.FS.syncfs(false, () => {}); } catch (e) {} } });
     }
     for (const kv of envs.split(',').filter(Boolean)) { const [k, v] = kv.split(':'); Module.ENV[k] = v || '1'; }
     // render with no GPU backend and no audio: only the presented framebuffers are shown

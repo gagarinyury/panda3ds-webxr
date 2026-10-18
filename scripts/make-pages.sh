@@ -8,7 +8,7 @@ sed 's|\.\./build-core/|/build-core/|g' web/index.html > dist/index.html   # the
 cp build-core/AlberWeb.js build-core/AlberWeb.wasm dist/build-core/
 for d in graphics__gpu__textured_cube graphics__gpu__toon_shading graphics__gpu__fragment_light; do cp run/examples/$d.3dsx dist/run/examples/; done
 cp run/ctr-hello.3dsx dist/run/
-cp web/icon.svg web/og.png dist/
+cp web/icon.svg web/og.png web/apple-touch-icon.png web/icon-192.png web/icon-512.png web/manifest.webmanifest dist/
 cat > dist/_headers <<'H'
 /*
   X-Content-Type-Options: nosniff
@@ -16,6 +16,8 @@ cat > dist/_headers <<'H'
   Cache-Control: no-cache
 /index.html
   Cache-Control: no-cache
+/manifest.webmanifest
+  Content-Type: application/manifest+json
 /build-core/*
   Cache-Control: public, max-age=3600, must-revalidate
 H
