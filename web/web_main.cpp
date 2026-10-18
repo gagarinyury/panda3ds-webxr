@@ -67,8 +67,15 @@ static int convertScreen(int screenIndex) {
 }
 
 extern "C" {
+static int saved_gl = 0;
+static int saved_w = 800, saved_h = 480;
+static float saved_slider = 1.0f;
+
 // gl != 0: use the OpenGL ES renderer on a WebGL2 canvas (#gl) of w x h pixels; the renderer draws both screens into the canvas itself.
 EMSCRIPTEN_KEEPALIVE int web_init(int gl, int w, int h) {
+    saved_gl = gl;
+    saved_w = w;
+    saved_h = h;
     emu = std::make_unique<Emulator>();
     if (gl) {
         EmscriptenWebGLContextAttributes a;
@@ -94,6 +101,17 @@ EMSCRIPTEN_KEEPALIVE int web_init(int gl, int w, int h) {
 }
 
 EMSCRIPTEN_KEEPALIVE int web_load(const char* path) {
+    if (!emu) return 0;
+    // If an emulator instance was already active or ran frames, cleanly recreate it to avoid memory/JIT corruption
+    if (emu->running) {
+        emu = std::make_unique<Emulator>();
+        if (saved_gl) {
+            emu->getRenderer()->setupGLES();
+            emu->setOutputSize(static_cast<u32>(saved_w), static_cast<u32>(saved_h));
+        }
+        emu->initGraphicsContext(nullptr);
+        emu->getConfig().slider3D = saved_slider;
+    }
     if (!emu->loadROM(path)) return 0;
     emu->resume();
     return 1;
@@ -140,7 +158,7 @@ EMSCRIPTEN_KEEPALIVE int web_layout_rect(int i) { return layoutRect[i & 3]; }
 
 EMSCRIPTEN_KEEPALIVE const u8* web_screen(int top) { return convertScreen(top ? 0 : 2) ? screens[top ? 0 : 2].data() : nullptr; }
 EMSCRIPTEN_KEEPALIVE const u8* web_screen_stereo(int eye) { return convertScreen(eye) ? screens[eye].data() : nullptr; }
-EMSCRIPTEN_KEEPALIVE void web_set_3d_slider(float val) { if (emu) emu->getConfig().slider3D = val; }
+EMSCRIPTEN_KEEPALIVE void web_set_3d_slider(float val) { saved_slider = val; if (emu) emu->getConfig().slider3D = val; }
 EMSCRIPTEN_KEEPALIVE float web_get_3d_slider() { return emu ? emu->getConfig().slider3D : 0.0f; }
 }
 

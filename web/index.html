@@ -208,11 +208,11 @@
     scene.background = new THREE.Color(0x0a0c12);
 
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 50);
-    camera.position.set(0, 1.3, 0.4);
+    camera.position.set(0, 1.35, 0.4);
     camera.layers.enable(1); // On desktop flat screen, view Left eye by default
 
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0, 1.25, -1.1);
+    controls.target.set(0, 1.35, -1.5);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
 
@@ -245,7 +245,8 @@
     texBottom.repeat.set(0.4, 0.5);
 
     const consoleGroup = new THREE.Group();
-    consoleGroup.position.set(0, 1.25, -1.1); // Exactly 1.1m in front of the player in WebXR!
+    consoleGroup.position.set(0, 1.35, -1.5); // 1.5m in front of player
+    consoleGroup.scale.set(1.8, 1.8, 1.8);    // ~2x larger screen in VR as requested!
     scene.add(consoleGroup);
 
     // Frame styling (dark metallic 3DS housing)
@@ -287,6 +288,127 @@
     botBezel.rotation.x = -0.35;
     botBezel.layers.set(0);
     consoleGroup.add(botBezel);
+
+    // -------------------------------------------------------------
+    // In-XR Floating 3D Control Panel (ROM switcher & Exit VR)
+    // -------------------------------------------------------------
+    const ROM_LIST = [
+      { name: '🌟 Lenny 3D', path: 'run/examples/graphics__gpu__lenny.3dsx' },
+      { name: '🕶️ Stereo 2D', path: 'run/examples/graphics__gpu__stereoscopic_2d.3dsx' },
+      { name: '🧊 Text. Cube', path: 'run/examples/graphics__gpu__textured_cube.3dsx' },
+      { name: '🎨 Toon Shader', path: 'run/examples/graphics__gpu__toon_shading.3dsx' },
+      { name: '💡 Frag. Light', path: 'run/examples/graphics__gpu__fragment_light.3dsx' },
+      { name: '📜 CTR Hello', path: 'run/ctr-hello.3dsx' }
+    ];
+    let currentRomIndex = 0;
+    let current3DDepth = 1.0;
+
+    const uiGroup = new THREE.Group();
+    uiGroup.position.set(0, -0.84, 0.24);
+    uiGroup.rotation.x = -0.35;
+    consoleGroup.add(uiGroup);
+
+    // Panel background bezel
+    const uiBackGeo = new THREE.BoxGeometry(1.08, 0.40, 0.02);
+    const uiBackMat = new THREE.MeshStandardMaterial({ color: 0x10141e, roughness: 0.6, metalness: 0.4 });
+    const uiBackMesh = new THREE.Mesh(uiBackGeo, uiBackMat);
+    uiBackMesh.layers.set(0);
+    uiGroup.add(uiBackMesh);
+
+    const uiButtons = [];
+    let romButtonMeshes = [];
+
+    function makeButton(text, w, h, x, y, bgColor, onClick) {
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(w * 800);
+      canvas.height = Math.round(h * 800);
+      const ctx = canvas.getContext('2d');
+      const tex = new THREE.CanvasTexture(canvas);
+
+      let currentText = text;
+      let isCurrentHover = false;
+      let isCurrentActive = false;
+
+      function draw(isHover = isCurrentHover, isActive = isCurrentActive) {
+        isCurrentHover = isHover;
+        isCurrentActive = isActive;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = isActive ? '#0284c7' : (isHover ? '#334155' : bgColor);
+        ctx.beginPath();
+        ctx.roundRect(8, 8, canvas.width - 16, canvas.height - 16, 16);
+        ctx.fill();
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = isActive ? '#38bdf8' : (isHover ? '#00f2fe' : '#475569');
+        ctx.stroke();
+
+        ctx.font = 'bold ' + Math.round(canvas.height * 0.40) + 'px system-ui, -apple-system, sans-serif';
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(currentText, canvas.width / 2, canvas.height / 2);
+        tex.needsUpdate = true;
+      }
+
+      draw();
+
+      const btnGeo = new THREE.PlaneGeometry(w, h);
+      const btnMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+      const btnMesh = new THREE.Mesh(btnGeo, btnMat);
+      btnMesh.position.set(x, y, 0.012);
+      btnMesh.layers.set(0);
+      uiGroup.add(btnMesh);
+
+      btnMesh.userData = {
+        onClick,
+        draw,
+        setHover: (h) => draw(h, isCurrentActive),
+        setActive: (a) => draw(isCurrentHover, a),
+        setText: (t) => { currentText = t; draw(); }
+      };
+      uiButtons.push(btnMesh);
+      return btnMesh;
+    }
+
+    function updateRomButtonHighlights() {
+      romButtonMeshes.forEach((btn, i) => {
+        btn.userData.setActive(i === currentRomIndex);
+      });
+    }
+
+    // Row 1: First 3 ROMs (y = 0.12)
+    romButtonMeshes.push(makeButton('🌟 Lenny 3D', 0.32, 0.09, -0.35, 0.12, '#1e293b', () => loadRom(ROM_LIST[0].path)));
+    romButtonMeshes.push(makeButton('🕶️ Stereo 2D', 0.32, 0.09, 0.0, 0.12, '#1e293b', () => loadRom(ROM_LIST[1].path)));
+    romButtonMeshes.push(makeButton('🧊 Text. Cube', 0.32, 0.09, 0.35, 0.12, '#1e293b', () => loadRom(ROM_LIST[2].path)));
+
+    // Row 2: Next 3 ROMs (y = 0.01)
+    romButtonMeshes.push(makeButton('🎨 Toon Shader', 0.32, 0.09, -0.35, 0.01, '#1e293b', () => loadRom(ROM_LIST[3].path)));
+    romButtonMeshes.push(makeButton('💡 Frag. Light', 0.32, 0.09, 0.0, 0.01, '#1e293b', () => loadRom(ROM_LIST[4].path)));
+    romButtonMeshes.push(makeButton('📜 CTR Hello', 0.32, 0.09, 0.35, 0.01, '#1e293b', () => loadRom(ROM_LIST[5].path)));
+
+    // Row 3: Action & Utility Buttons (y = -0.11)
+    makeButton('◀ Prev', 0.22, 0.08, -0.37, -0.11, '#1e293b', () => {
+      currentRomIndex = (currentRomIndex - 1 + ROM_LIST.length) % ROM_LIST.length;
+      loadRom(ROM_LIST[currentRomIndex].path);
+    });
+
+    makeButton('Next ▶', 0.22, 0.08, -0.13, -0.11, '#1e293b', () => {
+      currentRomIndex = (currentRomIndex + 1) % ROM_LIST.length;
+      loadRom(ROM_LIST[currentRomIndex].path);
+    });
+
+    const depthBtn = makeButton('3D: 100%', 0.22, 0.08, 0.13, -0.11, '#0f766e', () => {
+      current3DDepth = (current3DDepth <= 0.05) ? 1.0 : +(current3DDepth - 0.25).toFixed(2);
+      depthBtn.userData.setText(`3D: ${Math.round(current3DDepth * 100)}%`);
+      depthSlider.value = current3DDepth;
+      depthVal.textContent = Math.round(current3DDepth * 100) + '%';
+      if (Module._web_set_3d_slider) Module._web_set_3d_slider(current3DDepth);
+    });
+
+    makeButton('✕ Exit VR', 0.22, 0.08, 0.37, -0.11, '#dc2626', async () => {
+      if (renderer.xr.isPresenting) {
+        try { await renderer.xr.getSession().end(); } catch (e) {}
+      }
+    });
 
     // Touch Laser Pointer Indicator
     const dotGeo = new THREE.SphereGeometry(0.012, 16, 16);
@@ -344,8 +466,10 @@
         document.getElementById('loading-overlay').style.opacity = '0';
         setTimeout(() => document.getElementById('loading-overlay').remove(), 400);
 
-        // Auto-load default stereoscopic demo
-        await loadRom(document.getElementById('romSelect').value);
+        // Auto-load default stereoscopic demo (or URL query param)
+        const params = new URLSearchParams(window.location.search);
+        const startRom = params.get('rom') || document.getElementById('romSelect').value;
+        await loadRom(startRom);
       },
       print: (s) => console.log(s),
       printErr: (s) => console.error(s)
@@ -361,9 +485,20 @@
     // -------------------------------------------------------------
     async function loadRom(pathOrUrl) {
       if (!emuReady) return;
+      emuRunning = false; // Pause emulator frames while switching ROM
       try {
         currentRomName = pathOrUrl.split('/').pop();
         console.log('[Panda3DS] Loading ROM:', currentRomName);
+
+        // Sync with ROM_LIST
+        const idx = ROM_LIST.findIndex(r => r.path === pathOrUrl || pathOrUrl.endsWith(r.path.split('/').pop()));
+        if (idx !== -1) {
+          currentRomIndex = idx;
+          updateRomButtonHighlights();
+        }
+        const selectEl = document.getElementById('romSelect');
+        if (selectEl) selectEl.value = pathOrUrl;
+
         const resp = await fetch(pathOrUrl);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const buf = await resp.arrayBuffer();
@@ -373,8 +508,9 @@
         const ok = Module.ccall ? Module.ccall('web_load', 'number', ['string'], [romPath]) : Module._web_load(romPath);
         if (ok) {
           emuRunning = true;
-          console.log('[Panda3DS] ROM loaded successfully!');
+          console.log('[Panda3DS] ROM loaded successfully:', currentRomName);
         } else {
+          console.error('Failed to load ROM: ' + currentRomName);
           alert('Failed to load ROM: ' + currentRomName);
         }
       } catch (err) {
@@ -387,6 +523,7 @@
     document.getElementById('romFileInput').addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (!file) return;
+      emuRunning = false;
       const reader = new FileReader();
       reader.onload = () => {
         const data = new Uint8Array(reader.result);
@@ -411,6 +548,8 @@
     depthSlider.addEventListener('input', (e) => {
       const val = parseFloat(e.target.value);
       depthVal.textContent = Math.round(val * 100) + '%';
+      current3DDepth = val;
+      if (depthBtn) depthBtn.userData.setText(`3D: ${Math.round(val * 100)}%`);
       if (Module._web_set_3d_slider) Module._web_set_3d_slider(val);
     });
 
@@ -432,17 +571,27 @@
 
     vrBtn.addEventListener('click', async () => {
       if (!navigator.xr) return;
+      if (renderer.xr.isPresenting) {
+        try {
+          await renderer.xr.getSession().end();
+        } catch (e) {}
+        return;
+      }
       try {
         const session = await navigator.xr.requestSession('immersive-vr', {
           requiredFeatures: ['local-floor'],
           optionalFeatures: ['bounded-floor', 'hand-tracking']
         });
-        renderer.xr.setSession(session);
-        vrBtn.textContent = 'Exit VR';
+        await renderer.xr.setSession(session);
+        vrBtn.textContent = '✕ Exit VR';
         camera.layers.set(0); // In VR, parent camera only holds layer 0
         session.addEventListener('end', () => {
           vrBtn.textContent = '🥽 Enter VR';
+          camera.layers.set(0);
           camera.layers.enable(1); // Restore Left Eye view on desktop flat screen
+          camera.position.set(0, 1.35, 0.4);
+          controls.target.set(0, 1.35, -1.5);
+          controls.update();
         });
       } catch (err) {
         console.error('[WebXR] Failed to start VR session:', err);
@@ -504,8 +653,13 @@
     });
 
     // -------------------------------------------------------------
-    // WebXR Controller Poll & Raycast Touch Loop
+    // WebXR Controller Poll & Raycast Interaction Loop
     // -------------------------------------------------------------
+    let gripRDown = false;
+    let gripLDown = false;
+    let wasTriggerPressed = false;
+    let lastHoveredBtn = null;
+
     function pollXRControllers() {
       const session = renderer.xr.getSession();
       if (!session) return;
@@ -531,6 +685,27 @@
           }
         }
 
+        // Grip / Squeeze -> Cycle ROMs!
+        if (gp.buttons && gp.buttons.length > 1 && gp.buttons[1]) {
+          if (handedness === 'right') {
+            if (gp.buttons[1].pressed && !gripRDown) {
+              gripRDown = true;
+              currentRomIndex = (currentRomIndex + 1) % ROM_LIST.length;
+              loadRom(ROM_LIST[currentRomIndex].path);
+            } else if (!gp.buttons[1].pressed) {
+              gripRDown = false;
+            }
+          } else if (handedness === 'left') {
+            if (gp.buttons[1].pressed && !gripLDown) {
+              gripLDown = true;
+              currentRomIndex = (currentRomIndex - 1 + ROM_LIST.length) % ROM_LIST.length;
+              loadRom(ROM_LIST[currentRomIndex].path);
+            } else if (!gp.buttons[1].pressed) {
+              gripLDown = false;
+            }
+          }
+        }
+
         // Face buttons & triggers
         if (Module && Module._web_key) {
           if (handedness === 'right') {
@@ -545,29 +720,51 @@
         }
       }
 
-      // Laser Raycast from Right Controller to Bottom Screen
+      // Laser Raycast from Right Controller to 3D UI Buttons & Bottom Screen
       if (controller1 && controller1.matrixWorld) {
         try {
           tempMatrix.identity().extractRotation(controller1.matrixWorld);
           raycaster.ray.origin.setFromMatrixPosition(controller1.matrixWorld);
           raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
 
-          const hits = raycaster.intersectObject(meshBottom);
-          if (hits.length > 0 && hits[0].uv) {
-            touchDot.position.copy(hits[0].point);
+          const rSource = sources.find(s => s.handedness === 'right');
+          const triggerPressed = Boolean(rSource && rSource.gamepad && rSource.gamepad.buttons[0] && rSource.gamepad.buttons[0].pressed);
+
+          const hitTargets = [meshBottom, ...uiButtons];
+          const hits = raycaster.intersectObjects(hitTargets);
+
+          if (hits.length > 0) {
+            const hit = hits[0];
+            touchDot.position.copy(hit.point);
             touchDot.visible = true;
 
-            const uv = hits[0].uv;
-            const tx = Math.max(0, Math.min(319, Math.floor(uv.x * 320)));
-            const ty = Math.max(0, Math.min(239, Math.floor((1.0 - uv.y) * 240)));
+            if (hit.object === meshBottom && hit.uv) {
+              if (lastHoveredBtn) { lastHoveredBtn.userData.setHover(false); lastHoveredBtn = null; }
+              const uv = hit.uv;
+              const tx = Math.max(0, Math.min(319, Math.floor(uv.x * 320)));
+              const ty = Math.max(0, Math.min(239, Math.floor((1.0 - uv.y) * 240)));
+              if (Module && Module._web_touch) Module._web_touch(tx, ty, triggerPressed ? 1 : 0);
+            } else if (hit.object.userData && hit.object.userData.onClick) {
+              if (Module && Module._web_touch) Module._web_touch(0, 0, 0);
+              if (lastHoveredBtn && lastHoveredBtn !== hit.object) {
+                lastHoveredBtn.userData.setHover(false);
+              }
+              lastHoveredBtn = hit.object;
+              lastHoveredBtn.userData.setHover(true);
 
-            const rSource = sources.find(s => s.handedness === 'right');
-            const triggerPressed = rSource && rSource.gamepad && rSource.gamepad.buttons[0] && rSource.gamepad.buttons[0].pressed;
-            if (Module && Module._web_touch) Module._web_touch(tx, ty, triggerPressed ? 1 : 0);
+              if (triggerPressed && !wasTriggerPressed) {
+                hit.object.userData.onClick();
+              }
+            }
           } else {
             touchDot.visible = false;
             if (Module && Module._web_touch) Module._web_touch(0, 0, 0);
+            if (lastHoveredBtn) {
+              lastHoveredBtn.userData.setHover(false);
+              lastHoveredBtn = null;
+            }
           }
+          wasTriggerPressed = triggerPressed;
         } catch (e) {}
       }
     }
