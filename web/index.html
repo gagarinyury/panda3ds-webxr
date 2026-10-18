@@ -133,8 +133,8 @@
 
       <div class="controls-row">
         <select id="romSelect">
+          <option value="run/sm3dl.3ds" selected>🍄 Super Mario 3D Land (Full Commercial 3D Game)</option>
           <option value="run/examples/graphics__gpu__lenny.3dsx">🌟 Lenny 3D (Rotating 3D Model)</option>
-          <option value="run/sm3dl.3ds">🍄 Super Mario 3D Land (Full Commercial 3D Game)</option>
           <option value="run/examples/graphics__gpu__stereoscopic_2d.3dsx">🕶️ Lenny 2D (Parallax Test)</option>
           <option value="run/examples/graphics__gpu__textured_cube.3dsx">🧊 Textured Cube 3D</option>
           <option value="run/examples/graphics__gpu__toon_shading.3dsx">🎨 Toon Shading 3D</option>
@@ -164,15 +164,53 @@
 
     <footer class="panel">
       <div class="keys-hint">
-        🎮 <b>VR:</b> Thumbstick = Circle Pad | Trigger = Touch / L-R | A/B/X/Y Buttons &nbsp;|&nbsp;
-        ⌨ <b>Desktop:</b> <kbd>WASD</kbd> Pad &nbsp;<kbd>Arrows</kbd> D-Pad &nbsp;<kbd>K</kbd>=A <kbd>J</kbd>=B <kbd>I</kbd>=X <kbd>U</kbd>=Y &nbsp;<kbd>Enter</kbd>=Start
+        🎮 <b>VR:</b> Thumbstick = Circle Pad | Trigger = Touch / L-R | (A)/(B)/(X)/(Y) Face Buttons &nbsp;|&nbsp;
+        ⌨ <b>Desktop:</b> <kbd>Space</kbd>/<kbd>X</kbd>/<kbd>K</kbd>=A &nbsp;<kbd>Z</kbd>/<kbd>J</kbd>=B &nbsp;<kbd>WASD</kbd>/<kbd>Arrows</kbd>=Circle Pad &nbsp;<kbd>Mouse Click</kbd>=Touchscreen
       </div>
       <div>Panda3DS Core WebAssembly + WebGL2</div>
     </footer>
   </div>
 
-  <canvas id="gl" width="800" height="480"></canvas>
+  <canvas id="gl" width="400" height="480"></canvas>
   <canvas id="xrCanvas"></canvas>
+
+  <script>
+    // AudioContext tracking & iOS/Quest unmute handler
+    window.__audio = { ctxs: [], rms: 0, peak: 0, rate: 0 };
+    (function() {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      const csp = AC.prototype.createScriptProcessor, A = window.__audio;
+      AC.prototype.createScriptProcessor = function(...a) {
+        const node = csp.apply(this, a);
+        if (A.ctxs.indexOf(this) < 0) A.ctxs.push(this);
+        A.rate = this.sampleRate;
+        try { const an = this.createAnalyser(); an.fftSize = 2048; node.connect(an); A.analyser = an; } catch(e) {}
+        return node;
+      };
+      let unmuteEl = null;
+      const unmute = () => {
+        if (unmuteEl) return;
+        try {
+          unmuteEl = document.createElement('audio');
+          unmuteEl.src = 'data:audio/wav;base64,UklGRpYDAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YXIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+          unmuteEl.loop = true;
+          unmuteEl.setAttribute('playsinline', '');
+          unmuteEl.play().catch(() => { unmuteEl = null; });
+        } catch(e) { unmuteEl = null; }
+      };
+      const resume = () => {
+        unmute();
+        for (const c of A.ctxs) {
+          if (c.state !== 'running') c.resume().catch(() => {});
+        }
+      };
+      for (const ev of ['pointerdown', 'keydown', 'touchstart', 'click']) {
+        window.addEventListener(ev, resume, { capture: true });
+      }
+      window.resumeAudio = resume;
+    })();
+  </script>
 
   <script type="module">
     import * as THREE from 'three';
@@ -209,11 +247,11 @@
     scene.background = new THREE.Color(0x0a0c12);
 
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 50);
-    camera.position.set(0, 1.05, 0.4);
+    camera.position.set(0, 0.70, 0.75);
     camera.layers.enable(1); // On desktop flat screen, view Left eye by default
 
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0, 1.05, -1.45);
+    controls.target.set(0, 0.70, -1.35);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
 
@@ -224,30 +262,23 @@
     // -------------------------------------------------------------
     // Virtual 3DS Floating Console Meshes
     // -------------------------------------------------------------
-    const texLeft = new THREE.CanvasTexture(glCanvas);
-    texLeft.minFilter = THREE.NearestFilter;
-    texLeft.magFilter = THREE.NearestFilter;
-    texLeft.generateMipmaps = false;
-    texLeft.offset.set(0.0, 0.5);
-    texLeft.repeat.set(0.5, 0.5);
-
-    const texRight = new THREE.CanvasTexture(glCanvas);
-    texRight.minFilter = THREE.NearestFilter;
-    texRight.magFilter = THREE.NearestFilter;
-    texRight.generateMipmaps = false;
-    texRight.offset.set(0.5, 0.5);
-    texRight.repeat.set(0.5, 0.5);
+    const texTop = new THREE.CanvasTexture(glCanvas);
+    texTop.minFilter = THREE.NearestFilter;
+    texTop.magFilter = THREE.NearestFilter;
+    texTop.generateMipmaps = false;
+    texTop.offset.set(0.0, 0.5);
+    texTop.repeat.set(1.0, 0.5);
 
     const texBottom = new THREE.CanvasTexture(glCanvas);
     texBottom.minFilter = THREE.NearestFilter;
     texBottom.magFilter = THREE.NearestFilter;
     texBottom.generateMipmaps = false;
-    texBottom.offset.set(0.3, 0.0);
-    texBottom.repeat.set(0.4, 0.5);
+    texBottom.offset.set(40 / 400, 0.0); // 0.1
+    texBottom.repeat.set(320 / 400, 0.5); // 0.8
 
     const consoleGroup = new THREE.Group();
-    consoleGroup.position.set(0, 0.45, -1.45); // Lowered by ~0.9m as requested for comfortable eye-level VR
-    consoleGroup.scale.set(1.7, 1.7, 1.7);     // Large immersive screens in VR
+    consoleGroup.position.set(0, 0.70, -1.35); // Ergonomically centered at eye level
+    consoleGroup.scale.set(1.4, 1.4, 1.4);     // Balanced realistic 3DS XL scale in VR
     scene.add(consoleGroup);
 
     // Frame styling (dark metallic 3DS housing)
@@ -255,22 +286,22 @@
 
     // Top Screen (Stereoscopic): Aspect ratio 400x240 -> 1.0m x 0.6m
     const topGeo = new THREE.PlaneGeometry(1.0, 0.6);
-    const matTopLeft = new THREE.MeshBasicMaterial({ map: texLeft });
-    const matTopRight = new THREE.MeshBasicMaterial({ map: texRight });
+    const matTopLeft = new THREE.MeshBasicMaterial({ map: texTop });
+    const matTopRight = new THREE.MeshBasicMaterial({ map: texTop });
 
     const meshTopLeft = new THREE.Mesh(topGeo, matTopLeft);
-    meshTopLeft.position.set(0, 0.35, 0);
-    meshTopLeft.layers.set(1); // Visible ONLY to Left Eye in WebXR
+    meshTopLeft.position.set(0, 0.32, 0.002);
+    meshTopLeft.layers.set(1); // Visible to Left Eye in WebXR
     consoleGroup.add(meshTopLeft);
 
     const meshTopRight = new THREE.Mesh(topGeo, matTopRight);
-    meshTopRight.position.set(0, 0.35, 0);
-    meshTopRight.layers.set(2); // Visible ONLY to Right Eye in WebXR
+    meshTopRight.position.set(0, 0.32, 0.002);
+    meshTopRight.layers.set(2); // Visible to Right Eye in WebXR
     consoleGroup.add(meshTopRight);
 
     // Top Bezel frame
     const topBezel = new THREE.Mesh(new THREE.BoxGeometry(1.08, 0.68, 0.02), bodyMat);
-    topBezel.position.set(0, 0.35, -0.012);
+    topBezel.position.set(0, 0.32, -0.012);
     topBezel.layers.set(0);
     consoleGroup.add(topBezel);
 
@@ -278,24 +309,31 @@
     const botGeo = new THREE.PlaneGeometry(0.8, 0.6);
     const matBottom = new THREE.MeshBasicMaterial({ map: texBottom });
     const meshBottom = new THREE.Mesh(botGeo, matBottom);
-    meshBottom.position.set(0, -0.32, 0.08);
-    meshBottom.rotation.x = -0.35; // Tilted upward toward player
+    meshBottom.position.set(0, -0.32, 0.052);
+    meshBottom.rotation.x = -0.15; // Natural subtle tilt upward toward player
     meshBottom.layers.set(0); // Visible to BOTH eyes via layer 0
     consoleGroup.add(meshBottom);
 
-    // Bottom Bezel frame
+    // Bottom Bezel frame (placed behind bottom screen so front face is at 0.048, screen is at 0.052)
     const botBezel = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.68, 0.02), bodyMat);
-    botBezel.position.set(0, -0.32, 0.07);
-    botBezel.rotation.x = -0.35;
+    botBezel.position.set(0, -0.32, 0.038);
+    botBezel.rotation.x = -0.15;
     botBezel.layers.set(0);
     consoleGroup.add(botBezel);
+
+    // Debug access on window
+    window.__scene = scene;
+    window.__meshBottom = meshBottom;
+    window.__botBezel = botBezel;
+    window.__texTop = texTop;
+    window.__texBottom = texBottom;
 
     // -------------------------------------------------------------
     // In-XR Spatial 3D Control Panels (Top Bar, Side Panel, Bottom Bar)
     // -------------------------------------------------------------
     const ROM_LIST = [
-      { name: '🌟 Lenny 3D', path: 'run/examples/graphics__gpu__lenny.3dsx' },
       { name: '🍄 Mario 3D Land', path: 'run/sm3dl.3ds' },
+      { name: '🌟 Lenny 3D', path: 'run/examples/graphics__gpu__lenny.3dsx' },
       { name: '🕶️ Stereo 2D', path: 'run/examples/graphics__gpu__stereoscopic_2d.3dsx' },
       { name: '🧊 Text. Cube', path: 'run/examples/graphics__gpu__textured_cube.3dsx' },
       { name: '🎨 Toon Shader', path: 'run/examples/graphics__gpu__toon_shading.3dsx' },
@@ -510,19 +548,27 @@
     window.Module = {
       canvas: glCanvas,
       locateFile: (path) => path.endsWith('.wasm') ? '../build-core/' + path : path,
+      ENV: {
+        JIT_BATCH: '256',
+        GL_PRESERVE: '1'
+      },
       onRuntimeInitialized: async () => {
         console.log('[Panda3DS] WebAssembly runtime initialized');
         Module.FS.writeFile('/config.toml', `[GPU]\nRenderer = "opengl"\nScreenLayout = "Default"\nTopScreenSize = 0.5\nEnableShaderJIT = false\n[Audio]\nEnableAudio = true\nDSPEmulation = "HLE"\n`);
         
-        // Initialize OpenGL ES on 800x480 canvas for Side-by-Side stereo
-        if (!Module._web_init(1, 800, 480)) {
-          alert('WebGL2 initialization failed inside emulator core');
-          return;
+        // Pre-create DSP firmware dummy in all SDL paths
+        const dspPaths = ['/libsdl/Alber/rom/SDMC/3ds', '/libsdl/Alber/sm3dl/SDMC/3ds', '/libsdl/Alber/sm3dl.3ds/SDMC/3ds'];
+        for (const dp of dspPaths) {
+          try {
+            Module.FS.mkdirTree(dp);
+            Module.FS.writeFile(dp + '/dspfirm.cdc', new Uint8Array(262144));
+          } catch (e) {}
         }
 
-        // Set 3D depth to 1.0 (Full stereo)
-        if (Module._web_set_3d_slider) {
-          Module._web_set_3d_slider(1.0);
+        // Initialize OpenGL ES on 400x480 canvas (standard Panda3DS dual-screen buffer)
+        if (!Module._web_init(1, 400, 480)) {
+          alert('WebGL2 initialization failed inside emulator core');
+          return;
         }
 
         emuReady = true;
@@ -544,7 +590,7 @@
     document.body.appendChild(coreScript);
 
     // -------------------------------------------------------------
-    // ROM Loading Logic with Live Streaming Progress & Memory Management
+    // ROM Loading Logic with Direct MEMFS Streaming & Zero JS Heap Overhead
     // -------------------------------------------------------------
     function setRomLoadingStatus(pathOrUrl, status) {
       const idx = ROM_LIST.findIndex(r => r.path === pathOrUrl || pathOrUrl.endsWith(r.path.split('/').pop()));
@@ -588,55 +634,66 @@
         const resp = await fetch(pathOrUrl);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
-        const contentLength = resp.headers.get('content-length');
-        const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
-        let buf;
+        const total = parseInt(resp.headers.get('content-length') || '0', 10);
+        const extMatch = pathOrUrl.split('?')[0].split('#')[0].match(/\.([a-zA-Z0-9]+)$/);
+        const ext = extMatch ? '.' + extMatch[1].toLowerCase() : '.3ds';
+        const guestPath = '/rom' + ext;
 
-        if (totalBytes > 5 * 1024 * 1024 && resp.body) {
+        // Clean up previous ROM from MEMFS
+        try { Module.FS.unlink(guestPath); } catch (e) {}
+
+        if (total && resp.body) {
+          // Stream directly into MEMFS: allocates once, zero JS array copies in heap
+          const stream = Module.FS.open(guestPath, 'w+');
+          Module.FS.write(stream, new Uint8Array(1), 0, 1, total - 1);
           const reader = resp.body.getReader();
-          const chunks = [];
-          let receivedBytes = 0;
-          let lastUpdate = 0;
+          let pos = 0;
+          let lastShown = 0;
 
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            chunks.push(value);
-            receivedBytes += value.length;
+            Module.FS.write(stream, value, 0, value.length, pos);
+            pos += value.length;
             const now = Date.now();
-            if (now - lastUpdate > 150 || receivedBytes === totalBytes) {
-              lastUpdate = now;
-              const pct = Math.round((receivedBytes / totalBytes) * 100);
-              const mb = (receivedBytes / (1024 * 1024)).toFixed(0);
-              setRomLoadingStatus(pathOrUrl, `⏳ ${pct}% (${mb}MB)`);
+            if (now - lastShown > 150 || pos === total) {
+              lastShown = now;
+              const pct = Math.round((pos / total) * 100);
+              const mb = (pos / (1024 * 1024)).toFixed(0);
+              const totMb = (total / (1024 * 1024)).toFixed(0);
+              setRomLoadingStatus(pathOrUrl, `⏳ ${pct}% (${mb}/${totMb}MB)`);
             }
           }
-          const allChunks = new Uint8Array(receivedBytes);
-          let position = 0;
-          for (const chunk of chunks) {
-            allChunks.set(chunk, position);
-            position += chunk.length;
-          }
-          buf = allChunks.buffer;
+          Module.FS.close(stream);
         } else {
-          buf = await resp.arrayBuffer();
+          const buf = await resp.arrayBuffer();
+          Module.FS.writeFile(guestPath, new Uint8Array(buf));
         }
 
         setRomLoadingStatus(pathOrUrl, '⚙️ Booting...');
 
-        const romPath = '/' + currentRomName;
-        // Clean up previous ROM from MEMFS to keep memory free
-        if (window.__lastRomPath && window.__lastRomPath !== romPath) {
-          try { Module.FS.unlink(window.__lastRomPath); } catch (e) {}
+        // MANDATORY: Setup DSP firmware dummy in SDL data directories
+        const dspPaths = [
+          '/libsdl/Alber/rom/SDMC/3ds',
+          '/libsdl/Alber/sm3dl/SDMC/3ds',
+          '/libsdl/Alber/sm3dl.3ds/SDMC/3ds'
+        ];
+        for (const dp of dspPaths) {
+          try {
+            Module.FS.mkdirTree(dp);
+            Module.FS.writeFile(dp + '/dspfirm.cdc', new Uint8Array(262144));
+          } catch (e) {}
         }
-        window.__lastRomPath = romPath;
 
-        Module.FS.writeFile(romPath, new Uint8Array(buf));
-        
-        const ok = Module.ccall ? Module.ccall('web_load', 'number', ['string'], [romPath]) : Module._web_load(romPath);
+        // Resume AudioContext
+        if (window.resumeAudio) window.resumeAudio();
+
+        const ok = Module.ccall('web_load', 'number', ['string'], [guestPath]);
         if (ok) {
+          acc = 0;
+          lastTick = performance.now();
           emuRunning = true;
-          console.log('[Panda3DS] ROM loaded successfully:', currentRomName);
+          console.log('[Panda3DS] ROM loaded successfully:', currentRomName, 'as', guestPath);
           restoreRomLabels();
         } else {
           console.error('Failed to load ROM: ' + currentRomName);
@@ -659,17 +716,30 @@
       emuRunning = false;
       const reader = new FileReader();
       reader.onload = () => {
-        const data = new Uint8Array(reader.result);
-        const fname = file.name;
-        const romPath = '/' + fname;
-        Module.FS.writeFile(romPath, data);
-        const ok = Module.ccall ? Module.ccall('web_load', 'number', ['string'], [romPath]) : Module._web_load(romPath);
-        if (ok) {
-          emuRunning = true;
-          currentRomName = fname;
-          console.log('[Panda3DS] Custom ROM started:', fname);
-        } else {
-          alert('Failed to load custom ROM: ' + fname);
+        try {
+          const extMatch = file.name.match(/\.([a-zA-Z0-9]+)$/);
+          const ext = extMatch ? '.' + extMatch[1].toLowerCase() : '.3ds';
+          const guestPath = '/rom' + ext;
+          try { Module.FS.unlink(guestPath); } catch (err) {}
+          Module.FS.writeFile(guestPath, new Uint8Array(reader.result));
+          currentRomName = file.name;
+          setRomLoadingStatus(file.name, '⚙️ Booting...');
+          const dspPaths = ['/libsdl/Alber/rom/SDMC/3ds'];
+          for (const dp of dspPaths) {
+            try { Module.FS.mkdirTree(dp); Module.FS.writeFile(dp + '/dspfirm.cdc', new Uint8Array(262144)); } catch (err) {}
+          }
+          if (window.resumeAudio) window.resumeAudio();
+          const ok = Module.ccall('web_load', 'number', ['string'], [guestPath]);
+          if (ok) {
+            acc = 0;
+            lastTick = performance.now();
+            emuRunning = true;
+            restoreRomLabels();
+          } else {
+            alert('Failed to load custom ROM: ' + file.name);
+          }
+        } catch (err) {
+          console.error(err);
         }
       };
       reader.readAsArrayBuffer(file);
@@ -761,24 +831,31 @@
     // Keyboard Controls Mapping
     // -------------------------------------------------------------
     const keyMap = {
-      'KeyK': KEYS.A, 'KeyJ': KEYS.B, 'KeyI': KEYS.X, 'KeyU': KEYS.Y,
+      'KeyK': KEYS.A, 'KeyX': KEYS.A, 'Space': KEYS.A,
+      'KeyJ': KEYS.B, 'KeyZ': KEYS.B,
+      'KeyI': KEYS.X,
+      'KeyU': KEYS.Y, 'KeyY': KEYS.Y,
       'ArrowRight': KEYS.Right, 'ArrowLeft': KEYS.Left, 'ArrowUp': KEYS.Up, 'ArrowDown': KEYS.Down,
-      'KeyQ': KEYS.L, 'KeyE': KEYS.R, 'Enter': KEYS.Start, 'Space': KEYS.Select
+      'KeyQ': KEYS.L, 'KeyE': KEYS.R, 'Enter': KEYS.Start, 'Backspace': KEYS.Select
     };
 
     let circleX = 0, circleY = 0;
     window.addEventListener('keydown', (e) => {
-      if (keyMap[e.code] && Module._web_key) Module._web_key(keyMap[e.code], 1);
-      if (e.code === 'KeyD') circleX = 156;
-      if (e.code === 'KeyA') circleX = -156;
-      if (e.code === 'KeyW') circleY = 156;
-      if (e.code === 'KeyS') circleY = -156;
+      if (keyMap[e.code] && Module._web_key) {
+        Module._web_key(keyMap[e.code], 1);
+      }
+      if (e.code === 'KeyD' || e.code === 'ArrowRight') circleX = 156;
+      if (e.code === 'KeyA' || e.code === 'ArrowLeft') circleX = -156;
+      if (e.code === 'KeyW' || e.code === 'ArrowUp') circleY = 156;
+      if (e.code === 'KeyS' || e.code === 'ArrowDown') circleY = -156;
       if (Module._web_circle) Module._web_circle(circleX, circleY);
     });
     window.addEventListener('keyup', (e) => {
-      if (keyMap[e.code] && Module._web_key) Module._web_key(keyMap[e.code], 0);
-      if (e.code === 'KeyD' || e.code === 'KeyA') circleX = 0;
-      if (e.code === 'KeyW' || e.code === 'KeyS') circleY = 0;
+      if (keyMap[e.code] && Module._web_key) {
+        Module._web_key(keyMap[e.code], 0);
+      }
+      if (e.code === 'KeyD' || e.code === 'KeyA' || e.code === 'ArrowRight' || e.code === 'ArrowLeft') circleX = 0;
+      if (e.code === 'KeyW' || e.code === 'KeyS' || e.code === 'ArrowUp' || e.code === 'ArrowDown') circleY = 0;
       if (Module._web_circle) Module._web_circle(circleX, circleY);
     });
 
@@ -916,16 +993,36 @@
     // -------------------------------------------------------------
     // Main Render Loop
     // -------------------------------------------------------------
+    let acc = 0;
+    let lastTick = performance.now();
+    let gameFrames = 0;
+    let xrFrameCount = 0;
+    let lastFpsUpdate = performance.now();
+    const FRAME_MS = 1000 / 60;
+
     renderer.setAnimationLoop(() => {
-      // 1. Advance Panda3DS Emulator Frame
+      // 1. Advance Panda3DS Emulator at exact 60 Hz with delta accumulator
       if (emuReady && emuRunning) {
-        try {
-          Module._web_frame();
-          texLeft.needsUpdate = true;
-          texRight.needsUpdate = true;
+        const now = performance.now();
+        acc += Math.min(now - lastTick, 100);
+        lastTick = now;
+        let ran = 0;
+        const tickT0 = performance.now();
+        while (acc >= FRAME_MS && ran < 3 && (ran === 0 || performance.now() - tickT0 < 12)) {
+          try {
+            Module._web_frame();
+            ran++;
+            gameFrames++;
+          } catch (err) {
+            console.error('[Panda3DS] frame error:', err);
+            break;
+          }
+          acc -= FRAME_MS;
+        }
+        if (acc > FRAME_MS) acc = 0; // Drop lag debt to prevent death spiral
+        if (ran > 0) {
+          texTop.needsUpdate = true;
           texBottom.needsUpdate = true;
-        } catch (err) {
-          console.error('[Panda3DS] frame error:', err);
         }
       }
 
@@ -946,14 +1043,20 @@
       // 3. Render Three.js Scene
       renderer.render(scene, camera);
 
-      // 4. Update FPS Counter
-      frameCount++;
-      const now = performance.now();
-      if (now - lastTime >= 1000) {
-        fps = Math.round((frameCount * 1000) / (now - lastTime));
-        document.getElementById('fpsBadge').textContent = `${fps} FPS`;
-        frameCount = 0;
-        lastTime = now;
+      // 4. Update FPS Counter (Game 3DS FPS + XR refresh rate)
+      xrFrameCount++;
+      const nowMs = performance.now();
+      if (nowMs - lastFpsUpdate >= 1000) {
+        const dt = (nowMs - lastFpsUpdate) / 1000;
+        const curGameFps = Math.round(gameFrames / dt);
+        const curXrFps = Math.round(xrFrameCount / dt);
+        const badge = document.getElementById('fpsBadge');
+        if (badge) {
+          badge.textContent = `${curGameFps} FPS (${curXrFps} Hz)`;
+        }
+        gameFrames = 0;
+        xrFrameCount = 0;
+        lastFpsUpdate = nowMs;
       }
     });
 
