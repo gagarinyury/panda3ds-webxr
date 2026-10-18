@@ -83,7 +83,16 @@
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
       display: block; z-index: 1;
     }
-    #gl { display: none; } /* Hidden 800x480 offscreen emulator canvas */
+    #gl {
+      position: fixed;
+      left: -9999px;
+      top: -9999px;
+      width: 800px;
+      height: 480px;
+      opacity: 0;
+      pointer-events: none;
+      z-index: -10;
+    }
 
     #loading-overlay {
       position: absolute; inset: 0; background: #0d0f15;
@@ -198,12 +207,12 @@
     scene.background = new THREE.Color(0x0a0c12);
 
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 50);
-    camera.position.set(0, 1.35, 1.4);
+    camera.position.set(0, 1.3, 0.4);
     camera.layers.enable(1); // Left eye
     camera.layers.enable(2); // Right eye
 
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0, 1.25, 0);
+    controls.target.set(0, 1.25, -1.1);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
 
@@ -214,29 +223,29 @@
     // -------------------------------------------------------------
     // Virtual 3DS Floating Console Meshes
     // -------------------------------------------------------------
-    // Canvas texture sharing the offscreen WebGL2 canvas (800x480)
-    const canvasTexture = new THREE.CanvasTexture(glCanvas);
-    canvasTexture.minFilter = THREE.NearestFilter;
-    canvasTexture.magFilter = THREE.NearestFilter;
-    canvasTexture.generateMipmaps = false;
-
-    // Top Left eye texture: UV [0.0..0.5, 0.5..1.0]
-    const texLeft = canvasTexture.clone();
+    const texLeft = new THREE.CanvasTexture(glCanvas);
+    texLeft.minFilter = THREE.NearestFilter;
+    texLeft.magFilter = THREE.NearestFilter;
+    texLeft.generateMipmaps = false;
     texLeft.offset.set(0.0, 0.5);
     texLeft.repeat.set(0.5, 0.5);
 
-    // Top Right eye texture: UV [0.5..1.0, 0.5..1.0]
-    const texRight = canvasTexture.clone();
+    const texRight = new THREE.CanvasTexture(glCanvas);
+    texRight.minFilter = THREE.NearestFilter;
+    texRight.magFilter = THREE.NearestFilter;
+    texRight.generateMipmaps = false;
     texRight.offset.set(0.5, 0.5);
     texRight.repeat.set(0.5, 0.5);
 
-    // Bottom screen texture: UV [0.3..0.7, 0.0..0.5] (centered horizontally: 320px in 800px)
-    const texBottom = canvasTexture.clone();
+    const texBottom = new THREE.CanvasTexture(glCanvas);
+    texBottom.minFilter = THREE.NearestFilter;
+    texBottom.magFilter = THREE.NearestFilter;
+    texBottom.generateMipmaps = false;
     texBottom.offset.set(0.3, 0.0);
     texBottom.repeat.set(0.4, 0.5);
 
     const consoleGroup = new THREE.Group();
-    consoleGroup.position.set(0, 1.2, 0); // At comfortable eye height
+    consoleGroup.position.set(0, 1.25, -1.1); // Exactly 1.1m in front of the player in WebXR!
     scene.add(consoleGroup);
 
     // Frame styling (dark metallic 3DS housing)
@@ -249,7 +258,8 @@
 
     const meshTopLeft = new THREE.Mesh(topGeo, matTopLeft);
     meshTopLeft.position.set(0, 0.35, 0);
-    meshTopLeft.layers.set(1); // Visible ONLY to Left Eye in WebXR
+    meshTopLeft.layers.enable(0); // Visible on desktop flat screen
+    meshTopLeft.layers.enable(1); // Visible to Left Eye in WebXR
     consoleGroup.add(meshTopLeft);
 
     const meshTopRight = new THREE.Mesh(topGeo, matTopRight);
@@ -337,6 +347,11 @@
       printErr: (s) => console.error(s)
     };
 
+    // Dynamically inject AlberWeb.js so window.Module is guaranteed to exist
+    const coreScript = document.createElement('script');
+    coreScript.src = '../build-core/AlberWeb.js';
+    document.body.appendChild(coreScript);
+
     // -------------------------------------------------------------
     // ROM Loading Logic
     // -------------------------------------------------------------
@@ -348,9 +363,11 @@
         const resp = await fetch(pathOrUrl);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const buf = await resp.arrayBuffer();
-        Module.FS.writeFile('/' + currentRomName, new Uint8Array(buf));
+        const romPath = '/' + currentRomName;
+        Module.FS.writeFile(romPath, new Uint8Array(buf));
         
-        if (Module._web_load('/' + currentRomName)) {
+        const ok = Module.ccall ? Module.ccall('web_load', 'number', ['string'], [romPath]) : Module._web_load(romPath);
+        if (ok) {
           emuRunning = true;
           console.log('[Panda3DS] ROM loaded successfully!');
         } else {
@@ -370,8 +387,10 @@
       reader.onload = () => {
         const data = new Uint8Array(reader.result);
         const fname = file.name;
-        Module.FS.writeFile('/' + fname, data);
-        if (Module._web_load('/' + fname)) {
+        const romPath = '/' + fname;
+        Module.FS.writeFile(romPath, data);
+        const ok = Module.ccall ? Module.ccall('web_load', 'number', ['string'], [romPath]) : Module._web_load(romPath);
+        if (ok) {
           emuRunning = true;
           currentRomName = fname;
           console.log('[Panda3DS] Custom ROM started:', fname);
@@ -541,7 +560,9 @@
       // 1. Advance Panda3DS Emulator Frame
       if (emuReady && emuRunning) {
         Module._web_frame();
-        canvasTexture.needsUpdate = true;
+        texLeft.needsUpdate = true;
+        texRight.needsUpdate = true;
+        texBottom.needsUpdate = true;
       }
 
       // 2. Poll WebXR Input if in VR session
@@ -571,8 +592,5 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
   </script>
-
-  <!-- Load Panda3DS Core WebAssembly -->
-  <script src="../build-core/AlberWeb.js"></script>
 </body>
 </html>

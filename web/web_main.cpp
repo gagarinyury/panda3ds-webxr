@@ -79,7 +79,7 @@ EMSCRIPTEN_KEEPALIVE int web_init(int gl, int w, int h) {
         a.depth = true;
         a.stencil = true;
         a.antialias = false;
-        a.preserveDrawingBuffer = std::getenv("GL_PRESERVE") != nullptr;   // true: lets the page read the picture back after the frame (tests, screenshots)
+        a.preserveDrawingBuffer = true; // Required for Three.js CanvasTexture to sample the WebGL2 canvas
         a.powerPreference = EM_WEBGL_POWER_PREFERENCE_HIGH_PERFORMANCE;
         a.enableExtensionsByDefault = true;
         EMSCRIPTEN_WEBGL_CONTEXT_HANDLE ctx = emscripten_webgl_create_context("#gl", &a);
