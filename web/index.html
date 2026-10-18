@@ -209,8 +209,7 @@
 
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 50);
     camera.position.set(0, 1.3, 0.4);
-    camera.layers.enable(1); // Left eye
-    camera.layers.enable(2); // Right eye
+    camera.layers.enable(1); // On desktop flat screen, view Left eye by default
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0, 1.25, -1.1);
@@ -259,8 +258,7 @@
 
     const meshTopLeft = new THREE.Mesh(topGeo, matTopLeft);
     meshTopLeft.position.set(0, 0.35, 0);
-    meshTopLeft.layers.enable(0); // Visible on desktop flat screen
-    meshTopLeft.layers.enable(1); // Visible to Left Eye in WebXR
+    meshTopLeft.layers.set(1); // Visible ONLY to Left Eye in WebXR
     consoleGroup.add(meshTopLeft);
 
     const meshTopRight = new THREE.Mesh(topGeo, matTopRight);
@@ -271,9 +269,7 @@
     // Top Bezel frame
     const topBezel = new THREE.Mesh(new THREE.BoxGeometry(1.08, 0.68, 0.02), bodyMat);
     topBezel.position.set(0, 0.35, -0.012);
-    topBezel.layers.enable(0);
-    topBezel.layers.enable(1);
-    topBezel.layers.enable(2);
+    topBezel.layers.set(0);
     consoleGroup.add(topBezel);
 
     // Bottom Screen (Touch): Aspect ratio 320x240 -> 0.8m x 0.6m
@@ -282,27 +278,21 @@
     const meshBottom = new THREE.Mesh(botGeo, matBottom);
     meshBottom.position.set(0, -0.32, 0.08);
     meshBottom.rotation.x = -0.35; // Tilted upward toward player
-    meshBottom.layers.enable(0);
-    meshBottom.layers.enable(1); // Visible to Left eye in WebXR
-    meshBottom.layers.enable(2); // Visible to Right eye in WebXR
+    meshBottom.layers.set(0); // Visible to BOTH eyes via layer 0
     consoleGroup.add(meshBottom);
 
     // Bottom Bezel frame
     const botBezel = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.68, 0.02), bodyMat);
     botBezel.position.set(0, -0.32, 0.07);
     botBezel.rotation.x = -0.35;
-    botBezel.layers.enable(0);
-    botBezel.layers.enable(1);
-    botBezel.layers.enable(2);
+    botBezel.layers.set(0);
     consoleGroup.add(botBezel);
 
     // Touch Laser Pointer Indicator
     const dotGeo = new THREE.SphereGeometry(0.012, 16, 16);
     const dotMat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
     const touchDot = new THREE.Mesh(dotGeo, dotMat);
-    touchDot.layers.enable(0);
-    touchDot.layers.enable(1);
-    touchDot.layers.enable(2);
+    touchDot.layers.set(0);
     touchDot.visible = false;
     scene.add(touchDot);
 
@@ -313,24 +303,20 @@
     const tempMatrix = new THREE.Matrix4();
 
     const controller0 = renderer.xr.getController(0);
-    controller0.layers.enable(1);
-    controller0.layers.enable(2);
+    controller0.layers.set(0);
     scene.add(controller0);
     const controller1 = renderer.xr.getController(1);
-    controller1.layers.enable(1);
-    controller1.layers.enable(2);
+    controller1.layers.set(0);
     scene.add(controller1);
 
     // Controller laser line
     const laserMat = new THREE.LineBasicMaterial({ color: 0x00c6ff, transparent: true, opacity: 0.6 });
     const laserGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -2)]);
     const laser0 = new THREE.Line(laserGeo, laserMat);
-    laser0.layers.enable(1);
-    laser0.layers.enable(2);
+    laser0.layers.set(0);
     controller0.add(laser0);
     const laser1 = new THREE.Line(laserGeo, laserMat);
-    laser1.layers.enable(1);
-    laser1.layers.enable(2);
+    laser1.layers.set(0);
     controller1.add(laser1);
 
     // -------------------------------------------------------------
@@ -453,7 +439,11 @@
         });
         renderer.xr.setSession(session);
         vrBtn.textContent = 'Exit VR';
-        session.addEventListener('end', () => { vrBtn.textContent = '🥽 Enter VR'; });
+        camera.layers.set(0); // In VR, parent camera only holds layer 0
+        session.addEventListener('end', () => {
+          vrBtn.textContent = '🥽 Enter VR';
+          camera.layers.enable(1); // Restore Left Eye view on desktop flat screen
+        });
       } catch (err) {
         console.error('[WebXR] Failed to start VR session:', err);
         alert('Could not start WebXR session: ' + err.message);
@@ -520,54 +510,65 @@
       const session = renderer.xr.getSession();
       if (!session) return;
 
-      for (const source of session.inputSources) {
+      const sources = Array.from(session.inputSources || []);
+      for (const source of sources) {
         if (!source.gamepad) continue;
         const gp = source.gamepad;
         const handedness = source.handedness;
 
         // Thumbstick -> 3DS Circle Pad
-        if (gp.axes.length >= 4) {
-          const stickX = Math.round(gp.axes[2] * 156);
-          const stickY = Math.round(-gp.axes[3] * 156);
-          if (Math.abs(stickX) > 20 || Math.abs(stickY) > 20) {
-            Module._web_circle(stickX, stickY);
-          } else if (handedness === 'left') {
-            Module._web_circle(0, 0);
+        if (gp.axes && gp.axes.length >= 2) {
+          const ax = gp.axes.length >= 4 ? gp.axes[2] : gp.axes[0];
+          const ay = gp.axes.length >= 4 ? gp.axes[3] : gp.axes[1];
+          const stickX = Math.round(ax * 156);
+          const stickY = Math.round(-ay * 156);
+          if (Module && Module._web_circle) {
+            if (Math.abs(stickX) > 20 || Math.abs(stickY) > 20) {
+              Module._web_circle(stickX, stickY);
+            } else if (handedness === 'left') {
+              Module._web_circle(0, 0);
+            }
           }
         }
 
         // Face buttons & triggers
-        if (handedness === 'right') {
-          if (gp.buttons[4]) Module._web_key(KEYS.A, gp.buttons[4].pressed ? 1 : 0);
-          if (gp.buttons[5]) Module._web_key(KEYS.B, gp.buttons[5].pressed ? 1 : 0);
-          if (gp.buttons[1]) Module._web_key(KEYS.R, gp.buttons[1].pressed ? 1 : 0);
-        } else if (handedness === 'left') {
-          if (gp.buttons[4]) Module._web_key(KEYS.X, gp.buttons[4].pressed ? 1 : 0);
-          if (gp.buttons[5]) Module._web_key(KEYS.Y, gp.buttons[5].pressed ? 1 : 0);
-          if (gp.buttons[1]) Module._web_key(KEYS.L, gp.buttons[1].pressed ? 1 : 0);
+        if (Module && Module._web_key) {
+          if (handedness === 'right') {
+            if (gp.buttons[4]) Module._web_key(KEYS.A, gp.buttons[4].pressed ? 1 : 0);
+            if (gp.buttons[5]) Module._web_key(KEYS.B, gp.buttons[5].pressed ? 1 : 0);
+            if (gp.buttons[0]) Module._web_key(KEYS.R, gp.buttons[0].pressed ? 1 : 0);
+          } else if (handedness === 'left') {
+            if (gp.buttons[4]) Module._web_key(KEYS.X, gp.buttons[4].pressed ? 1 : 0);
+            if (gp.buttons[5]) Module._web_key(KEYS.Y, gp.buttons[5].pressed ? 1 : 0);
+            if (gp.buttons[0]) Module._web_key(KEYS.L, gp.buttons[0].pressed ? 1 : 0);
+          }
         }
       }
 
-      // Laser Raycast from Right Controller (1) to Bottom Screen
-      tempMatrix.identity().extractRotation(controller1.matrixWorld);
-      raycaster.ray.origin.setFromMatrixPosition(controller1.matrixWorld);
-      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+      // Laser Raycast from Right Controller to Bottom Screen
+      if (controller1 && controller1.matrixWorld) {
+        try {
+          tempMatrix.identity().extractRotation(controller1.matrixWorld);
+          raycaster.ray.origin.setFromMatrixPosition(controller1.matrixWorld);
+          raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
 
-      const hits = raycaster.intersectObject(meshBottom);
-      if (hits.length > 0 && hits[0].uv) {
-        touchDot.position.copy(hits[0].point);
-        touchDot.visible = true;
+          const hits = raycaster.intersectObject(meshBottom);
+          if (hits.length > 0 && hits[0].uv) {
+            touchDot.position.copy(hits[0].point);
+            touchDot.visible = true;
 
-        const uv = hits[0].uv;
-        const tx = Math.max(0, Math.min(319, Math.floor(uv.x * 320)));
-        const ty = Math.max(0, Math.min(239, Math.floor((1.0 - uv.y) * 240)));
+            const uv = hits[0].uv;
+            const tx = Math.max(0, Math.min(319, Math.floor(uv.x * 320)));
+            const ty = Math.max(0, Math.min(239, Math.floor((1.0 - uv.y) * 240)));
 
-        const session = renderer.xr.getSession();
-        const rSource = session.inputSources.find(s => s.handedness === 'right');
-        const triggerPressed = rSource && rSource.gamepad && rSource.gamepad.buttons[0] && rSource.gamepad.buttons[0].pressed;
-        if (Module._web_touch) Module._web_touch(tx, ty, triggerPressed ? 1 : 0);
-      } else {
-        touchDot.visible = false;
+            const rSource = sources.find(s => s.handedness === 'right');
+            const triggerPressed = rSource && rSource.gamepad && rSource.gamepad.buttons[0] && rSource.gamepad.buttons[0].pressed;
+            if (Module && Module._web_touch) Module._web_touch(tx, ty, triggerPressed ? 1 : 0);
+          } else {
+            touchDot.visible = false;
+            if (Module && Module._web_touch) Module._web_touch(0, 0, 0);
+          }
+        } catch (e) {}
       }
     }
 
@@ -577,17 +578,28 @@
     renderer.setAnimationLoop(() => {
       // 1. Advance Panda3DS Emulator Frame
       if (emuReady && emuRunning) {
-        Module._web_frame();
-        texLeft.needsUpdate = true;
-        texRight.needsUpdate = true;
-        texBottom.needsUpdate = true;
+        try {
+          Module._web_frame();
+          texLeft.needsUpdate = true;
+          texRight.needsUpdate = true;
+          texBottom.needsUpdate = true;
+        } catch (err) {
+          console.error('[Panda3DS] frame error:', err);
+        }
       }
 
       // 2. Poll WebXR Input if in VR session
-      if (renderer.xr.isPresenting) {
-        pollXRControllers();
-      } else {
-        controls.update();
+      try {
+        if (renderer.xr.isPresenting) {
+          camera.layers.set(0); // Parent camera holds only layer 0 so WebXRManager cameraL has 0+1 and cameraR has 0+2
+          pollXRControllers();
+        } else {
+          camera.layers.set(0);
+          camera.layers.enable(1); // Desktop view shows Left eye
+          controls.update();
+        }
+      } catch (err) {
+        console.warn('[WebXR] poll error:', err);
       }
 
       // 3. Render Three.js Scene
@@ -603,6 +615,7 @@
         lastTime = now;
       }
     });
+
 
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
